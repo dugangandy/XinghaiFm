@@ -21,7 +21,7 @@
   function init() {
     refs = {
       view: $('view'), nav: $('nav'), catList: $('catList'), libStat: $('libStat'),
-      topbar: $('topbar'), sidebar: $('sidebar'), drawerMask: $('drawerMask'), btnMenu: $('btnMenu'), brand: $('brand'),
+      topbar: $('topbar'), sidebar: $('sidebar'), drawerMask: $('drawerMask'), btnMenu: $('btnMenu'), brand: $('brand'), brandVer: $('brandVer'),
       libSwitch: $('libSwitch'), libName: $('libName'), libPath: $('libPath'), libBadge: $('libBadge'),
       btnSync: $('btnSync'), btnAddCat: $('btnAddCat'),
       searchInput: $('searchInput'), searchClear: $('searchClear'),
@@ -1430,6 +1430,7 @@
       /* 用户主动点开视频集才展开播放页；启动恢复上次进度不弹。
          视频直接看画面：不自动弹选集列表，若之前开着（从音频队列过来）则关掉。 */
       if (t.kind === 'video' && !(opt && opt.restored)) {
+        if (FM.android) return;   /* 壳内视频交给原生播放器，不展开网页播放页 */
         openSheet();
         if (queueOpen) toggleQueue();
       }
@@ -2218,6 +2219,19 @@
     if (refs.btnLogout) {
       refs.btnLogout.hidden = !(!FM.fs.desktop && !FM.android && !!FM.fs.server);
     }
+    paintVersion();
+  }
+
+  /* 左侧 logo 旁显示当前程序版本：Electron 读 app 版本，APK 读壳版本，浏览器读服务端 package.json */
+  function paintVersion() {
+    const el = refs.brandVer;
+    if (!el) return;
+    let v = '';
+    if (window.fmNative && window.fmNative.version) v = String(window.fmNative.version);
+    else if (FM.android && FM.android.native) { try { v = String(FM.android.version() || ''); } catch (e) {} }
+    else if (FM.fs.server) v = String(FM.fs.version || '');
+    el.textContent = v ? 'v' + v : '';
+    el.hidden = !v;
   }
 
   function renderAll(opts) {

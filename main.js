@@ -333,6 +333,8 @@ function mergeMeta(cur, incoming) {
 function bindIpc() {
   /* 远程配置：preload 启动时同步取一次，连接/断开后由页面 reload 生效 */
   ipcMain.on('fm:remote', function (e) { e.returnValue = readRemote(); });
+  /* 应用版本号：渲染进程在左侧 logo 旁显示 */
+  ipcMain.on('fm:version', function (e) { e.returnValue = app.getVersion(); });
   ipcMain.handle('fm:setRemote', function (e, cfg) { return writeRemote(cfg); });
 
   ipcMain.handle('fm:libs', function () {

@@ -65,6 +65,8 @@
 .brand-text strong{font-size:17px;letter-spacing:.06em;font-weight:800;
   background:linear-gradient(100deg,#fff,#bfe9ff 40%,#d9b8ff);-webkit-background-clip:text;background-clip:text;color:transparent}
 .brand-text small{font-size:9px;letter-spacing:.22em;color:var(--dim-2);margin-top:3px}
+.brand-line{display:flex;align-items:baseline;gap:6px}
+.brand-ver{font-size:10px;font-weight:600;letter-spacing:.02em;color:var(--dim-2)}
 
 .side-actions{display:flex;gap:8px}
 .side-main-btn{

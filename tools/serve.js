@@ -30,6 +30,11 @@ const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 
 const APP_ROOT = path.resolve(__dirname, '..');
+/* 版本号：打包前已把 package.json 的 version 自增，这里读出来给远程页面显示 */
+const APP_VERSION = (function () {
+  try { return String(JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || ''); }
+  catch (e) { return ''; }
+})();
 const COVER_DIR = '.fm-covers';
 /* 口令文件可重定向（测试/多实例用），默认项目根目录 */
 const AUTH_FILE = process.env.FM_AUTH_FILE ? path.resolve(process.env.FM_AUTH_FILE) : path.join(APP_ROOT, '.auth.json');
@@ -666,7 +671,7 @@ const server = http.createServer(async function (req, res) {
   }
   if (p === '/api/config') {
     const lib = activeLib();
-    return json(res, { server: LIBS.length > 0, rootName: lib ? lib.name : '', multi: MULTI, libEdit: ALLOW_LIB_EDIT });
+    return json(res, { server: LIBS.length > 0, rootName: lib ? lib.name : '', multi: MULTI, libEdit: ALLOW_LIB_EDIT, version: APP_VERSION });
   }
   if (p === '/api/libs') {
     return json(res, { active: activeId, multi: MULTI, libs: LIBS.map(libView) });

@@ -5,12 +5,17 @@ const { contextBridge, ipcRenderer } = require('electron');
 let remote = null;
 try { remote = ipcRenderer.sendSync('fm:remote'); } catch (e) {}
 
+/* 应用版本号：main 里 app.getVersion() 同步取一次 */
+let appVersion = '';
+try { appVersion = ipcRenderer.sendSync('fm:version') || ''; } catch (e) {}
+
 contextBridge.exposeInMainWorld('fmNative', {
   isDesktop: true,
   remote: remote,
   setRemote: (cfg) => ipcRenderer.invoke('fm:setRemote', cfg),
   platform: process.platform,
   electron: process.versions.electron,
+  version: appVersion,
   libs: () => ipcRenderer.invoke('fm:libs'),
   addLib: (p) => ipcRenderer.invoke('fm:addLib', p),
   activate: (id) => ipcRenderer.invoke('fm:activate', id),

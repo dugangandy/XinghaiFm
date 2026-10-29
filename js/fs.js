@@ -23,6 +23,7 @@
   let fileMap = new Map();     // relPath -> File（files 模式）
   let granted = false;
   let serverMode = false;      // 由 tools/serve.js 的 config.json 库列表提供的服务器模式
+  let serverVersion = '';      // 服务端 package.json 的版本号（浏览器直连时用来显示）
 
   /* 桌面端连远程后端：本地 UI 不变，数据通路全部走远端 API。
      有 REMOTE 时 NATIVE 只代表"跑在 Electron 里"，不再代表"用本地文件"。 */
@@ -269,6 +270,7 @@
       }
       if (srv) {
         serverMode = true;
+        serverVersion = srv.version || '';
         if (srv.multi) {
           try {
             const r = await apiFetch('/api/libs', { cache: 'no-store' });
@@ -732,6 +734,7 @@
     get link() { return linkState; },
     onLink,
     get server() { return serverMode; },
+    get version() { return serverVersion; },
     get mode() { return mode; },
     get rootName() { return activeLib ? activeLib.name : ''; },
     get granted() { return granted; },
