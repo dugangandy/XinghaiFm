@@ -248,6 +248,10 @@ body.is-server #libSwitch .lib-caret{display:none}
 .pb-cover span{position:relative;z-index:1;font-size:18px;font-weight:800;color:rgba(255,255,255,.92);text-shadow:0 2px 12px rgba(0,0,0,.4)}
 .pb-meta{min-width:0;display:flex;flex-direction:column;gap:4px}
 .pb-title{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:30vw}
+/* 播放条左侧整块可点：进专辑详情（悬停只提亮封面，不做位移） */
+.pb-left{cursor:pointer}
+.pb-left:hover .pb-cover{filter:brightness(1.12)}
+.pb-left:hover .pb-title{color:#fff}
 .pb-sub{font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:30vw}
 .pb-fav{width:32px;height:32px;color:var(--dim)}
 .pb-fav .i{width:17px;height:17px}

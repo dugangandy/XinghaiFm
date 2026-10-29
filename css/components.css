@@ -82,9 +82,41 @@
   font-variant-numeric:tabular-nums;
 }
 .scrub:hover .scrub-tip{opacity:1}
-.vol-scrub{width:0;overflow:hidden;transition:width .28s var(--ease);--p:100%}
-.vol-wrap:hover .vol-scrub,.vol-scrub.dragging{width:78px}
-.vol-scrub .scrub-track{height:3px}
+/* 竖向音量弹层（参考 B 站）：悬停喇叭图标时在它上方展开 */
+.vol-wrap{position:relative}
+.vol-pop{
+  position:absolute;left:50%;bottom:calc(100% + 12px);z-index:12;
+  transform:translate(-50%,6px);
+  width:46px;padding:9px 0 11px;border-radius:14px;
+  display:flex;flex-direction:column;align-items:center;gap:8px;
+  background:rgba(10,14,24,.94);backdrop-filter:blur(18px);
+  border:1px solid var(--line-2);box-shadow:0 20px 44px -22px #000,0 0 0 1px rgba(255,255,255,.04) inset;
+  opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity .18s var(--ease),transform .18s var(--ease),visibility 0s .18s;
+}
+.vol-wrap:hover .vol-pop,
+.vol-wrap:focus-within .vol-pop,
+.vol-wrap.dragging .vol-pop{
+  opacity:1;visibility:visible;pointer-events:auto;transform:translate(-50%,0);
+  transition:opacity .18s var(--ease),transform .18s var(--ease),visibility 0s;
+}
+.vol-num{font-size:11px;color:var(--txt-2);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.vol-track{
+  position:relative;width:4px;height:104px;border-radius:99px;
+  background:rgba(255,255,255,.14);cursor:pointer;touch-action:none;
+}
+.vol-fill{
+  position:absolute;left:0;right:0;bottom:0;height:var(--p,100%);border-radius:99px;
+  background:linear-gradient(180deg,#f472b6,#8b5cf6 42%,#22d3ee);
+  box-shadow:0 0 12px -2px rgba(34,211,238,.85);
+}
+.vol-knob{
+  position:absolute;left:50%;bottom:var(--p,100%);width:12px;height:12px;border-radius:50%;
+  background:#fff;transform:translate(-50%,50%);
+  box-shadow:0 0 0 3px rgba(34,211,238,.24),0 0 14px rgba(34,211,238,.8);
+  transition:transform .16s var(--ease);
+}
+.vol-track:hover .vol-knob,.vol-wrap.dragging .vol-knob{transform:translate(-50%,50%) scale(1.18)}
 
 /* 页面标题 */
 .view-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding:18px 2px 20px;flex-wrap:wrap}
@@ -94,15 +126,6 @@
 .head-actions{display:flex;align-items:center;gap:8px}
 
 /* 统计条 */
-.stats{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 26px}
-.stat{
-  flex:1 1 150px;min-width:130px;padding:14px 16px;border-radius:var(--r-md);
-  border:1px solid var(--line);background:var(--panel-2);
-  display:flex;flex-direction:column;gap:5px;position:relative;overflow:hidden;
-}
-.stat::after{content:"";position:absolute;right:-30px;top:-30px;width:80px;height:80px;border-radius:50%;background:radial-gradient(circle,rgba(34,211,238,.18),transparent 70%)}
-.stat b{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.01em}
-.stat span{font-size:11px;color:var(--dim);letter-spacing:.08em}
 
 /* 区块标题 */
 .section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 2px 14px}
@@ -126,7 +149,11 @@
   position:relative;width:82px;height:82px;flex:none;border-radius:14px;overflow:hidden;
   background:linear-gradient(150deg,var(--c1),var(--c2));display:grid;place-items:center;
   box-shadow:var(--shadow-1);
+  /* 封面可点：进专辑详情（亮度+描边反馈，不做位移，避免圆角重采样发虚） */
+  cursor:pointer;transition:box-shadow .2s var(--ease),filter .2s var(--ease);
 }
+.resume-cover:hover{filter:brightness(1.12);box-shadow:var(--shadow-2),0 0 0 1px rgba(34,211,238,.45)}
+.resume-cover:active{filter:brightness(1.02)}
 .resume-cover span{font-size:26px;font-weight:800;color:rgba(255,255,255,.92);text-shadow:0 4px 18px rgba(0,0,0,.4)}
 .resume-body{min-width:0;flex:1;position:relative;z-index:1}
 .resume-kicker{font-size:10px;letter-spacing:.3em;color:rgba(170,235,255,.8);margin-bottom:7px}
@@ -188,15 +215,17 @@
   text-shadow:0 6px 24px rgba(0,0,0,.45);
 }
 .card-play{
-  position:absolute;right:10px;bottom:10px;z-index:3;
-  width:40px;height:40px;border-radius:50%;display:grid;place-items:center;
-  background:rgba(6,9,16,.55);backdrop-filter:blur(10px);color:#fff;
-  border:1px solid rgba(255,255,255,.2);
-  opacity:0;transform:translateY(8px) scale(.9);transition:.26s var(--ease);
+  /* 居中悬浮：白色圆 + 品牌紫三角，只在卡片 hover 时渐显（参考喜马拉雅） */
+  position:absolute;left:50%;top:50%;z-index:3;
+  width:48px;height:48px;border-radius:50%;display:grid;place-items:center;
+  background:#fff;color:#7c5cf5;border:0;
+  box-shadow:0 12px 26px -12px rgba(0,0,0,.62),0 0 0 1px rgba(0,0,0,.06);
+  opacity:0;transform:translate(-50%,-50%);
+  transition:opacity .24s var(--ease),box-shadow .24s var(--ease);
 }
-.card-play .i{width:18px;height:18px;transform:translateX(1px)}
-.card:hover .card-play{opacity:1;transform:none}
-.card-play:hover{background:var(--grad);color:#04070d;border-color:transparent;box-shadow:0 0 22px rgba(34,211,238,.8)}
+.card-play .i{width:20px;height:20px;margin-left:2px}
+.card:hover .card-play{opacity:1}
+.card-play:hover{box-shadow:0 16px 32px -12px rgba(0,0,0,.72),0 0 0 1px rgba(0,0,0,.08)}
 .card-badge{
   position:absolute;left:10px;top:10px;z-index:3;
   padding:3px 8px;border-radius:99px;font-size:10px;letter-spacing:.06em;
@@ -583,7 +612,27 @@
 .lib-drawer-foot{
   display:flex;gap:9px;padding:14px 16px 16px;border-top:1px solid var(--line);
 }
+.lib-remote-btn{
+  height:auto;min-height:44px;min-width:0;justify-content:flex-start;gap:10px;padding:7px 14px 7px 12px;
+  text-align:left;white-space:nowrap;
+}
+.lib-remote-btn .link-dot{
+  flex:none;width:7px;height:7px;border-radius:99px;background:#34d399;
+  box-shadow:0 0 0 3px rgba(52,211,153,.14);
+}
+.lib-remote-btn.warn .link-dot{background:#fbbf24;box-shadow:0 0 0 3px rgba(251,191,36,.14)}
+.lib-remote-btn .remote-txt{min-width:0;display:flex;flex-direction:column;gap:3px;line-height:1.1}
+.lib-remote-btn .remote-txt b{font-size:12.5px;font-weight:600;color:var(--txt-2)}
+.lib-remote-btn .remote-txt small{
+  font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;
+  font-variant-numeric:tabular-nums;letter-spacing:.01em;
+}
+.lib-remote-btn:hover .remote-txt b{color:var(--txt)}
 .lib-drawer-foot .btn{flex:1}
+/* 服务器按钮内容多，给它多一点宽度，完成按钮收窄固定 */
+/* 两个按钮等宽等高：flex 的 basis 0 会被 padding 撑出差异，直接按 50% 分 */
+.lib-drawer-foot .lib-remote-btn,
+.lib-drawer-foot .lib-remote-btn + .btn{flex:1 1 calc(50% - 5px);height:44px}
 @media (max-width:979.98px){
   .lib-drawer-foot{padding-bottom:calc(16px + var(--pb-h))}
 }

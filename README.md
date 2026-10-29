@@ -260,6 +260,28 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 - **明文 http 只建议局域网或 SSH 隧道**，走公网请套 https 反代
 - 掉线后顶栏显示「离线，正在重连…」，按 3 → 6 → 9 → 15 → 30 秒退避；token 失效变成「远程未授权，点此重连」
 
+## 安卓 App（可选）
+
+手机端不是独立播放器：它是一个装着本项目的壳，音频仍由电脑上的 `tools/serve.js` 提供。适合"书放在电脑里、手机当随身听"。
+
+1. **电脑端起服务**（第一次先设口令）：
+   ```bash
+   node tools/serve.js --set-password 你的口令
+   node tools/serve.js 8080
+   ```
+   确认电脑防火墙放行 8080（或改用已配好的 SSH 隧道地址）。
+2. **拿 APK**：仓库的 **Actions → Android APK → Run workflow**，跑完在产物里下载 `XinghaiFM-<版本>-debug.apk`（推送 `v*` 标签也会自动构建）。
+3. **安装**：传到手机点开安装，首次需允许"安装未知应用"。
+4. **首次打开**：填 `http://<电脑局域网 IP>:8080`（可省略 `http://`），点「连接」→ 在登录页输一次口令，之后一直记住。
+
+- 换服务器 / 重新登录：侧栏「资源库」→「服务器地址…」，或资源库设置抽屉底部
+- 手机上分类、收藏、改名是只读的（和浏览器远程访问一致）；播放进度每 10 秒回传，电脑端下次打开自动合并
+- 后台与锁屏：播放时起前台服务 + MediaSession，通知栏和锁屏可播放/暂停/上下集；切后台、锁屏继续播
+- 返回键：先关播放页 / 弹层 / 抽屉，再退页面，首页按两次退出
+- 界面为手机重排过（底部播放条、全屏播放页、安全区、触控尺寸、特效降级），桌面端布局不受影响
+- **明文 http 只建议局域网或 SSH 隧道**，走公网请套 https 反代；`usesCleartextTraffic` 开着是为了局域网直连
+- 自己构建见 [`android/README.md`](android/README.md)
+
 ## 配置参考
 
 ### 文件位置
@@ -314,6 +336,8 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 | `--no-auth` | 关掉口令校验，仅本机调试 |
 | `--set-password <口令>` | 设置 / 重设口令 |
 | `--check-password` | 校验当前口令 |
+
+环境变量 `FM_AUTH_FILE`：把口令文件指到别处（默认项目根的 `.auth.json`），测试或多实例时用。
 
 `启动-公网.bat` 自动拼 `<localPort> --host 127.0.0.1 [--config <file>]`，再按 `.tunnel.json` 决定是否加 `--allow-lib-edit`。
 

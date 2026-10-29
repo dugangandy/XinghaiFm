@@ -1,0 +1,129 @@
+/* ── 星海 FM · 手机端 ──────────────────────────────────────
+ * 最后引入，只在手机/触屏上生效；桌面布局与功能一行不动。
+ * 安全区走 env()，安卓壳是 targetSdk 34（非沉浸式），这里通常取到 0。
+ */
+:root{
+  --sat:env(safe-area-inset-top,0px);
+  --sab:env(safe-area-inset-bottom,0px);
+}
+
+html{-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent}
+button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulation}
+
+/* 播放条避开手势条（浏览器里才非 0） */
+.playerbar{bottom:var(--sab)}
+
+@media (max-width:760px){
+  :root{--pb-h:62px}
+
+  /* ── 顶栏 ── */
+  .topbar{height:56px;padding:var(--sat) 12px 0;gap:8px}
+  .topbar.scrolled{backdrop-filter:none;background:rgba(7,10,18,.96)}
+  .search{flex:1;width:auto;height:36px;padding:0 10px 0 11px;gap:8px}
+  .search:focus-within{width:auto}
+  .search input{font-size:13px}
+  .menu-btn{width:34px;height:34px}
+  .scan-state,.link-state{font-size:10.5px}
+
+  /* ── 内容区 ── */
+  .view{padding:4px 12px calc(var(--pb-h) + var(--sab) + 18px)}
+  .view-head{padding:10px 2px 14px;gap:10px;align-items:center}
+  .page-title{font-size:20px;gap:8px}
+  .page-sub{font-size:11.5px;margin-top:3px}
+  .stats{gap:8px;margin-bottom:16px}
+  .stat{min-width:0;padding:10px 12px}
+  .album-hero{gap:14px;padding:12px 0 16px}
+  .hero-cover{width:118px;height:118px;border-radius:16px}
+  /* 封面缩小后两个字会顶出去，字也跟着收 */
+  .hero-cover .card-char{font-size:38px}
+
+  /* ── 卡片网格：两列半，滚动时按需渲染 ── */
+  .grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px 8px}
+  .card{content-visibility:auto;contain-intrinsic-size:auto 200px}
+  .card-title{font-size:11.8px}
+  .card-foot{font-size:9px}
+
+  /* ── 曲目行 ── */
+  .track{padding:8px;gap:10px;min-height:52px}
+  /* 工具栏挤到一行时「4 / 4 集」别被压成两行 */
+  .track-toolbar{gap:8px;padding:10px 2px}
+  .tk-search{flex:1 1 auto;height:32px}
+  .tk-count{white-space:nowrap;font-size:10.5px}
+  .tk-idx{width:22px;font-size:10.5px}
+  .tk-name{font-size:13px}
+
+  /* ── 播放条：只留最关键的四颗 ── */
+  .playerbar{height:var(--pb-h);padding:0 12px;gap:10px}
+  .playerbar::before{opacity:.5}
+  .pb-left{gap:10px;max-width:52%}
+  .pb-cover{width:42px;height:42px;border-radius:10px}
+  .pb-title{font-size:12.5px;max-width:38vw}
+  .pb-sub{font-size:10.5px;max-width:38vw}
+  .pb-controls{gap:2px}
+  #btnBack15,#btnFwd15,.pb-right .rate-chip{display:none}
+  .icon-btn{width:38px;height:38px}
+  .play-btn{width:40px;height:40px}
+
+  /* ── 全屏播放页 ── */
+  .sheet{background:radial-gradient(120% 80% at 50% 0%,#0c1526,#05070e 70%)}
+  .sheet-inner{
+    padding:calc(12px + var(--sat)) 18px calc(18px + var(--sab));
+    gap:12px;justify-content:center;
+  }
+  .sheet-stage{flex:none;margin:10px 0 6px}
+  .sheet-cover{width:min(66vw,34vh);border-radius:20px}
+  .sc-char{font-size:clamp(40px,9vh,64px)}
+  .sheet-meta h2{font-size:17px}
+  .sheet-meta p{font-size:11.5px;margin-top:4px}
+  .sheet-controls{gap:4px}
+  .sheet-controls .icon-btn{width:46px;height:46px}
+  .sheet-controls .play-btn.huge{width:64px;height:64px}
+  .sheet-extra{gap:6px}
+  .chip{height:28px;padding:0 10px;font-size:11px}
+  .sheet .viz{height:24%;opacity:.3}
+  .queue-panel{width:100%}
+  .lib-loading-box{padding:0 20px}
+
+  /* ── 特效降级：手机上模糊和动画最贵 ── */
+  .bg-grid{display:none}
+  .bg-aurora.a2,.bg-aurora.a3{display:none}
+  .bg-aurora{opacity:.34;filter:blur(58px)}
+  .lib-loading,.queue-panel{backdrop-filter:none}
+}
+
+/* ── 手机横屏：宽度常常 >760，靠「矮」识别（Electron 窗口最小高度 640，不会误伤） ── */
+@media (max-height:560px) and (max-width:980px){
+  .sheet .viz{display:none}
+  .sheet-inner{
+    display:grid;max-width:none;justify-content:center;
+    grid-template-columns:auto minmax(0,min(52vw,460px));
+    grid-template-rows:auto auto auto auto auto;
+    grid-template-areas:"top top" "stage meta" "stage scrub" "stage controls" "stage extra";
+    align-content:center;row-gap:10px;column-gap:clamp(16px,3vw,40px);
+    padding:calc(8px + var(--sat)) 20px calc(10px + var(--sab));
+  }
+  .sheet-top{grid-area:top}
+  .sheet-stage{grid-area:stage;margin:0;flex:none}
+  .sheet-cover{width:min(46vh,230px)}
+  .sheet-meta{grid-area:meta;text-align:left}
+  .sheet-scrub-row{grid-area:scrub}
+  .sheet-controls{grid-area:controls;justify-content:flex-start}
+  .sheet-extra{grid-area:extra;justify-content:flex-start;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}
+  .sheet-extra .chip{flex:none}
+  .album-hero{flex-wrap:nowrap}
+  .hero-cover{width:96px;height:96px}
+}
+
+/* ── 触屏：取消只在鼠标上成立的效果 ── */
+@media (hover:none){
+  .card:hover{transform:none}
+  .card:hover::before{opacity:0}
+  .icon-btn:hover{background:transparent;color:var(--txt-2);transform:none}
+  .btn:hover,.chip:hover{transform:none}
+  .chip:hover{background:rgba(255,255,255,.035);border-color:var(--line);color:var(--txt-2)}
+  .track:hover{background:transparent}
+  .card-play{opacity:1;transform:none}
+  .cat-item .cat-edit{opacity:.7}
+  /* 触屏没有 hover，竖向音量弹层用不上（原来横向条在触屏上也是隐藏的） */
+  .vol-pop{display:none}
+}

@@ -32,6 +32,7 @@
       btnBack15: $('btnBack15'), btnFwd15: $('btnFwd15'),
       pbCur: $('pbCur'), pbDur: $('pbDur'), pbScrub: $('pbScrub'), pbTip: $('pbTip'),
       btnRate: $('btnRate'), btnLoop: $('btnLoop'), btnVol: $('btnVol'), volScrub: $('volScrub'), btnExpand: $('btnExpand'),
+      volNum: $('volNum'), vVolNum: $('vVolNum'),
       sheet: $('sheet'), btnCollapse: $('btnCollapse'),
       sheetCover: $('sheetCover'), shTitle: $('shTitle'), shSub: $('shSub'),
       shCur: $('shCur'), shDur: $('shDur'), shScrub: $('shScrub'), shTip: $('shTip'),
@@ -403,14 +404,10 @@
 
     const head = '<div class="view-head"><div>' +
       '<div class="page-title">全部专辑<span class="accent"> · </span><span style="font-size:14px;color:var(--dim);font-weight:500">' + esc(libLabel()) + '</span></div>' +
-      '<div class="page-sub">共 ' + s.albums + ' 个专辑 · ' + s.tracks + ' 集有声内容，' + (FM.fs.server ? '存放在主机' : '全部存放在本机') + '</div></div></div>';
+      '<div class="page-sub">' + s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size) +
+        (s.done ? ' · 已听完 ' + s.done + ' 集' : '') +
+        '，' + (FM.fs.server ? '存放在主机' : '全部存放在本机') + '</div></div></div>';
 
-    const stats = '<div class="stats">' +
-      '<div class="stat"><b>' + s.albums + '</b><span>专辑</span></div>' +
-      '<div class="stat"><b>' + s.tracks + '</b><span>单集</span></div>' +
-      '<div class="stat"><b>' + fmtS(s.size) + '</b><span>总容量</span></div>' +
-      '<div class="stat"><b>' + s.done + '</b><span>已听完</span></div>' +
-      '</div>';
 
     let resume = '';
     const cont = continueList(1)[0];
@@ -421,7 +418,7 @@
       const pct = d ? Math.min(100, Math.round((p.p || 0) / d * 100)) : 0;
       if (a) {
         resume = '<div class="resume-card" style="' + U.coverVars(a.seed) + '">' +
-          '<div class="resume-cover">' + (a.cover
+          '<div class="resume-cover" data-act="open-album" data-id="' + a.id + '" title="查看专辑">' + (a.cover
             ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">'
             : '<span>' + esc(initialOf(a)) + '</span>') + '</div>' +
           '<div class="resume-body">' +
@@ -440,7 +437,7 @@
       ? '<div style="margin-top:22px;text-align:center"><button class="link-btn" data-act="toggle-hidden">' + (state.showHidden ? '隐藏 ' : '显示 ') + hiddenCount + ' 个已隐藏专辑</button></div>'
       : '';
 
-    wrap.innerHTML = head + stats + resume +
+    wrap.innerHTML = head + resume +
       (all.length ? gridHtml(all) : '') + hiddenLink;
     return wrap;
   }
@@ -720,27 +717,36 @@
     const v = refs.view;
     const srv = !!FM.fs.server;
     const secure = FM.fs.supportsPicker();
+    const app = !srv && !!FM.android;      /* 安卓壳里但没读到库 */
+    /* 三种空状态：远端有库 / 壳里读不到库 / 本机浏览器还没选目录 */
+    let text, steps, actions;
+    if (srv) {
+      text = '远端模式：资源库由主机上的目录「' + esc(FM.fs.rootName || '远程资源库') + '」提供。<br>加书请在主机上放进这个目录，再点下面的重新扫描。';
+      steps = '<span class="step"><b>1</b>主机放入音频</span>' +
+        '<span class="step"><b>2</b>重新扫描</span>' +
+        '<span class="step"><b>3</b>分类、倍速、播放</span>';
+      actions = '<button class="btn btn-primary" data-act="rescan" style="height:44px;padding:0 26px">' + icon('refresh') + '重新扫描</button>';
+    } else if (app) {
+      text = '还没读到电脑上的资源库。<br>先在电脑端添加一个有声书目录，或确认服务是否在运行。';
+      steps = '<span class="step"><b>1</b>电脑上运行服务</span>' +
+        '<span class="step"><b>2</b>添加资源库</span>' +
+        '<span class="step"><b>3</b>手机自动读到</span>';
+      actions = '<button class="btn btn-primary" data-act="retry" style="height:44px;padding:0 26px">' + icon('refresh') + '重试连接</button>' +
+        '<button class="btn" data-act="app-settings" style="height:44px;padding:0 20px">' + icon('edit') + '服务器地址</button>';
+    } else {
+      text = '选择一个存放有声书的文件夹，星海 FM 会自动扫描并整理成专辑。<br>音频不会上传、不会联网，关掉网络也能照常收听。';
+      steps = '<span class="step"><b>1</b>选择文件夹</span>' +
+        '<span class="step"><b>2</b>自动扫描</span>' +
+        '<span class="step"><b>3</b>分类、倍速、离线播放</span>';
+      actions = '<button class="btn btn-primary" data-act="scan" style="height:44px;padding:0 26px">' + icon('folder') + '添加资源库</button>';
+    }
     v.innerHTML = '<div class="welcome">' +
       '<div class="welcome-orbit"><i></i><i></i><i></i><div class="core">' + icon('headphones') + '</div></div>' +
       '<h1>让本地的声音<em>活起来</em></h1>' +
-      (srv
-        ? '<p>远端模式：资源库由主机上的目录「' + esc(FM.fs.rootName || '远程资源库') + '」提供。<br>加书请在主机上放进这个目录，再点下面的重新扫描。</p>'
-        : '<p>选择一个存放有声书的文件夹，星海 FM 会自动扫描并整理成专辑。<br>音频不会上传、不会联网，关掉网络也能照常收听。</p>') +
-      '<div class="steps">' +
-        (srv
-          ? '<span class="step"><b>1</b>主机放入音频</span>' +
-            '<span class="step"><b>2</b>重新扫描</span>' +
-            '<span class="step"><b>3</b>分类、倍速、播放</span>'
-          : '<span class="step"><b>1</b>选择文件夹</span>' +
-            '<span class="step"><b>2</b>自动扫描</span>' +
-            '<span class="step"><b>3</b>分类、倍速、离线播放</span>') +
-      '</div>' +
-      '<div style="display:flex;gap:10px;margin-top:6px">' +
-        (srv
-          ? '<button class="btn btn-primary" data-act="rescan" style="height:44px;padding:0 26px">' + icon('refresh') + '重新扫描</button>'
-          : '<button class="btn btn-primary" data-act="scan" style="height:44px;padding:0 26px">' + icon('folder') + '添加资源库</button>') +
-      '</div>' +
-      (!srv && !secure ? '<div class="notice" style="max-width:520px;text-align:left">' + icon('moon') +
+      '<p>' + text + '</p>' +
+      '<div class="steps">' + steps + '</div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:6px">' + actions + '</div>' +
+      (!srv && !app && !secure ? '<div class="notice" style="max-width:520px;text-align:left">' + icon('moon') +
         '<div>当前以 file:// 方式打开，浏览器会禁用目录记忆功能，每次打开都需要重新选择文件夹。<br>而且这种模式的资源库列表只存在这个页面自己的存储里，和桌面版 / 网址访问用的不是同一份。<br>想让它们统一，用 <b>启动.bat</b>（localhost）或桌面版打开。</div></div>' : '') +
     '</div>';
   }
@@ -901,6 +907,7 @@
         case 'edit-cat': if (!readonlyBlocked()) editCat(id); break;
         case 'back': history.back(); break;
         case 'resume': { const t = L.track(id); if (t) P.playTrack(t); break; }
+        case 'open-album': if (id) go('#/album/' + id); break;
         case 'row-play': {
           const t = L.track(id);
           if (!t) break;
@@ -921,6 +928,8 @@
         }
         case 'scan': addLibFlow(); break;
         case 'rescan': doScan(); break;
+        case 'retry': location.reload(); break;
+        case 'app-settings': if (FM.android) FM.android.openSettings(); break;
         case 'lib-menu': openLibMenu(actEl); break;
         case 'relocate-lib': relocateFlow(FM.fs.active(), null); break;
         case 'toggle-hidden': state.showHidden = !state.showHidden; FM.db.setState(Object.assign(FM.db.state(), { showHidden: state.showHidden })); FM.store.touch('state'); renderAll(); break;
@@ -1384,10 +1393,12 @@
   }
 
   function paintVolume(v, muted) {
-    const pct = Math.round((muted ? 0 : v) * 100) + '%';
+    const n = Math.round((muted ? 0 : v) * 100);
     const ic = icon(muted || v === 0 ? 'mute' : 'volume');
-    refs.volScrub.style.setProperty('--p', pct);
-    refs.vVolScrub.style.setProperty('--p', pct);
+    refs.volScrub.style.setProperty('--p', n + '%');
+    refs.vVolScrub.style.setProperty('--p', n + '%');
+    if (refs.volNum) refs.volNum.textContent = n;
+    if (refs.vVolNum) refs.vVolNum.textContent = n;
     refs.btnVol.innerHTML = ic;
     refs.vVol.innerHTML = ic;
   }
@@ -1450,6 +1461,16 @@
     refs.shFwd.addEventListener('click', function () { P.jumpBy(15); });
     refs.btnVol.addEventListener('click', function () { P.toggleMute(); });
     refs.btnLoop.addEventListener('click', function () { P.cycleLoop(); toast('播放模式：' + P.loopLabel); });
+
+    /* 播放条左侧整块（封面+标题+副标题）点击进专辑详情；收藏键除外 */
+    const pbLeft = refs.playerbar.querySelector('.pb-left');
+    if (pbLeft) {
+      pbLeft.addEventListener('click', function (e) {
+        if (e.target.closest('#pbFav')) return;
+        const t = P.current;
+        if (t && t.albumId) go('#/album/' + t.albumId);
+      });
+    }
 
     refs.pbFav.addEventListener('click', toggleFavOfCurrent);
     refs.shFav.addEventListener('click', toggleFavOfCurrent);
@@ -1573,6 +1594,7 @@
       preview: (r, text) => { refs.shTip.textContent = text; refs.shTip.style.setProperty('--tipx', (r * 100) + '%'); }
     });
     setupScrub(refs.volScrub, {
+      vertical: true, self: true, holder: '.vol-wrap',
       seek: r => P.setVolume(r),
       preview: null,
       live: r => P.setVolume(r)
@@ -1582,6 +1604,7 @@
       preview: (r, text) => { refs.vTip.textContent = text; refs.vTip.style.setProperty('--tipx', (r * 100) + '%'); }
     });
     setupScrub(refs.vVolScrub, {
+      vertical: true, self: true, holder: '.vol-wrap',
       seek: r => P.setVolume(r),
       preview: null,
       live: r => P.setVolume(r)
@@ -1590,11 +1613,14 @@
 
   function setupScrub(root, opt) {
     if (!root) return;
-    const track = root.querySelector('.scrub-track');
+    /* self：容器本身就是轨道（竖向音量条）；vertical：按 Y 取比例，底大顶小 */
+    const track = opt.self ? root : root.querySelector('.scrub-track');
+    const holder = opt.holder ? root.closest(opt.holder) : null;
     let dragging = false;
-    function ratioAt(x) {
+    function ratioAt(e) {
       const r = track.getBoundingClientRect();
-      return U.clamp((x - r.left) / Math.max(1, r.width), 0, 1);
+      if (opt.vertical) return U.clamp(1 - (e.clientY - r.top) / Math.max(1, r.height), 0, 1);
+      return U.clamp((e.clientX - r.left) / Math.max(1, r.width), 0, 1);
     }
     function apply(r) {
       root.style.setProperty('--p', (r * 100) + '%');
@@ -1607,13 +1633,14 @@
       dragging = true;
       scrubbing = true;
       root.classList.add('dragging');
+      if (holder) holder.classList.add('dragging');      /* 竖向音量：拖动时弹层别收起来 */
       root.setPointerCapture && root.setPointerCapture(e.pointerId);
-      const r = ratioAt(e.clientX);
+      const r = ratioAt(e);
       apply(r);
       if (opt.live) opt.live(r);
     });
     root.addEventListener('pointermove', function (e) {
-      const r = ratioAt(e.clientX);
+      const r = ratioAt(e);
       if (dragging) { apply(r); if (opt.live) opt.live(r); }
       else if (opt.preview) opt.preview(r, (P.media.duration ? fmtT(P.media.duration * r) : '--:--'));
     });
@@ -1622,12 +1649,14 @@
       dragging = false;
       scrubbing = false;
       root.classList.remove('dragging');
-      const r = ratioAt(e.clientX);
+      if (holder) holder.classList.remove('dragging');
+      const r = ratioAt(e);
       opt.seek && opt.seek(r);
       if (opt.live) opt.live(r);
     });
     root.addEventListener('pointercancel', function () {
       dragging = false; scrubbing = false; root.classList.remove('dragging');
+      if (holder) holder.classList.remove('dragging');
     });
   }
 
@@ -1729,6 +1758,9 @@
     });
     if (list.length) items.push({ sep: true });
     items.push({ label: '资源库设置…', icon: 'edit', onClick: openLibDrawer });
+    if (FM.android) {
+      items.push({ label: '服务器地址…', icon: 'chevron', onClick: function () { FM.android.openSettings(); } });
+    }
     if (FM.fs.desktop) {
       items.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'chevron', onClick: openRemoteDialog });
     }
@@ -1759,11 +1791,22 @@
       add.onclick = function () { close(); addLibFlow(); };
       foot.appendChild(add);
     }
-    /* 远程模式：底部点一下就是服务器设置（可断开） */
+    /* 远程模式：底部是服务器入口，状态点 + 主机名两行，别做成看不懂的箭头按钮 */
     if (FM.fs.remote) {
-      const srv = U.el('button', { class: 'btn btn-ghost lib-remote-btn', html: icon('chevron') + '<span>' + esc(remoteHost()) + '</span>' });
+      const lk = FM.fs.link;
+      const tag = lk === 'offline' ? ' · 离线' : (lk === 'auth' ? ' · 未授权' : '');
+      const srv = U.el('button', { class: 'btn btn-ghost lib-remote-btn' + (lk === 'online' ? '' : ' warn'), title: '远程服务器设置' });
+      srv.innerHTML = '<i class="link-dot"></i>' +
+        '<span class="remote-txt"><b>远程服务器' + tag + '</b><small>' + esc(remoteHost()) + '</small></span>';
       srv.onclick = function () { close(); openRemoteDialog(); };
       foot.appendChild(srv);
+    }
+    /* 壳里没有「在文件夹中打开」这类本地动作，换成唯一有用的：换服务器 */
+    if (FM.android) {
+      const appBtn = U.el('button', { class: 'btn btn-ghost lib-remote-btn', title: '服务器地址' });
+      appBtn.innerHTML = '<span class="remote-txt"><b>服务器地址</b><small>' + esc(FM.android.base() || '未设置') + '</small></span>';
+      appBtn.onclick = function () { close(); FM.android.openSettings(); };
+      foot.appendChild(appBtn);
     }
     const done = U.el('button', { class: 'btn btn-primary', text: '完成' });
     done.onclick = function () { close(); };

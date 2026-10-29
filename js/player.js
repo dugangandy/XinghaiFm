@@ -133,6 +133,8 @@
       if (objectRevoke) { objectRevoke(); objectRevoke = null; }
       objectUrl = s.url;
       objectRevoke = s.revoke;
+      /* 远程库的媒体是跨源的：不声明 CORS，WebAudio 的 MediaElementSource 会把采样全输出 0（进度条走、没声音） */
+      media.crossOrigin = FM.fs.remote ? 'anonymous' : null;
       media.src = objectUrl;
       media.playbackRate = rate;
       media.load();

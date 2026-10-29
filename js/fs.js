@@ -9,6 +9,8 @@
   const U = FM.util;
 
   const NATIVE = !!(typeof window !== 'undefined' && window.fmNative && window.fmNative.isDesktop);
+  /* 安卓壳：没有 showDirectoryPicker，也没有本地目录，只能走服务端 */
+  const APP = !!(typeof window !== 'undefined' && window.fmAndroid);
   const MEDIA = FM.media.ALL;
   const MAX_DEPTH = 3;
   const SKIP = /^[._]|^(fm|\$RECYCLE\.BIN|System Volume Information|node_modules)$/i;
@@ -282,6 +284,10 @@
           libs = [{ id: 'server', name: srv.rootName || '远程资源库', path: '', missing: false, fixed: true }];
           activeId = 'server';
         }
+      } else if (APP) {
+        /* 壳里连不上服务端时别退到选目录模式：那条路在 WebView 里根本走不通 */
+        libs = [];
+        activeId = null;
       } else {
         libs = readWebLibs();
         activeId = FM.store.read('activeLib', null);
@@ -316,6 +322,7 @@
       applyMode();
       return activeLib;
     }
+    if (APP) throw new Error('请先在电脑端添加资源库');
     if (serverMode) {
       const p = String(preset || '').trim();
       if (!p) throw new Error('服务器模式需要填入服务器上的目录路径');

@@ -31,7 +31,8 @@ const zlib = require('node:zlib');
 
 const APP_ROOT = path.resolve(__dirname, '..');
 const COVER_DIR = '.fm-covers';
-const AUTH_FILE = path.join(APP_ROOT, '.auth.json');
+/* 口令文件可重定向（测试/多实例用），默认项目根目录 */
+const AUTH_FILE = process.env.FM_AUTH_FILE ? path.resolve(process.env.FM_AUTH_FILE) : path.join(APP_ROOT, '.auth.json');
 const MEDIA_EXT = new Set([
   'm4a', 'm4b', 'mp3', 'aac', 'flac', 'wav', 'ogg', 'opus', 'wma', 'ape',
   'mp4', 'm4v', 'mov', 'webm', 'ogv'
@@ -55,12 +56,7 @@ let CHECK_PASSWORD = false;
 (function parse() {
   const a = process.argv.slice(2);
   for (let i = 0; i < a.length; i++) {
-    if (a[i] === '--root') {
-      /* 老脚本可能还带着它：明确提示一下，不要静默忽略 */
-      console.warn('[参数] --root 已移除，库列表只认 config.json 的 libs；要换配置请用 --config <file>');
-      i++;
-    }
-    else if (a[i] === '--config') CONFIG_FILE = path.resolve(a[++i] || '');
+    if (a[i] === '--config') CONFIG_FILE = path.resolve(a[++i] || '');
     else if (a[i] === '--allow-lib-edit') ALLOW_LIB_EDIT = true;
     else if (a[i] === '--host') host = a[++i] || host;
     else if (a[i] === '--set-password') SET_PASSWORD = a[++i] || '';
