@@ -34,6 +34,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONObject
 
 class MainActivity : Activity() {
 
@@ -55,6 +56,7 @@ class MainActivity : Activity() {
     private var customCallback: WebChromeClient.CustomViewCallback? = null
     private var loadFailed = false
     private var lastBack = 0L
+    private var authRetried = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -198,6 +200,13 @@ class MainActivity : Activity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 if (!loadFailed) hideOffline()
+                /* 兜底：有 token 却被跳到登录页（cookie 竞态），补种 cookie 再刷一次 */
+                if (!authRetried && url.contains("/__auth") &&
+                    getSharedPreferences(PREFS, MODE_PRIVATE).getString("token", "").orEmpty().isNotEmpty()
+                ) {
+                    authRetried = true
+                    applyAuthCookies { runOnUiThread { view.loadUrl(serverBase() + "/") } }
+                }
             }
         }
 
@@ -212,7 +221,25 @@ class MainActivity : Activity() {
 
     private fun load() {
         loadFailed = false
-        web?.loadUrl(serverBase() + "/")
+        /* 先把会话 cookie 写好（带回调），再加载，避免导航早于 cookie 生效 */
+        applyAuthCookies { runOnUiThread { web?.loadUrl(serverBase() + "/") } }
+    }
+
+    /* 从 prefs 读取 token/uid，种成 fm_sess / fm_uid，完成后回调 */
+    private fun applyAuthCookies(onDone: () -> Unit) {
+        val p = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val token = p.getString("token", "").orEmpty()
+        val base = serverBase()
+        if (token.isEmpty() || base.isEmpty()) { onDone(); return }
+        val uid = p.getString("uid", "").orEmpty()
+        val cm = CookieManager.getInstance()
+        cm.setAcceptCookie(true)
+        cm.setCookie(base, "fm_sess=" + token + "; Path=/", null)
+        if (uid.isNotEmpty()) {
+            cm.setCookie(base, "fm_uid=" + uid + "; Path=/") { _ -> cm.flush(); onDone() }
+        } else {
+            cm.flush(); onDone()
+        }
     }
 
     /* ── 连不上电脑：给一张能自己救回来的页面 ── */
@@ -385,10 +412,12 @@ class MainActivity : Activity() {
                     saveBase(b)
                     if (b.isEmpty()) showSetup() else mountWeb()
                 }
-                .setNeutralButton("清除登录") { _, _ ->
+                .setNeutralButton("退出登录") { _, _ ->
                     CookieManager.getInstance().removeAllCookies(null)
                     CookieManager.getInstance().flush()
-                    load()
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("token").apply()
+                    startActivity(Intent(this@MainActivity, LoginActivity::class.java))
+                    finish()
                 }
                 .setNegativeButton("取消", null)
                 .show()
@@ -456,6 +485,21 @@ class MainActivity : Activity() {
             val p = if (posMs.isFinite()) posMs.toLong().coerceIn(0L, MAX_MS) else 0L
             val d = if (durMs.isFinite()) durMs.toLong().coerceIn(0L, MAX_MS) else 0L
             runOnUiThread { PlaybackService.current?.updateProgress(p, d) }
+        }
+
+        /* 网页把整条视频队列交给原生播放器：{ list:[{rel,id,title,sub}], index, start(ms), autoplay } */
+        @JavascriptInterface
+        fun playVideo(json: String) {
+            runOnUiThread {
+                val obj = runCatching { JSONObject(json) }.getOrNull() ?: return@runOnUiThread
+                val list = obj.optJSONArray("list")?.toString() ?: "[]"
+                val i = Intent(this@MainActivity, VideoPlayerActivity::class.java)
+                i.putExtra("list", list)
+                i.putExtra("index", obj.optInt("index", 0))
+                i.putExtra("start", obj.optLong("start", 0L))
+                i.putExtra("autoplay", obj.optBoolean("autoplay", true))
+                startActivity(i)
+            }
         }
 
         @JavascriptInterface

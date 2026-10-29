@@ -43,6 +43,9 @@
   let sleepTimer = null;
   let sleepEnd = 0;
   let artCache = new Map();
+  let nativeVideo = false;    // 壳内视频交给原生播放器
+  let nativePlaying = false;
+  let nativeRemoteAt = 0;
 
   const st = FM.db.state();
   let rate = snapRate(st.rate || 1);
@@ -137,6 +140,35 @@
     const o = opts || {};
     const my = ++loadToken;
     cur = track;
+    /* 壳内视频：整条队列交给原生播放器，网页不碰 <video> */
+    if (track.kind === 'video' && FM.android) {
+      nativeVideo = true;
+      nativePlaying = false;
+      try { if (audioEl) stopEl(audioEl); } catch (e) {}
+      setKind('video');
+      ev.emit('track', track, { restored: false });
+      updateSession(track);
+      /* 选集列表用整张专辑的视频集，保证条目完整（不受当前队列子集影响） */
+      const albumAll = FM.lib.albumTracks(track.albumId).filter(function (t) { return t.kind === 'video'; });
+      const listSrc = albumAll.length ? albumAll : (queue.length ? queue : [track]);
+      let idx = listSrc.findIndex(function (t) { return t.id === track.id; });
+      if (idx < 0) idx = 0;
+      const list = listSrc.map(function (t) {
+        const alb = FM.lib.album(t.albumId);
+        return { rel: t.rel, id: t.id, title: t.title, sub: alb ? alb.title : '' };
+      });
+      const p0 = FM.lib.progressOf(track.id);
+      let start0 = o.seek;
+      if (start0 == null && p0 && p0.p > 3 && (!p0.d || p0.p < p0.d - 8)) start0 = p0.p;
+      FM.android.playVideo({
+        list: list,
+        index: idx,
+        start: Math.max(0, Math.round((start0 || 0) * 1000)),
+        autoplay: o.autoplay !== false
+      });
+      return;
+    }
+    nativeVideo = false;
     const el = track.kind === 'video' ? videoEl : audioEl;
     if (media !== el) { stopEl(media); media = el; }
     setKind(track.kind === 'video' ? 'video' : 'audio');
@@ -202,6 +234,7 @@
   /* ── 播放控制 ── */
   async function play() {
     if (!cur) return;
+    if (nativeVideo) return;
     if (!media.src) { await load(cur, { autoplay: true }); return; }
     try {
       await media.play();
@@ -210,14 +243,16 @@
     }
   }
 
-  function pause() { if (media.src) media.pause(); }
+  function pause() { if (nativeVideo) return; if (media.src) media.pause(); }
 
   function toggle() {
     if (!cur) return;
+    if (nativeVideo) return;
     if (media.paused) play(); else pause();
   }
 
   function seek(t) {
+    if (nativeVideo) return;
     if (!media.src || !isFinite(media.duration)) return;
     media.currentTime = U.clamp(t, 0, media.duration || 0);
     ev.emit('time', media.currentTime, media.duration);
@@ -470,18 +505,72 @@
   setVolume(volume);
   bindSession();
 
+  /* 原生视频播放器回传的事件（track/time/state/ended/closed） */
+  function onNative(type, data) {
+    data = data || {};
+    if (type === 'track') {
+      /* 原生列表索引可能和网页队列不同：按 id 对齐 */
+      if (data.id) {
+        const qi = queue.findIndex(function (t) { return t.id === data.id; });
+        if (qi >= 0 && qi !== index) {
+          index = qi; cur = queue[qi];
+          ev.emit('track', cur, { restored: true });
+          ev.emit('queue', queue, index);
+        }
+      }
+    } else if (type === 'time') {
+      nativePlaying = !!data.playing;
+      const p = Number(data.cur) || 0;
+      const d = Number(data.dur) || 0;
+      if (data.id && d > 0) {
+        const done = p / d > 0.965;
+        FM.lib.setProgress(data.id, p, d, done);
+        if (FM.fs.server) {
+          const now = Date.now();
+          if (now - nativeRemoteAt > 10000) {
+            nativeRemoteAt = now;
+            FM.fs.pushProgress({ id: data.id, p: p, d: d, t: now, done: done });
+          }
+        }
+      }
+      ev.emit('time', p, d);
+    } else if (type === 'state') {
+      nativePlaying = !!data.playing;
+      ev.emit('state', nativePlaying);
+    } else if (type === 'ended') {
+      ev.emit('end', cur);
+    } else if (type === 'closed') {
+      /* 关闭时把最终进度落盘（后台期间 JS 可能没执行，兜底） */
+      const p = Number(data.cur) || 0;
+      const d = Number(data.dur) || 0;
+      if (data.id && d > 0) {
+        const done = p / d > 0.965;
+        FM.lib.setProgress(data.id, p, d, done);
+        if (FM.fs.server) FM.fs.pushProgress({ id: data.id, p: p, d: d, t: Date.now(), done: done });
+      }
+      nativeVideo = false;
+      nativePlaying = false;
+      if (data.id) {
+        const qi = queue.findIndex(function (t) { return t.id === data.id; });
+        if (qi >= 0) index = qi;
+      }
+      ev.emit('state', false);
+    }
+  }
+
   FM.player = {
     on: ev.on,
     play, pause, toggle, stop, seek, seekRatio, jumpBy,
     next, prev, setQueue, playAlbum, playTrack, addToQueue,
     setRate, cycleRate, setVolume, toggleMute, cycleLoop, setSleep, togglePip,
-    restoreLast, saveProgress,
+    restoreLast, saveProgress, onNative,
     artworkFor,
     get current() { return cur; },
     get queue() { return queue; },
     get index() { return index; },
     get kind() { return kind; },
-    get playing() { return !media.paused && !!media.src; },
+    get playing() { return nativeVideo ? nativePlaying : (!media.paused && !!media.src); },
+    get nativeVideo() { return nativeVideo; },
     get rate() { return rate; },
     get volume() { return media.muted ? 0 : media.volume; },
     get muted() { return media.muted; },

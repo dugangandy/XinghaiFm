@@ -52,6 +52,9 @@ android {
     }
 }
 
-/* 零第三方运行时依赖：WebView / MediaSession / 通知全用平台 API */
+/* 原生视频播放引入 Media3 + OkHttp（Phase 1 起为正式依赖）；音频/WebView 仍走平台 API */
 dependencies {
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

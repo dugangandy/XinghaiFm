@@ -23,7 +23,7 @@
     try {
       NATIVE.setTrack(t ? t.title : '', a ? a.title : '');
       NATIVE.setNav(p.index > 0, p.index >= 0 && q.length > 0 && p.index < q.length - 1);
-      NATIVE.setPlaying(!!p.playing);
+      NATIVE.setPlaying(p.nativeVideo ? false : !!p.playing);
     } catch (e) {
       /* 桥断了不影响播放 */
     }
@@ -48,6 +48,18 @@
     else if (cmd === 'next') p.next();
     else if (cmd === 'prev') p.prev();
     syncMedia(true);
+  }
+
+  /* 视频交给原生播放器：整条队列 + 起始位置 */
+  function playVideo(opts) {
+    try { NATIVE.playVideo(JSON.stringify(opts || {})); } catch (e) {}
+  }
+
+  /* 原生播放器回传事件 → 播放内核 */
+  function onNativeVideo(type, json) {
+    let data = null;
+    try { data = json ? JSON.parse(json) : null; } catch (e) {}
+    try { if (FM.player && FM.player.onNative) FM.player.onNative(type, data); } catch (e) {}
   }
 
   /* 全屏：壳负责隐藏系统栏 + 横屏，网页只把画面铺满（WebView 的 requestFullscreen 不可靠） */
@@ -106,6 +118,8 @@
     mediaAction,
     back,
     fullscreen,
+    playVideo,
+    onNativeVideo,
     get fullscreenOn() { return document.body.classList.contains('app-fs'); },
     openSettings: function () { try { NATIVE.openSettings(); } catch (e) {} },
     base: function () { try { return NATIVE.baseUrl(); } catch (e) { return ''; } },
