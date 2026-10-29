@@ -12,6 +12,7 @@ out/
 # 本地敏感配置（登录凭据 / 隧道服务器信息）
 .auth.json
 .tunnel.json
+启动-公网.bat
 config.json
 appdata/
 
