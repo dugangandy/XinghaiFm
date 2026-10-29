@@ -42,6 +42,7 @@ class MainActivity : Activity() {
         private const val KEY_BASE = "base"
         private const val BG = 0xFF05070E.toInt()
         private const val NOTI_PERM = 11
+        private const val MAX_MS = 24L * 60 * 60 * 1000
 
         @Volatile
         var current: MainActivity? = null
@@ -447,6 +448,14 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun setNav(hasPrev: Boolean, hasNext: Boolean) {
             runOnUiThread { PlaybackService.current?.updateNav(hasPrev, hasNext) }
+        }
+
+        @JavascriptInterface
+        fun setProgress(posMs: Double, durMs: Double) {
+            /* NaN / Infinity → 0；上限 24 小时，防止脏值把锁屏时长撑爆 */
+            val p = if (posMs.isFinite()) posMs.toLong().coerceIn(0L, MAX_MS) else 0L
+            val d = if (durMs.isFinite()) durMs.toLong().coerceIn(0L, MAX_MS) else 0L
+            runOnUiThread { PlaybackService.current?.updateProgress(p, d) }
         }
 
         @JavascriptInterface

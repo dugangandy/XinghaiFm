@@ -23,6 +23,7 @@ import android.media.session.PlaybackState
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 
 class PlaybackService : Service() {
 
@@ -54,6 +55,8 @@ class PlaybackService : Service() {
     private var sub = ""
     private var hasPrev = false
     private var hasNext = false
+    private var position = 0L
+    private var duration = 0L
 
     val isPlaying: Boolean get() = playing
 
@@ -135,6 +138,13 @@ class PlaybackService : Service() {
         refresh()
     }
 
+    /* ── 网页回传的播放进度（毫秒）── */
+    fun updateProgress(posMs: Long, durMs: Long) {
+        position = posMs
+        duration = durMs
+        refresh(notify = false)
+    }
+
     /* ── 把指令送回网页里的播放器 ── */
     private fun act(cmd: String) {
         val js = when (cmd) {
@@ -167,15 +177,18 @@ class PlaybackService : Service() {
         }
     }
 
-    private fun refresh() {
+    private fun refresh(notify: Boolean = true) {
         val s = session ?: return
         s.setMetadata(
             MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title.ifEmpty { "星海 FM" })
                 .putString(MediaMetadata.METADATA_KEY_ARTIST, sub)
                 .putString(MediaMetadata.METADATA_KEY_ALBUM, "星海 FM")
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, if (duration > 0) duration else 0L)
                 .build()
         )
+        val state = if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED
+        val speed = if (playing) 1f else 0f
         s.setPlaybackState(
             PlaybackState.Builder()
                 .setActions(
@@ -184,10 +197,10 @@ class PlaybackService : Service() {
                         (if (hasNext) PlaybackState.ACTION_SKIP_TO_NEXT else 0L) or
                         (if (hasPrev) PlaybackState.ACTION_SKIP_TO_PREVIOUS else 0L)
                 )
-                .setState(if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED, PlaybackState.PLAYBACK_POSITION_UNKNOWN, if (playing) 1f else 0f)
+                .setState(state, position, speed, SystemClock.elapsedRealtime())
                 .build()
         )
-        runCatching {
+        if (notify) runCatching {
             getSystemService(NotificationManager::class.java)?.notify(NOTI_ID, build())
         }
     }

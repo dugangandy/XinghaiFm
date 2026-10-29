@@ -1268,7 +1268,7 @@
   function applyKind(kind) {
     const isVideo = kind === 'video';
     refs.sheet.classList.toggle('is-video', isVideo);
-    refs.vStage.hidden = !isVideo;
+    refs.vStage.classList.toggle('vhidden', !isVideo);
     if (refs.pbKind) refs.pbKind.hidden = !isVideo;
     if (isVideo) {
       FM.viz.stop();
@@ -1288,6 +1288,8 @@
 
   function bindVideo() {
     if (!refs.vStage || !refs.media) return;
+    /* 壳里没有系统画中画支持：隐藏按钮，避免点击报错 */
+    if (FM.android && refs.vPip) refs.vPip.style.display = 'none';
     refs.vStage.addEventListener('pointermove', wakeUi);
     refs.vStage.addEventListener('pointerdown', wakeUi);
     refs.vStage.addEventListener('pointerleave', function () { if (P.playing) hideUiNow(); });
@@ -1425,10 +1427,11 @@
   function bindPlayer() {
     P.on('track', function (t, opt) {
       paintTrack(t);
-      /* 用户主动点开视频集才展开播放页；启动恢复上次进度不弹 */
+      /* 用户主动点开视频集才展开播放页；启动恢复上次进度不弹。
+         视频直接看画面：不自动弹选集列表，若之前开着（从音频队列过来）则关掉。 */
       if (t.kind === 'video' && !(opt && opt.restored)) {
         openSheet();
-        if (!queueOpen && P.queue.length > 1) toggleQueue();
+        if (queueOpen) toggleQueue();
       }
     });
     P.on('kind', applyKind);
@@ -1541,7 +1544,7 @@
   function openSheet() {
     refs.sheet.classList.add('open');
     refs.sheet.setAttribute('aria-hidden', 'false');
-    if (P.kind === 'video') { wakeUi(); return; }
+    if (P.kind === 'video') { if (FM.android) setCinema(true); wakeUi(); return; }
     FM.viz.attach();
     FM.viz.resume();
     FM.viz.start();

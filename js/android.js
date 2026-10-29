@@ -112,6 +112,25 @@
     version: function () { try { return NATIVE.version(); } catch (e) { return ''; } }
   };
 
+  /* 播放进度 → 锁屏/通知栏进度条（节流到 1s；seek 大跳变或切集后首帧立即推） */
+  let lastProgPush = 0;
+  let lastPos = -1;
+  let forceNextTime = false;
+  function pushProgress(cur, dur) {
+    const pos = Math.round((cur || 0) * 1000);
+    const d = Math.round((dur || 0) * 1000);
+    const now = Date.now();
+    const jumped = lastPos >= 0 && Math.abs(pos - lastPos) > 2000;
+    if (!forceNextTime && !jumped && now - lastProgPush < 1000) return;
+    forceNextTime = false;
+    lastProgPush = now;
+    lastPos = pos;
+    try { NATIVE.setProgress(pos, d); } catch (e) {}
+  }
+  FM.player.on('time', pushProgress);
+  /* 切集后第一帧带新时长，必须立即推，否则锁屏会短暂沿用上一集的时长 */
+  FM.player.on('track', function () { forceNextTime = true; lastPos = -1; });
+
   /* 播放状态是唯一需要主动上报的东西：其余（切集、界面）都在网页里 */
   FM.player.on('state', function () { syncMedia(true); });
   FM.player.on('track', function () { syncMedia(true); });
