@@ -1,4 +1,13 @@
 #!/usr/bin/env node
+/* 静音 node:sqlite 的 ExperimentalWarning（必须在 require db 之前） */
+(function () {
+  const orig = process.emitWarning;
+  process.emitWarning = function (w, t) {
+    const ty = typeof t === 'string' ? t : (t && t.type);
+    if (ty === 'ExperimentalWarning' || /SQLite/i.test(String(w))) return;
+    return orig.apply(process, arguments);
+  };
+})();
 /* ── tunnel.js · 把本机播放器通过 SSH 反向隧道挂到服务器上 ──────────────
  *
  * 读同目录下的 .tunnel.json，然后：
@@ -13,12 +22,24 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
+const DB = require('../db');
 
 const HERE = __dirname;
 const ROOT = path.join(HERE, '..');
 const CONF = path.join(ROOT, '.tunnel.json');
-const AUTH = path.join(ROOT, '.auth.json');
 const SSH_USER = 'root';
+
+/* fm.db 位置：与 serve.js / 桌面端一致 */
+function desktopDataDir() {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  if (process.platform === 'win32') return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), '星海FM');
+  if (process.platform === 'darwin') return path.join(home, 'Library', 'Application Support', '星海FM');
+  return path.join(home, '.config', '星海FM');
+}
+function dbFilePath() {
+  if (process.env.FM_DATA_FILE) return path.resolve(process.env.FM_DATA_FILE);
+  return path.join(desktopDataDir(), 'fm.db');
+}
 
 function die(msg) {
   console.error(msg);
@@ -42,14 +63,23 @@ catch (e) { die('配置文件不是合法 JSON：' + e.message); }
 const ssh = cfg.ssh || {};
 if (!ssh.host) die('.tunnel.json 里缺 ssh.host');
 
-if (!fs.existsSync(AUTH)) {
-  die([
-    '还没有设置访问口令，先跑一次：',
-    '  node tools/serve.js --set-password 你的口令',
-    '',
-    '（口令只存哈希到 .auth.json，不进 URL）'
-  ].join(String.fromCharCode(10)));
-}
+/* 用户/密码现在存在 fm.db：没有用户就没法启动服务 */
+(function checkUsers() {
+  let n = 0;
+  try {
+    const db = DB.open(dbFilePath());
+    DB.ensureSchema(db);
+    n = DB.countUsers(db);
+  } catch (e) {}
+  if (!n) {
+    die([
+      '还没有任何用户，先跑一次：',
+      '  node tools/init-db.js',
+      '',
+      '（用户名/密码存在 fm.db，不再用 .auth.json）'
+    ].join(String.fromCharCode(10)));
+  }
+})();
 
 const localPort = Number(cfg.localPort || 8080);
 const remotePort = Number(cfg.remotePort || 8889);

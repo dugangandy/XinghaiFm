@@ -16,7 +16,7 @@
 2. 点左上角「选择资源库」，选到有声书所在文件夹
 3. 扫描完成后即可使用；下次启动自动恢复资源库与上次播放位置
 
-- 库列表记在 `%APPDATA%\星海FM\config.json`
+- 库列表记在 `%APPDATA%\星海FM\fm.db`（SQLite）
 - 分类、收藏、播放进度记在该目录下的 LocalStorage
 - 未做代码签名，首次运行若出现 SmartScreen 提示，点「更多信息 → 仍要运行」
 
@@ -160,7 +160,7 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 
 - **源码包**：`dist/XinghaiFM-<版本>-src.zip`，解压后 `npm install && npm start`
 - **出安装包**：解压后双击 `打包-macOS.command`，或 `npm run dist:mac` → `dist/` 里的 dmg / zip
-- **公网隧道**：双击 `启动-公网.command`，先 `node tools/serve.js --set-password` 设口令
+- **公网隧道**：双击 `启动-公网.bat`，先 `node tools/init-db.js` 初始化用户 / 密码
 - 已配好图标 `build/icon.icns`、分类 `public.app-category.music`、应用菜单、最低系统 macOS 12.7.6
 - 无开发者证书时走 ad-hoc 签名，首次打开需「右键 → 打开」
 
@@ -178,20 +178,23 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 
 用「服务器模式 + SSH 反向隧道」让手机或别的电脑听这台机器上的书，音频由 `tools/serve.js` 托管，支持 Range 拖动。
 
-1. **设访问口令**（只存 pbkdf2-sha256 60 万轮哈希，重设会踢掉所有已登录设备）：
+1. **初始化数据库**（首次会自动把旧 `.auth.json`/`config.json` 迁移为 `admin` 用户）：
 
    ```bash
-   node tools/serve.js --set-password 你的口令
+   node tools/init-db.js                        # 迁移旧配置 / 生成 admin
+   node tools/init-db.js --add-user 用户名       # 再加一个用户
+   node tools/init-db.js --set-password admin    # 改密码
    ```
+
+   用户与密码存在 `fm.db`（pbkdf2-sha256 60 万轮哈希），每个用户各自独立的资源库。
 
 2. **只在本机试**：
 
    ```bash
    node tools/serve.js 8080
-   node tools/serve.js 8080 --config /srv/fm/config.json   # 服务器上没有桌面端时
    ```
 
-   打开 `http://127.0.0.1:8080/`，登录后进资源库。
+   打开 `http://127.0.0.1:8080/`，用用户名 + 密码登录后进资源库。
 
 3. **挂到公网**：把 `.tunnel.example.json` 复制成 `.tunnel.json`，填 `ssh.host`（`ssh.key` 留空用 `~/.ssh/id_rsa`），双击 `启动-公网.bat`：
 
@@ -221,7 +224,7 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 - 桌面端有改动约 5 秒写一次；手机播放每 10 秒推一次进度（暂停 / 切集 / 关页面立即推）
 - 桌面启动、窗口重新获得焦点时，把文件里更新的进度合并回本地
 - 远程可切换资源库：服务端通过 `/api/libs` + `/api/activate` 暴露
-- `.tunnel.json` 的 `configFile` 留空 = 读桌面端 `config.json`
+- `.tunnel.json` 的 `configFile` 已弃用（库列表改从 `fm.db` 读）
 - **断线重连**：3 → 6 → 9 秒…（封顶 30 秒），稳定 20 秒后重新计时；连续两次「刚连上就断」会先清残留监听，`Ctrl+C` 手动退出
 - **重连上限**：`maxRetries`（默认 10，0 = 不限），临时改可用 `node tools/tunnel.js --max-retries 3`
 
@@ -237,25 +240,15 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 界面仍是本机的（秒开），书和音频留在服务器上。
 
 1. 服务器起服务：`node tools/serve.js 8080`
-2. 桌面端侧栏「资源库」→ **连接远程服务器…** → 填地址 `http://192.168.1.8:8080`（不带末尾斜杠）+ 口令 → 连接，界面自动重载
+2. 桌面端侧栏「资源库」→ **连接远程服务器…** → 填地址 `http://192.168.1.8:8080`（不带末尾斜杠）+ 用户名 / 密码 → 连接，界面自动重载
 3. 断开：同一入口变成 **远程服务器设置…**，点「断开连接」
 
-- 配置存在 `%APPDATA%\星海FM\remote.json`（macOS：`~/Library/Application Support/星海FM/`），内容 `{ base, token }`；**token 等同口令**
+- 远程地址与 token 存进 `fm.db` 的 `remote` 表，内容 `{ base, token }`；**token 等同该用户的长期登录凭证**
 - token 走 `Authorization: Bearer`；`<audio>` / `<img>` 改用 `GET /api/ticket` 换 2 小时票据挂在 `?t=` 上
 - 服务端已放开跨源，因为桌面页面来自 `fm://app`
 - 远程模式下库列表只读
 - 侧栏标「远程 · N 个资源库」，库徽标小圆点表示链路状态
-- 服务器上没有桌面端时，自写一份 `config.json` 用 `--config` 指过去，改完不用重启（按 mtime 每秒检查）：
-
-  ```json
-  {
-    "active": "a",
-    "libs": [
-      { "id": "a", "name": "有声书", "path": "/data/books/audio" },
-      { "id": "b", "name": "播客",   "path": "/data/books/podcast" }
-    ]
-  }
-  ```
+- 服务器上没有桌面端时：在服务器上 `node tools/init-db.js` 建库并加用户，启动服务加 `--allow-lib-edit`，用浏览器登录后在「资源库设置」里填目录路径
 
 - **明文 http 只建议局域网或 SSH 隧道**，走公网请套 https 反代
 - 掉线后顶栏显示「离线，正在重连…」，按 3 → 6 → 9 → 15 → 30 秒退避；token 失效变成「远程未授权，点此重连」
@@ -264,15 +257,15 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 
 手机端不是独立播放器：它是一个装着本项目的壳，音频仍由电脑上的 `tools/serve.js` 提供。适合"书放在电脑里、手机当随身听"。
 
-1. **电脑端起服务**（第一次先设口令）：
+1. **电脑端起服务**（第一次先初始化数据库）：
    ```bash
-   node tools/serve.js --set-password 你的口令
+   node tools/init-db.js
    node tools/serve.js 8080
    ```
    确认电脑防火墙放行 8080（或改用已配好的 SSH 隧道地址）。
 2. **拿 APK**：仓库的 **Actions → Android APK → Run workflow**，跑完在产物里下载 `XinghaiFM-<版本>-debug.apk`（推送 `v*` 标签也会自动构建）。
 3. **安装**：传到手机点开安装，首次需允许"安装未知应用"。
-4. **首次打开**：填 `http://<电脑局域网 IP>:8080`（可省略 `http://`），点「连接」→ 在登录页输一次口令，之后一直记住。
+4. **首次打开**：填 `http://<电脑局域网 IP>:8080`（可省略 `http://`），点「连接」→ 在登录页输一次用户名 + 密码，之后一直记住。
 
 - 换服务器 / 重新登录：侧栏「资源库」→「服务器地址…」，或资源库设置抽屉底部
 - 手机上分类、收藏、改名是只读的（和浏览器远程访问一致）；播放进度每 10 秒回传，电脑端下次打开自动合并
@@ -288,12 +281,10 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 
 | 文件 | 位置 | 作用 | 能否删 |
 | --- | --- | --- | --- |
-| `config.json` | `%APPDATA%\星海FM\`（macOS：`~/Library/Application Support/星海FM/`） | 资源库列表 + 当前库 | 删了清空库列表，音频不受影响 |
+| `fm.db` | `%APPDATA%\星海FM\`（macOS：`~/Library/Application Support/星海FM/`） | SQLite：用户 / 资源库 / 远程配置 | 删了要重新 `node tools/init-db.js`（音频不受影响） |
 | `.fm-meta.json` | 每个资源库目录内 | 分类 / 收藏 / 改名 + 进度 / 时长 | 删了会重建，远程端暂时看不到分类 |
 | `.fm-covers/covers.json` | 每个资源库目录内 | 封面索引 | 删了只是没封面 |
 | `.tunnel.json` | 项目根目录 | 公网隧道配置 | 删了 `启动-公网.bat` 会提示缺配置 |
-| `remote.json` | 桌面版 userData 目录 | 远程地址 + 长期 token | 删了等于断开远程 |
-| `.auth.json` | 项目根目录 | 访问口令哈希（非明文） | 删了要重新 `--set-password` |
 
 桌面版 LocalStorage 在 `%APPDATA%\星海FM\Local Storage\leveldb`，是分类 / 收藏 / 进度 / 索引缓存的主副本，不用手工改。
 
@@ -306,38 +297,32 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 | `ssh.key` | `""` | 私钥路径，留空用 `~/.ssh/id_rsa` |
 | `localPort` | `8080` | 本地服务端口 |
 | `remotePort` | `8889` | 服务器对外端口 |
-| `configFile` | 自动 | 让服务端读另一份 `config.json` |
+| `configFile` | 自动 | 旧版：指定另一份 `config.json` 作为迁移来源（已弃用） |
 | `allowLibEdit` | `false` | 是否允许网页增删 / 重命名资源库 |
 | `maxRetries` | `10` | 重连上限，0 = 不限 |
 
-### 桌面端 `config.json`
+### 数据库 `fm.db`
 
-```json
-{
-  "libs": [
-    { "id": "l1abcd", "name": "喜马拉雅mp3", "path": "E:/学习资料/喜马拉雅mp3", "addedAt": 1793005585609 }
-  ],
-  "active": "l1abcd"
-}
-```
-
-- 老版本 `{ "root": "..." }` 首次启动自动升级成一条资源库
-- 写入是「先写 `.tmp` 再 `rename`」的原子操作；两端按 mtime 判断重读，一方改动 1 秒内生效
-- 服务端只读，只有开了 `allowLibEdit` 才通过 `/api/lib` 写入
+- SQLite（`node:sqlite`），表：`users` / `libs`（按 `user_id`）/ `remote` / `settings`
+- 桌面端固定使用 `admin` 用户的库；浏览器登录哪个用户，就只看到该用户的库与数据
+- 老版本 `config.json` / `.auth.json` / `remote.json` 在首次运行 `init-db` 或启动桌面端时自动迁移，旧文件改名为 `*.migrated.bak`
+- 服务端只有开了 `--allow-lib-edit` 才通过 `/api/lib` 修改当前用户的库
 
 ### `tools/serve.js` 参数
 
 | 参数 | 说明 |
 | --- | --- |
 | `<port>` | 端口，默认 8080 |
-| `--config <file>` | 指定配置路径（默认自动找 `%APPDATA%\星海FM\config.json`） |
 | `--allow-lib-edit` | 允许远程增删资源库（默认关） |
 | `--host <ip>` | 监听地址，默认 `127.0.0.1` |
-| `--no-auth` | 关掉口令校验，仅本机调试 |
-| `--set-password <口令>` | 设置 / 重设口令 |
-| `--check-password` | 校验当前口令 |
+| `--no-auth` | 免密（仍取第一个用户），仅本机调试 |
+| `--add-user <name> [pw]` | 新增用户 |
+| `--set-password <name> [pw]` | 修改某用户密码 |
+| `--check-password <name> [pw]` | 校验某用户密码 |
+| `--list-users` | 列出用户 |
+| `--remove-user <name>` | 删除用户（连同其库） |
 
-环境变量 `FM_AUTH_FILE`：把口令文件指到别处（默认项目根的 `.auth.json`），测试或多实例时用。
+环境变量 `FM_DATA_FILE`：把数据库文件指到别处（默认 `%APPDATA%\星海FM\fm.db`），测试或多实例时用。
 
 `启动-公网.bat` 自动拼 `<localPort> --host 127.0.0.1 [--config <file>]`，再按 `.tunnel.json` 决定是否加 `--allow-lib-edit`。
 
@@ -359,7 +344,8 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 | `GET /api/meta` | 当前库的 `.fm-meta.json` |
 | `POST /api/progress` | 回传播放进度，按时间戳合并 |
 | `POST /api/lib` | 增 / 删 / 改名资源库（需 `--allow-lib-edit`） |
-| `POST /api/login` | 口令换长期 token，返回 `{ token }` |
+| `POST /api/login` | 用户名+密码换长期 token，body `{ username, password }`，返回 `{ token, uid, username }` |
+| `GET /api/me` | 当前用户 `{ uid, username, role }` |
 | `GET /api/ticket` | 换 2 小时票据，给 `?t=` 用 |
 | `GET /api/scan` | 目录列表 |
 | `GET /api/media/<rel>` | 音频流（Range），只放行媒体扩展名 |

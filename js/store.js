@@ -2,15 +2,34 @@
 (function (FM) {
   'use strict';
   const P = 'fm:v1:';
-  const cache = Object.create(null);
+  let cache = Object.create(null);
   const dirty = new Set();
   let broken = false;
+
+  /* 命名空间：浏览器直连服务器时按用户隔离本地缓存（fm:v1:<uid>:*）。
+     从服务端种下的 fm_uid cookie 同步读取，避免异步竞态。桌面/本地模式为空。 */
+  let ns = (function () {
+    try {
+      const m = String(document.cookie || '').match(/(?:^|; )fm_uid=([^;]*)/);
+      return m ? decodeURIComponent(m[1]) : '';
+    } catch (e) { return ''; }
+  })();
+  function FQ(k) { return P + (ns ? ns + ':' : '') + k; }
+
+  function setNamespace(v) {
+    const next = String(v || '');
+    if (next === ns) return;
+    flush();                       /* 旧命名空间的脏数据先落盘 */
+    ns = next;
+    cache = Object.create(null);   /* 清缓存，按新命名空间懒加载 */
+    dirty.clear();
+  }
 
   function read(key, def) {
     if (key in cache) return cache[key];
     let val = def;
     try {
-      const raw = localStorage.getItem(P + key);
+      const raw = localStorage.getItem(FQ(key));
       if (raw) val = JSON.parse(raw);
     } catch (e) {
       broken = true;
@@ -26,7 +45,7 @@
   function drop(key) {
     delete cache[key];
     dirty.delete(key);
-    try { localStorage.removeItem(P + key); } catch (e) {}
+    try { localStorage.removeItem(FQ(key)); } catch (e) {}
   }
 
   function write(key, val) { cache[key] = val; dirty.add(key); }
@@ -37,7 +56,7 @@
     if (!dirty.size) return;
     const keys = Array.from(dirty);
     keys.forEach(function (k) {
-      try { localStorage.setItem(P + k, JSON.stringify(cache[k])); }
+      try { localStorage.setItem(FQ(k), JSON.stringify(cache[k])); }
       catch (e) {
         console.warn('[store] 写入失败', k, e);
         broken = true;
@@ -54,10 +73,11 @@
   });
 
   FM.store = {
-    read, write, touch, drop, flush,
+    read, write, touch, drop, flush, setNamespace,
     onPersist: fn => { onPersist = fn; },
     isBroken: () => broken,
-    PREFIX: P
+    PREFIX: P,
+    get namespace() { return ns; }
   };
 
   /* ── 业务数据访问层 ── */

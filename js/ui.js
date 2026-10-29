@@ -1722,12 +1722,13 @@
   function openRemoteDialog() {
     const cur = FM.fs.remote;
     const base = U.el('input', { class: 'input', value: cur ? cur.base : '', placeholder: 'http://服务器地址:8080', spellcheck: false });
-    const pw = U.el('input', { class: 'input', type: 'password', placeholder: '访问口令（服务器没设口令就留空）' });
+    const user = U.el('input', { class: 'input', value: 'admin', placeholder: '用户名', autocomplete: 'username', spellcheck: false });
+    const pw = U.el('input', { class: 'input', type: 'password', placeholder: '密码（服务器没设密码就留空）', autocomplete: 'current-password' });
     const err = U.el('small', { class: 'drawer-sub', style: { color: '#ff8a65' } });
     const body = U.el('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } }, [
       U.el('p', { style: { fontSize: '12px', color: 'var(--dim)', lineHeight: '1.9' },
         text: '服务器上 node tools/serve.js 8080 启动（默认读桌面端的库列表，支持多个目录）。书和音频都留在服务器上，本机只缓存索引。' }),
-      base, pw,
+      base, user, pw,
       U.el('small', { class: 'drawer-sub', text: '连接成功后会重载界面。' }),
       err
     ]);
@@ -1750,9 +1751,9 @@
       try {
         const r = await fetch(b + '/api/login', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ password: pw.value })
+          body: JSON.stringify({ username: (user.value || 'admin').trim(), password: pw.value })
         });
-        if (!r.ok) throw new Error(r.status === 401 ? '口令不正确' : '服务器返回 ' + r.status);
+        if (!r.ok) throw new Error(r.status === 401 ? '用户名或密码不正确' : '服务器返回 ' + r.status);
         const data = await r.json();
         await window.fmNative.setRemote({ base: b, token: data.token || '' });
         location.reload();

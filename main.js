@@ -1,9 +1,19 @@
 /* ── main.js · Electron 主进程 ───────────────────────── */
+/* 静音 node:sqlite 的 ExperimentalWarning（必须在 require db 之前） */
+(function () {
+  const orig = process.emitWarning;
+  process.emitWarning = function (w, t) {
+    const ty = typeof t === 'string' ? t : (t && t.type);
+    if (ty === 'ExperimentalWarning' || /SQLite/i.test(String(w))) return;
+    return orig.apply(process, arguments);
+  };
+})();
 const { app, BrowserWindow, ipcMain, dialog, protocol, net, nativeTheme, Menu, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const { Readable } = require('node:stream');
+const DB = require('./db');
 
 const ROOT = __dirname;
 const MEDIA = new Set([
@@ -14,88 +24,66 @@ const MAX_DEPTH = 3;
 const SKIP = /^[._]|^(fm|dist|build|node_modules|\$RECYCLE\.BIN|System Volume Information)$/i;
 
 let win = null;
-let cfgCache = null;
+let lastCfg = null;
 
-/* ── 配置：资源库列表 ───────────────────────────────── */
-function configFile() { return path.join(app.getPath('userData'), 'config.json'); }
+/* ── 配置：存 SQLite，桌面端固定用 admin 用户 ── */
+function getDb() {
+  if (getDb._db) return getDb._db;
+  const file = process.env.FM_DATA_FILE ? path.resolve(process.env.FM_DATA_FILE) : path.join(app.getPath('userData'), 'fm.db');
+  const db = DB.open(file);
+  DB.ensureSchema(db);
+  if (DB.countUsers(db) === 0) {
+    /* 首次启动：把旧的 config.json / .auth.json / remote.json 迁进来 */
+    const s = DB.migrate(db, {
+      authFile: process.env.FM_AUTH_FILE ? path.resolve(process.env.FM_AUTH_FILE) : path.join(__dirname, '.auth.json'),
+      configFile: path.join(app.getPath('userData'), 'config.json'),
+      remoteFile: path.join(app.getPath('userData'), 'remote.json')
+    });
+    if (s.generatedPassword) {
+      console.log('[db] 已创建 admin，初始密码：' + s.generatedPassword + '（用 npm run init-db -- --set-password admin 修改）');
+    }
+  }
+  getDb._db = db;
+  return db;
+}
+function adminUid() {
+  const u = DB.adminUser(getDb());
+  return u ? u.id : DB.ADMIN_ID;
+}
 
 function newLibId() { return 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
-/* 老版本只有 { root }：升级成一条资源库，其余结构原样保留 */
-function normalizeCfg(raw) {
-  const cfg = raw && typeof raw === 'object' ? raw : {};
-  if (Array.isArray(cfg.libs)) {
-    const libs = cfg.libs
-      .filter(l => l && typeof l.path === 'string' && l.path)
-      .map(function (l) {
-        return {
-          id: typeof l.id === 'string' && l.id ? l.id : newLibId(),
-          name: typeof l.name === 'string' && l.name ? l.name : (path.basename(l.path) || '资源库'),
-          path: l.path,
-          addedAt: l.addedAt || Date.now()
-        };
-      });
-    const active = libs.some(l => l.id === cfg.active) ? cfg.active : (libs[0] ? libs[0].id : null);
-    return { libs, active };
-  }
-  if (cfg.root) {
-    const id = newLibId();
-    return { libs: [{ id, name: path.basename(cfg.root) || '资源库', path: cfg.root, addedAt: Date.now() }], active: id };
-  }
-  return { libs: [], active: null };
-}
-
-let cfgStamp = -1;
-
-function configStamp() {
-  try { return fs.statSync(configFile()).mtimeMs; } catch (e) { return 0; }
-}
-
-/* 按 mtime 判断要不要重读：远程访问那边也会改这份 config.json（加/删资源库），
-   不重读就会拿旧的缓存把它覆盖回去 */
+/* getConfig/saveConfig 保持原接口：IPC 里先 getConfig() 改对象，再 saveConfig() 落库。
+   每次 getConfig 都从库里读，服务端改了库桌面端能立刻看到。 */
 function getConfig() {
-  const stamp = configStamp();
-  if (cfgCache && stamp === cfgStamp) return cfgCache;
-  let raw = null;
-  try { raw = JSON.parse(fs.readFileSync(configFile(), 'utf8')); } catch (e) {}
-  const needMigrate = !!(raw && raw.root && !Array.isArray(raw.libs));
-  cfgCache = normalizeCfg(raw);
-  if (needMigrate) saveConfig();
-  cfgStamp = configStamp();
-  return cfgCache;
+  const db = getDb();
+  const uid = adminUid();
+  const libs = DB.listLibs(db, uid).map(function (l) { return { id: l.id, name: l.name, path: l.path, addedAt: l.addedAt }; });
+  const a = DB.activeLib(db, uid);
+  lastCfg = { libs: libs, active: a ? a.id : (libs[0] ? libs[0].id : null) };
+  return lastCfg;
 }
 
-function saveConfig() {
-  try {
-    fs.mkdirSync(path.dirname(configFile()), { recursive: true });
-    const file = configFile();
-    /* 原子写：服务端按 mtime 热加载这份文件，直接覆盖会让它读到半个 JSON */
-    const tmp = file + '.' + process.pid + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(cfgCache, null, 2));
-    fs.renameSync(tmp, file);
-  } catch (e) { console.warn('[config] 写入失败', e); }
-  cfgStamp = configStamp();
+function saveConfig(cfg) {
+  const c = cfg || lastCfg;
+  if (!c) return;
+  try { DB.replaceLibs(getDb(), adminUid(), c.libs, c.active); }
+  catch (e) { console.warn('[config] 写入失败', e); }
+  lastCfg = c;
 }
 
-/* ── 远程后端：本地 UI + 远端数据 ─────────────────────
- * 独立 remote.json，不塞进 config.json：库列表迁移（normalizeCfg）会丢掉多余字段 */
-function remoteFile() { return path.join(app.getPath('userData'), 'remote.json'); }
+/* ── 远程后端：本地 UI + 远端数据（存 SQLite 的 remote 表） ── */
 function readRemote() {
-  try {
-    const r = JSON.parse(fs.readFileSync(remoteFile(), 'utf8'));
-    if (r && typeof r.base === 'string' && r.base) {
-      return { base: r.base.replace(/\/+$/, ''), token: String(r.token || '') };
-    }
-  } catch (e) {}
+  const r = DB.getRemote(getDb());
+  if (r && r.base) return { base: String(r.base).replace(/\/+$/, ''), token: String(r.token || '') };
   return null;
 }
 function writeRemote(cfg) {
   try {
-    if (!cfg || !cfg.base) { fs.rmSync(remoteFile(), { force: true }); return null; }
-    const data = { base: String(cfg.base).replace(/\/+$/, ''), token: String(cfg.token || '') };
-    fs.mkdirSync(path.dirname(remoteFile()), { recursive: true });
-    fs.writeFileSync(remoteFile(), JSON.stringify(data, null, 2));
-    return data;
+    if (!cfg || !cfg.base) { DB.setRemote(getDb(), null); return null; }
+    const data = { base: String(cfg.base).replace(/\/+$/, ''), token: String(cfg.token || ''), uid: adminUid() };
+    DB.setRemote(getDb(), data);
+    return { base: data.base, token: data.token };
   } catch (e) { console.warn('[remote] 写入失败', e); return null; }
 }
 

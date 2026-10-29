@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* ── serve.js · 本地/远程用的静态 + 媒体服务器 ───────────────────────
  *
- *   node tools/serve.js --set-password 你的口令      # 首次：写 .auth.json（只存哈希）
+ *   node tools/init-db.js                           # 首次：初始化数据库（迁移旧配置 / 生成 admin）
  *   node tools/serve.js 8080                        # 只发前端
  *   node tools/serve.js 8080 --config /srv/fm/config.json   # 指定另一份库列表
  *
@@ -22,6 +22,17 @@
  * 资源库来源：config.json 的 libs 数组（--config 可指定另一份）
  * （--config 可指定路径，默认 %APPDATA%\星海FM\config.json）。
  */
+'use strict';
+/* 静音 node:sqlite 的 ExperimentalWarning（必须在 require 之前挂上） */
+(function () {
+  const orig = process.emitWarning;
+  process.emitWarning = function (w, t) {
+    const ty = typeof t === 'string' ? t : (t && t.type);
+    if (ty === 'ExperimentalWarning' || /SQLite/i.test(String(w))) return;
+    return orig.apply(process, arguments);
+  };
+})();
+
 const http = require('node:http');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -53,21 +64,24 @@ const ITERATIONS = 600000;            // 新口令的 pbkdf2 轮数
 
 let port = 8080;
 let host = '127.0.0.1';
-let CONFIG_FILE = '';
+let CONFIG_FILE = '';         // 旧 config.json 路径（仅作迁移来源）
 let ALLOW_LIB_EDIT = false;   // 是否允许远程增删资源库（默认关，显式 --allow-lib-edit 才开）
-let SET_PASSWORD = null;
 let NO_AUTH = false;
-let CHECK_PASSWORD = false;
+let CLI = null;               // 一次性用户管理命令：{ action, name, pw }
 (function parse() {
   const a = process.argv.slice(2);
   for (let i = 0; i < a.length; i++) {
-    if (a[i] === '--config') CONFIG_FILE = path.resolve(a[++i] || '');
-    else if (a[i] === '--allow-lib-edit') ALLOW_LIB_EDIT = true;
-    else if (a[i] === '--host') host = a[++i] || host;
-    else if (a[i] === '--set-password') SET_PASSWORD = a[++i] || '';
-    else if (a[i] === '--no-auth') NO_AUTH = true;
-    else if (a[i] === '--check-password') CHECK_PASSWORD = true;
-    else if (/^[0-9]+$/.test(a[i])) port = Number(a[i]);
+    const x = a[i];
+    if (x === '--config') CONFIG_FILE = path.resolve(a[++i] || '');
+    else if (x === '--allow-lib-edit') ALLOW_LIB_EDIT = true;
+    else if (x === '--host') host = a[++i] || host;
+    else if (x === '--no-auth') NO_AUTH = true;
+    else if (x === '--add-user') { CLI = { action: 'add', name: a[++i] || '', pw: '' }; if (a[i + 1] && a[i + 1][0] !== '-') CLI.pw = a[++i]; }
+    else if (x === '--set-password') { CLI = { action: 'setpw', name: a[++i] || '', pw: '' }; if (a[i + 1] && a[i + 1][0] !== '-') CLI.pw = a[++i]; }
+    else if (x === '--check-password') { CLI = { action: 'check', name: a[++i] || '', pw: '' }; if (a[i + 1] && a[i + 1][0] !== '-') CLI.pw = a[++i]; }
+    else if (x === '--list-users') { CLI = { action: 'list', name: '', pw: '' }; }
+    else if (x === '--remove-user') { CLI = { action: 'remove', name: a[++i] || '', pw: '' }; }
+    else if (/^[0-9]+$/.test(x)) port = Number(x);
   }
 })();
 
@@ -75,72 +89,43 @@ let CHECK_PASSWORD = false;
  * 读 config.json（默认桌面端的，可用 --config 指定），拿到库列表；
  * 读不到或 libs 为空 → 没有库，前端退回「自己选目录」模式
  */
-let LIBS = [];            // [{ id, name, path }]
-let activeId = null;
-let MULTI = false;        // true = 跟着桌面端配置，前端可以切库
+/* ── 数据库：users / libs / remote / settings ── */
+const DB = require('../db');
 
-function desktopConfigPath() {
+function desktopDataDir() {
   const home = process.env.HOME || process.env.USERPROFILE || '';
-  if (process.platform === 'win32') {
-    return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), '星海FM', 'config.json');
-  }
-  if (process.platform === 'darwin') return path.join(home, 'Library', 'Application Support', '星海FM', 'config.json');
-  return path.join(home, '.config', '星海FM', 'config.json');
+  if (process.platform === 'win32') return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), '星海FM');
+  if (process.platform === 'darwin') return path.join(home, 'Library', 'Application Support', '星海FM');
+  return path.join(home, '.config', '星海FM');
 }
+function desktopConfigPath() { return path.join(desktopDataDir(), 'config.json'); }
 
-let libsWarned = false;
-
-/* keepActive：热加载时尽量保留当前选中的库（远程那边可能正看着别的库）
-   返回 false = 这次没读成（文件不存在或正好被写了一半），调用方要保留原状、下轮再试 */
-function loadLibs(keepActive) {
-  const prev = keepActive ? activeId : null;
-  const file = CONFIG_FILE || desktopConfigPath();
-  let cfg = null;
-  try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {}
-  if (!cfg || !Array.isArray(cfg.libs)) {
-    /* 读不到 / 解析失败：保持现有列表，别因为一次半截写入就把库全清空 */
-    if (!libsWarned) { console.log('[libs] 暂时读不到桌面端配置，稍后重试：' + file); libsWarned = true; }
-    return false;
-  }
-  libsWarned = false;
-  if (!cfg.libs.length) {
-    /* 文件是完整的，只是确实一个库都没有 */
-    LIBS = [];
-    activeId = null;
-    MULTI = true;
-    CONFIG_FILE = file;
-    return true;
-  }
-  LIBS = cfg.libs
-    .filter(l => l && typeof l.path === 'string' && l.path)
-    .map(l => ({ id: l.id || l.path, name: l.name || path.basename(l.path), path: l.path }));
-  const cfgActive = LIBS.some(l => l.id === cfg.active) ? cfg.active : (LIBS[0] ? LIBS[0].id : null);
-  activeId = (prev && LIBS.some(l => l.id === prev)) ? prev : cfgActive;
-  MULTI = true;
-  CONFIG_FILE = file;
-  return true;
+function dataFilePath() {
+  if (process.env.FM_DATA_FILE) return path.resolve(process.env.FM_DATA_FILE);
+  return path.join(desktopDataDir(), 'fm.db');
 }
-loadLibs();
+const db = DB.open(dataFilePath());
+DB.ensureSchema(db);
 
-/* 桌面端随时可能增删资源库：按 config.json 的 mtime 热加载，最多每秒查一次 */
-let cfgStamp = -1;
-let cfgCheckedAt = 0;
-function syncLibs() {
-  const now = Date.now();
-  if (now - cfgCheckedAt < 1000) return;
-  cfgCheckedAt = now;
-  const file = CONFIG_FILE || desktopConfigPath();
-  let st = null;
-  try { st = fs.statSync(file); } catch (e) { return; }
-  if (st.mtimeMs === cfgStamp) return;
-  /* 只有真的加载成功才记下这个 mtime，失败的话下一秒再试 */
-  if (loadLibs(true)) cfgStamp = st.mtimeMs;
-}
+/* 首次运行：用户表为空但存在旧文件 → 自动迁移，升级无感 */
+(function autoMigrate() {
+  if (DB.countUsers(db) > 0) return;
+  const legacyCfg = CONFIG_FILE || desktopConfigPath();
+  const summary = DB.migrate(db, {
+    authFile: AUTH_FILE,
+    configFile: legacyCfg,
+    remoteFile: path.join(path.dirname(legacyCfg), 'remote.json')
+  });
+  if (summary.user) console.log('[db] 已迁移旧配置：用户 ' + summary.user + '，资源库 ' + summary.libs + ' 个');
+})();
 
-function activeLib() { return LIBS.find(l => l.id === activeId) || null; }
-function activeRoot() { const l = activeLib(); return l ? l.path : ''; }
-/* fixed = 前端不给改（单目录模式，或者没开 --allow-lib-edit） */
-function libView(l) { return { id: l.id, name: l.name, missing: !fs.existsSync(l.path), fixed: !MULTI || !ALLOW_LIB_EDIT }; }
+const MULTI = true;   // 每个用户都可以有多个资源库
+
+function userLibs(uid) { return DB.listLibs(db, uid); }
+function userActiveLib(uid) { return DB.activeLib(db, uid); }
+function userActiveRoot(uid) { const l = userActiveLib(uid); return l ? l.path : ''; }
+/* fixed = 前端不给改（没开 --allow-lib-edit） */
+function libView(l) { return { id: l.id, name: l.name, missing: !fs.existsSync(l.path), fixed: !ALLOW_LIB_EDIT }; }
 
 /* ── 元数据文件（桌面端写、这里读；进度双向） ── */
 async function readMeta(root) {
@@ -193,27 +178,12 @@ async function mergeProgress(lib, rec) {
   return false;
 }
 
-/* ── 改资源库（加 / 改名 / 移除）：直接改桌面端的 config.json ──
- * 服务跑在自己机器上，浏览器那边没法弹系统目录框，所以「添加」用路径输入。
- * 文件先写 .tmp 再 rename，桌面进程按 mtime 变化会重新读，不会互相覆盖。 */
-function configPath() { return CONFIG_FILE || desktopConfigPath(); }
-
-function readConfigFile() {
-  try { return JSON.parse(fs.readFileSync(configPath(), 'utf8')) || null; } catch (e) { return null; }
-}
-
-function writeConfigFile(cfg) {
-  const file = configPath();
-  const tmp = file + '.' + process.pid + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2));
-  fs.renameSync(tmp, file);
-}
-
+/* ── 改资源库（加 / 改名 / 移除）：改数据库里该用户的库列表 ──
+ * 服务跑在自己机器上，浏览器那边没法弹系统目录框，所以「添加」用路径输入。 */
 function newLibId() { return 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
-function mutateLibs(body) {
-  const cfg = readConfigFile();
-  if (!cfg || !Array.isArray(cfg.libs)) return { code: 400, msg: '读不到桌面端配置：' + configPath() };
+function mutateLibs(uid, body) {
+  const libs = DB.listLibs(db, uid).map(function (l) { return { id: l.id, name: l.name, path: l.path, addedAt: l.addedAt }; });
   const act = String(body.action || '');
 
   if (act === 'add') {
@@ -226,33 +196,34 @@ function mutateLibs(body) {
     try { st = fs.statSync(abs); } catch (e) {}
     if (!st || !st.isDirectory()) return { code: 400, msg: '目录不存在：' + raw };
     const key = abs.toLowerCase();
-    let lib = cfg.libs.find(l => path.resolve(l.path).toLowerCase() === key);
+    let lib = libs.find(l => path.resolve(l.path).toLowerCase() === key);
     if (!lib) {
       lib = { id: newLibId(), name: String(body.name || '').trim() || path.basename(abs) || '资源库', path: abs, addedAt: Date.now() };
-      cfg.libs.push(lib);
+      libs.push(lib);
       console.log('[lib] 远程添加资源库：' + lib.name + ' → ' + abs);
     }
-    cfg.active = lib.id;
-    writeConfigFile(cfg);
+    DB.replaceLibs(db, uid, libs, lib.id);
     return { code: 200 };
   }
 
   const id = String(body.id || '');
-  const lib = cfg.libs.find(l => l.id === id);
+  const lib = libs.find(l => l.id === id);
   if (!lib) return { code: 400, msg: '资源库不存在' };
+  const cur = DB.activeLib(db, uid);
+  let active = cur ? cur.id : null;
 
   if (act === 'rename') {
     const name = String(body.name || '').trim().slice(0, 40);
     if (!name) return { code: 400, msg: '名称不能为空' };
     lib.name = name;
   } else if (act === 'remove') {
-    cfg.libs = cfg.libs.filter(l => l.id !== id);
-    if (cfg.active === id) cfg.active = cfg.libs[0] ? cfg.libs[0].id : null;
+    libs.splice(libs.findIndex(l => l.id === id), 1);
+    if (active === id) active = libs[0] ? libs[0].id : null;
     console.log('[lib] 远程移除资源库：' + lib.name);
   } else {
     return { code: 400, msg: 'unknown action' };
   }
-  writeConfigFile(cfg);
+  DB.replaceLibs(db, uid, libs, active);
   return { code: 200 };
 }
 
@@ -268,82 +239,61 @@ function writeAllowed(ip) {
   return rec.n <= 5;
 }
 
-/* ── 口令与会话 ── */
-function loadAuth() {
-  try { return JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8')); } catch (e) { return null; }
+/* ── 用户与会话（多用户，token 带 uid） ── */
+function verifyPassword(username, password) {
+  const u = DB.findUser(db, username);
+  return !!u && DB.checkPassword(u, password);
 }
-function derive(password, saltB64, iterations) {
-  return crypto.pbkdf2Sync(String(password), Buffer.from(saltB64, 'base64'), iterations, 32, 'sha256');
-}
-function saveAuth(password, iterations) {
-  const rounds = iterations || ITERATIONS;
-  const salt = crypto.randomBytes(16).toString('base64');
-  const data = {
-    version: 1,
-    algo: 'pbkdf2_sha256',
-    iterations: rounds,
-    salt: salt,
-    hash: derive(password, salt, rounds).toString('base64'),
-    secret: crypto.randomBytes(32).toString('base64'),
-    createdAt: new Date().toISOString()
-  };
-  fs.writeFileSync(AUTH_FILE, JSON.stringify(data, null, 2), 'utf8');
-  return data;
-}
-function verifyPassword(password) {
-  const a = loadAuth();
-  if (!a) return false;
-  const got = derive(password, a.salt, a.iterations);
-  const want = Buffer.from(a.hash, 'base64');
-  return got.length === want.length && crypto.timingSafeEqual(got, want);
-}
-/* 登录成功后，如果旧文件轮数偏低，用同一个口令重算一份（会换 secret，其他设备需重登） */
-function upgradeHash(password) {
-  const a = loadAuth();
-  if (a && a.iterations < ITERATIONS) saveAuth(password, ITERATIONS);
+/* 登录成功后，如果旧轮数偏低，用同一口令重算（换 salt/hash，不动 secret） */
+function upgradeHash(user, password) {
+  if (user && user.iterations < ITERATIONS) DB.setUserPassword(db, user.id, password);
 }
 function sign(payload, secret) {
   return crypto.createHmac('sha256', Buffer.from(secret, 'base64')).update(payload).digest('base64url');
 }
-/* token = iat.abs.sig，iat 随活跃滑动，abs 是硬上限 */
-function makeToken(iat, abs) {
-  const payload = iat + '.' + abs;
-  return payload + '.' + sign(payload, loadAuth().secret);
+/* token = iat.abs.uid.sig，iat 随活跃滑动，abs 是硬上限 */
+function makeToken(iat, abs, uid) {
+  const payload = iat + '.' + abs + '.' + uid;
+  return payload + '.' + sign(payload, DB.secret(db));
 }
 function readSession(token) {
-  const a = loadAuth();
-  if (!a || !token) return null;
+  if (!token) return null;
   const parts = String(token).split('.');
-  if (parts.length !== 3) return null;
+  if (parts.length !== 4) return null;
   const iat = parseInt(parts[0], 10);
   const abs = parseInt(parts[1], 10);
-  if (!(iat > 0) || !(abs > 0)) return null;
-  const want = Buffer.from(sign(iat + '.' + abs, a.secret));
-  const got = Buffer.from(parts[2]);
+  const uid = parts[2];
+  if (!(iat > 0) || !(abs > 0) || !uid) return null;
+  const want = Buffer.from(sign(iat + '.' + abs + '.' + uid, DB.secret(db)));
+  const got = Buffer.from(parts[3]);
   if (want.length !== got.length || !crypto.timingSafeEqual(want, got)) return null;
   const now = Math.floor(Date.now() / 1000);
   if (now > abs) return null;
   if (now - iat > SESSION_IDLE) return null;
-  return { iat: iat, abs: abs };
+  const u = DB.getUser(db, uid);
+  if (!u) return null;
+  return { iat: iat, abs: abs, uid: uid, username: u.username, role: u.role };
 }
-/* 短期票据：给 <audio>/<img> 这种带不了 Authorization 头的标签用。
-   桌面端走 Bearer 的长期 token 不进 URL，URL 里只放这个 2 小时就过期的票。 */
+/* 短期票据：带 uid，只能读该用户自己的库（<audio>/<img> 带不了请求头） */
 const TICKET_TTL = 2 * 3600;
-function makeTicket() {
+function makeTicket(uid) {
   const exp = Math.floor(Date.now() / 1000) + TICKET_TTL;
-  return 't.' + exp + '.' + sign('t.' + exp, loadAuth().secret);
+  const payload = 't.' + exp + '.' + uid;
+  return payload + '.' + sign(payload, DB.secret(db));
 }
 function readTicket(t) {
-  const a = loadAuth();
-  if (!a || !t) return false;
+  if (!t) return null;
   const parts = String(t).split('.');
-  if (parts.length !== 3 || parts[0] !== 't') return false;
+  if (parts.length !== 4 || parts[0] !== 't') return null;
   const exp = parseInt(parts[1], 10);
-  if (!(exp > 0)) return false;
-  const want = Buffer.from(sign('t.' + exp, a.secret));
-  const got = Buffer.from(parts[2]);
-  if (want.length !== got.length || !crypto.timingSafeEqual(want, got)) return false;
-  return Math.floor(Date.now() / 1000) <= exp;
+  const uid = parts[2];
+  if (!(exp > 0) || !uid) return null;
+  const want = Buffer.from(sign('t.' + exp + '.' + uid, DB.secret(db)));
+  const got = Buffer.from(parts[3]);
+  if (want.length !== got.length || !crypto.timingSafeEqual(want, got)) return null;
+  if (Math.floor(Date.now() / 1000) > exp) return null;
+  if (!DB.getUser(db, uid)) return null;
+  return { uid: uid, exp: exp };
 }
 function bearerOf(req) {
   const h = req.headers.authorization || '';
@@ -352,6 +302,10 @@ function bearerOf(req) {
 
 function sessionCookie(value) {
   return SESSION_COOKIE + '=' + encodeURIComponent(value) + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + SESSION_IDLE;
+}
+/* 非 HttpOnly：前端据此把 localStorage 按用户隔离（同一浏览器多人不串数据） */
+function uidCookie(uid) {
+  return 'fm_uid=' + encodeURIComponent(uid) + '; Path=/; SameSite=Lax; Max-Age=' + SESSION_IDLE;
 }
 
 /* 同一 IP 10 分钟内错 5 次，锁 10 分钟 */
@@ -456,13 +410,15 @@ function loginPage(err, next) {
     'input{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.14);background:rgba(0,0,0,.35);color:#e9eefb;font-size:14px;outline:none}' +
     'input:focus{border-color:#22d3ee}' +
     'button{margin-top:14px;width:100%;padding:10px;border:0;border-radius:10px;background:linear-gradient(120deg,#22d3ee,#6366f1);color:#04070d;font-weight:700;cursor:pointer}' +
-    'p.err{color:#fca5a5;font-size:12px;margin:0 0 12px}';
+    'p.err{color:#fca5a5;font-size:12px;margin:0 0 12px}' +
+    'input+input{margin-top:10px}';
   return '<!doctype html><meta charset="utf-8"><title>星海 FM</title><style>' + style + '</style>' +
     '<form method="post" action="/__auth">' +
       '<h1>星海 FM</h1>' +
       (err ? '<p class="err">' + err + '</p>' : '') +
       '<input type="hidden" name="next" value="' + (next || '/') + '">' +
-      '<input type="password" name="pw" placeholder="访问口令" autofocus autocomplete="current-password">' +
+      '<input type="text" name="user" placeholder="用户名" autofocus autocomplete="username">' +
+      '<input type="password" name="pw" placeholder="密码" autocomplete="current-password">' +
       '<button type="submit">进入媒体库</button>' +
     '</form>';
 }
@@ -508,14 +464,14 @@ function parseRange(header, size) {
   return { start: start, end: end };
 }
 
-async function serveMedia(req, res, rel) {
+async function serveMedia(req, res, rel, root) {
   /* 只放媒体文件：这个接口能顺着资源库根目录读任意路径，
      不挡扩展名就等于「登录后可以读整台机器的任意文件」（config.json、id_rsa……） */
   const ext = path.extname(rel).slice(1).toLowerCase();
   if (!MEDIA_EXT.has(ext)) return send(res, 404, 'not found');
 
   let file;
-  try { file = inside(activeRoot(), rel); } catch (e) { return send(res, 403, 'forbidden'); }
+  try { file = inside(root, rel); } catch (e) { return send(res, 403, 'forbidden'); }
   let st;
   try { st = await fsp.stat(file); } catch (e) { return send(res, 404, 'not found'); }
   if (!st.isFile()) return send(res, 404, 'not found');
@@ -552,35 +508,58 @@ function ask(question) {
   if (stdinLines.length) return Promise.resolve(stdinLines.shift());
   return new Promise(function (resolve) { stdinWaiters.push(resolve); });
 }
-if (SET_PASSWORD !== null || CHECK_PASSWORD) {
+if (CLI) {
   (async function () {
-    if (CHECK_PASSWORD) {
-      const pw = await ask('输入要校验的口令：');
-      const ok = verifyPassword(pw);
-      console.log(ok ? '✓ 口令正确' : '✗ 口令不正确');
+    const act = CLI.action;
+    if (act === 'list') {
+      const us = DB.listUsers(db);
+      if (!us.length) console.log('（没有用户）');
+      us.forEach(function (u) { console.log('  ' + (u.role === 'admin' ? '*' : ' ') + ' ' + u.username + '  [' + u.role + ']'); });
+      process.exit(0);
+    }
+    if (act === 'add') {
+      if (!CLI.name) { console.error('用法：--add-user <name> [口令]'); process.exit(1); }
+      if (DB.findUser(db, CLI.name)) { console.error('用户已存在：' + CLI.name); process.exit(1); }
+      let pw = CLI.pw;
+      if (!pw) { pw = await ask('设置密码（会显示在屏幕上）：'); const again = await ask('再输入一次确认：'); if (pw !== again) { console.error('两次输入不一致'); process.exit(1); } }
+      if (!pw) { console.error('密码不能为空'); process.exit(1); }
+      const u = DB.addUser(db, { username: CLI.name, role: 'user', password: pw });
+      console.log('✓ 已添加用户：' + u.username);
+      process.exit(0);
+    }
+    if (act === 'remove') {
+      const u = DB.findUser(db, CLI.name);
+      if (!u) { console.error('用户不存在：' + CLI.name); process.exit(1); }
+      DB.removeUser(db, u.id);
+      console.log('✓ 已删除用户：' + u.username);
+      process.exit(0);
+    }
+    const u = DB.findUser(db, CLI.name);
+    if (!u) { console.error('用户不存在：' + CLI.name); process.exit(1); }
+    let pw = CLI.pw;
+    if (act === 'check') {
+      if (!pw) pw = await ask('输入要校验的密码：');
+      const ok = DB.checkPassword(u, pw);
+      console.log(ok ? '✓ 密码正确' : '✗ 密码不正确');
       process.exit(ok ? 0 : 1);
     }
-    let pw = SET_PASSWORD;
-    /* 不带参数时交互输入：cmd 会吃掉 % & ^ ! 这类字符，用命令行传很容易悄悄变样 */
-    if (!pw) {
-      pw = await ask('设置新口令（会显示在屏幕上）：');
-      const again = await ask('再输入一次确认：');
-      if (pw !== again) { console.error('两次输入不一致，未修改'); process.exit(1); }
+    if (act === 'setpw') {
+      if (!pw) { pw = await ask('设置新密码（会显示在屏幕上）：'); const again = await ask('再输入一次确认：'); if (pw !== again) { console.error('两次输入不一致'); process.exit(1); } }
+      if (!pw) { console.error('密码不能为空'); process.exit(1); }
+      DB.setUserPassword(db, u.id, pw);
+      console.log('✓ 已修改密码：' + u.username);
+      process.exit(0);
     }
-    if (!pw) { console.error('口令不能为空'); process.exit(1); }
-    saveAuth(pw);
-    const ok = verifyPassword(pw);          /* 立刻回读校验，确保存进去的就是刚才输入的那串 */
-    console.log(ok ? '✓ 已设置并校验通过：' + AUTH_FILE + '（pbkdf2 ' + ITERATIONS + ' 轮）' : '✗ 写入后校验失败，请重试');
-    process.exit(ok ? 0 : 1);
+    process.exit(0);
   })();
   return;                     // 命令行模式下不要继续起服务
 }
-if (!loadAuth()) {
+if (DB.countUsers(db) === 0) {
   console.error([
-    '还没有设置访问口令：',
-    '  node tools/serve.js --set-password',
-    '',
-    '（口令只存哈希在 .auth.json，不放在 URL 里）'
+    '还没有任何用户：',
+    '  node tools/init-db.js                      # 迁移旧配置 / 生成 admin',
+    '  node tools/serve.js --add-user 用户名 密码   # 或直接加用户',
+    ''
   ].join(String.fromCharCode(10)));
   process.exit(1);
 }
@@ -597,20 +576,24 @@ const server = http.createServer(async function (req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
-  /* 桌面端登录：口令换长期 token（和 cookie 会话同一套 HMAC 签名） */
+  /* 桌面端登录：用户名 + 密码换长期 token */
   if (p === '/api/login' && req.method === 'POST') {
     let body = '';
     for await (const chunk of req) body += chunk;
-    let pw = '';
-    try { pw = JSON.parse(body || '{}').password || ''; } catch (e) {}
-    const lock = lockedFor(ip);
+    let username = '', pw = '';
+    try { const j = JSON.parse(body || '{}'); username = j.username || j.user || ''; pw = j.password || ''; } catch (e) {}
+    const key = ip + '|' + username;
+    const lock = lockedFor(key);
     if (lock) return send(res, 429, '尝试过多，请 ' + lock + ' 秒后再试');
-    if (NO_AUTH) return json(res, { token: '' });
-    if (!verifyPassword(pw)) { noteFail(ip); return send(res, 401, '口令不正确'); }
-    fails.delete(ip);
-    upgradeHash(pw);
+    if (NO_AUTH) { const fu = DB.firstUserId(db); const t0 = Math.floor(Date.now() / 1000); return json(res, { token: fu ? makeToken(t0, t0 + SESSION_ABS, fu) : '' }); }
+    const user = DB.findUser(db, username);
+    if (!user || !DB.checkPassword(user, pw)) { noteFail(key); return send(res, 401, '用户名或密码不正确'); }
+    fails.delete(key);
+    upgradeHash(user, pw);
+    DB.touchLogin(db, user.id);
+    res.appendHeader('set-cookie', uidCookie(user.id));
     const nowSec = Math.floor(Date.now() / 1000);
-    return json(res, { token: makeToken(nowSec, nowSec + SESSION_ABS) });
+    return json(res, { token: makeToken(nowSec, nowSec + SESSION_ABS, user.id), uid: user.id, username: user.username });
   }
 
   if (!NO_AUTH && p === '/__auth') {
@@ -618,19 +601,23 @@ const server = http.createServer(async function (req, res) {
       let body = '';
       for await (const chunk of req) body += chunk;
       const form = new URLSearchParams(body);
+      const username = form.get('user') || '';
       const pw = form.get('pw') || '';
       const next = form.get('next') || '/';
-      const lock = lockedFor(ip);
+      const key = ip + '|' + username;
+      const lock = lockedFor(key);
       if (lock) return send(res, 429, loginPage('尝试过多，请 ' + lock + ' 秒后再试', next), { 'content-type': 'text/html; charset=utf-8' });
-      if (!verifyPassword(pw)) {
-        noteFail(ip);
-        return send(res, 401, loginPage('口令不正确', next), { 'content-type': 'text/html; charset=utf-8' });
+      const user = DB.findUser(db, username);
+      if (!user || !DB.checkPassword(user, pw)) {
+        noteFail(key);
+        return send(res, 401, loginPage('用户名或密码不正确', next), { 'content-type': 'text/html; charset=utf-8' });
       }
-      fails.delete(ip);
-      upgradeHash(pw);
+      fails.delete(key);
+      upgradeHash(user, pw);
+      DB.touchLogin(db, user.id);
       const nowSec = Math.floor(Date.now() / 1000);
       res.writeHead(302, {
-        'set-cookie': sessionCookie(makeToken(nowSec, nowSec + SESSION_ABS)),
+        'set-cookie': [sessionCookie(makeToken(nowSec, nowSec + SESSION_ABS, user.id)), uidCookie(user.id)],
         'location': next.indexOf('/') === 0 ? next : '/'
       });
       return res.end();
@@ -639,51 +626,59 @@ const server = http.createServer(async function (req, res) {
   }
   /* 退出登录：清 cookie 后回登录页；--no-auth 时没有登录页，直接回首页 */
   if (p === '/__auth/logout') {
-    res.writeHead(302, { 'set-cookie': SESSION_COOKIE + '=; Path=/; Max-Age=0', 'location': NO_AUTH ? '/' : '/__auth' });
+    res.writeHead(302, { 'set-cookie': [SESSION_COOKIE + '=; Path=/; Max-Age=0', 'fm_uid=; Path=/; Max-Age=0'], 'location': NO_AUTH ? '/' : '/__auth' });
     return res.end();
   }
 
-  /* 会话来源：浏览器 cookie，或桌面端的 Authorization: Bearer */
-  const sess = NO_AUTH ? null
-    : (readSession(cookieOf(req, SESSION_COOKIE)) || readSession(bearerOf(req)));
-  /* 媒体/封面走 ?t= 短期票据（<audio>/<img> 没法带请求头） */
-  const ticketOk = !NO_AUTH && !sess &&
-    (p.indexOf('/api/media/') === 0 || p.indexOf('/api/cover/') === 0) &&
-    readTicket(u.searchParams.get('t'));
-  if (!NO_AUTH && !sess && !ticketOk) {
+  /* 会话来源：浏览器 cookie，或桌面端的 Authorization: Bearer；媒体/封面可用 ?t= 票据 */
+  let sess = null, ticket = null;
+  if (!NO_AUTH) {
+    sess = readSession(cookieOf(req, SESSION_COOKIE)) || readSession(bearerOf(req));
+    if (!sess && (p.indexOf('/api/media/') === 0 || p.indexOf('/api/cover/') === 0)) {
+      ticket = readTicket(u.searchParams.get('t'));
+    }
+  }
+  /* --no-auth：免密，但必须有用户（取第一个用户） */
+  const uid = NO_AUTH ? DB.firstUserId(db) : (sess ? sess.uid : (ticket ? ticket.uid : null));
+  if (!uid) {
     if (p.indexOf('/api/') === 0) return send(res, 401, 'unauthorized');
     res.writeHead(302, { 'location': '/__auth?next=' + encodeURIComponent(req.url || '/') });
     return res.end();
   }
+  /* 让前端能同步拿到当前用户（用于本地缓存命名空间），no-auth 也补一份 */
+  if (cookieOf(req, 'fm_uid') !== uid) { try { res.appendHeader('set-cookie', uidCookie(uid)); } catch (e) {} }
   /* 滑动续期：活跃就往后推，但不超过首次登录算起的硬上限 */
   if (sess) {
     const tick = Math.floor(Date.now() / 1000);
     if (tick - sess.iat > REISSUE_AFTER) {
-      res.setHeader('set-cookie', sessionCookie(makeToken(tick, sess.abs)));
+      res.setHeader('set-cookie', sessionCookie(makeToken(tick, sess.abs, sess.uid)));
     }
   }
 
-  /* 每个 API 请求都瞄一眼配置有没有变（内部限流，1 秒最多 stat 一次） */
-  syncLibs();
-
+  const me = DB.getUser(db, uid);
+  if (p === '/api/me') {
+    return json(res, { uid: uid, username: me ? me.username : '', role: me ? me.role : '' });
+  }
   if (p === '/api/ticket') {
-    return json(res, NO_AUTH ? { t: '', exp: 0 } : { t: makeTicket(), exp: Math.floor(Date.now() / 1000) + TICKET_TTL });
+    return json(res, NO_AUTH ? { t: '', exp: 0 } : { t: makeTicket(uid), exp: Math.floor(Date.now() / 1000) + TICKET_TTL });
   }
   if (p === '/api/config') {
-    const lib = activeLib();
-    return json(res, { server: LIBS.length > 0, rootName: lib ? lib.name : '', multi: MULTI, libEdit: ALLOW_LIB_EDIT, version: APP_VERSION });
+    const libs = userLibs(uid);
+    const lib = userActiveLib(uid);
+    return json(res, { server: libs.length > 0, rootName: lib ? lib.name : '', multi: MULTI, libEdit: ALLOW_LIB_EDIT, version: APP_VERSION });
   }
   if (p === '/api/libs') {
-    return json(res, { active: activeId, multi: MULTI, libs: LIBS.map(libView) });
+    const a = userActiveLib(uid);
+    return json(res, { active: a ? a.id : null, multi: MULTI, libs: userLibs(uid).map(libView) });
   }
   if (p === '/api/activate') {
     const id = u.searchParams.get('id') || '';
-    if (!LIBS.some(l => l.id === id)) return send(res, 400, 'unknown lib');
-    activeId = id;
-    return json(res, { active: activeId, libs: LIBS.map(libView) });
+    if (!DB.setActiveLib(db, uid, id)) return send(res, 400, 'unknown lib');
+    const a = userActiveLib(uid);
+    return json(res, { active: a ? a.id : null, libs: userLibs(uid).map(libView) });
   }
   if (p === '/api/meta') {
-    const meta = await readMeta(activeRoot());
+    const meta = await readMeta(userActiveRoot(uid));
     return json(res, meta || { empty: true });
   }
   if (p === '/api/progress') {
@@ -697,7 +692,7 @@ const server = http.createServer(async function (req, res) {
     let rec = null;
     try { rec = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
     if (!rec || !rec.id) return send(res, 400, 'missing id');
-    const lib = LIBS.find(l => l.id === rec.libId) || activeLib();
+    const lib = userLibs(uid).find(l => l.id === rec.libId) || userActiveLib(uid);
     const p2 = Number(rec.p), d2 = Number(rec.d);
     if (!isFinite(p2) || p2 < 0) return send(res, 400, 'bad progress');
     try {
@@ -722,35 +717,40 @@ const server = http.createServer(async function (req, res) {
     }
     let payload = null;
     try { payload = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
-    const r = mutateLibs(payload || {});
+    const r = mutateLibs(uid, payload || {});
     if (r.code !== 200) return send(res, r.code, r.msg);
-    loadLibs();
-    return json(res, { active: activeId, multi: MULTI, libs: LIBS.map(libView) });
+    const a = userActiveLib(uid);
+    return json(res, { active: a ? a.id : null, multi: MULTI, libs: userLibs(uid).map(libView) });
   }
   if (p === '/api/scan') {
-    if (!activeRoot()) return send(res, 404, 'server mode off');
+    const root = userActiveRoot(uid);
+    if (!root) return send(res, 404, 'server mode off');
     try {
-      const data = await scanFolder(activeRoot());
-      data.libId = activeId;
+      const data = await scanFolder(root);
+      const a = userActiveLib(uid);
+      data.libId = a ? a.id : null;
       return json(res, data);
     } catch (e) { return send(res, 500, e.message); }
   }
   if (p === '/api/covers') {
-    if (!activeRoot()) return send(res, 404, 'server mode off');
-    try { return json(res, JSON.parse(await fsp.readFile(path.join(activeRoot(), COVER_DIR, 'covers.json'), 'utf8'))); }
+    const root = userActiveRoot(uid);
+    if (!root) return send(res, 404, 'server mode off');
+    try { return json(res, JSON.parse(await fsp.readFile(path.join(root, COVER_DIR, 'covers.json'), 'utf8'))); }
     catch (e) { return json(res, {}); }
   }
   if (p.indexOf('/api/cover/') === 0) {
-    if (!activeRoot()) return send(res, 404, 'server mode off');
+    const root = userActiveRoot(uid);
+    if (!root) return send(res, 404, 'server mode off');
     try {
-      const file = inside(path.join(activeRoot(), COVER_DIR), p.slice('/api/cover/'.length));
+      const file = inside(path.join(root, COVER_DIR), p.slice('/api/cover/'.length));
       const buf = await fsp.readFile(file);
       return send(res, 200, buf, { 'content-type': MIME[path.extname(file).toLowerCase()] || 'image/jpeg', 'cache-control': 'max-age=86400' });
     } catch (e) { return send(res, 404, 'not found'); }
   }
   if (p.indexOf('/api/media/') === 0) {
-    if (!activeRoot()) return send(res, 404, 'server mode off');
-    return serveMedia(req, res, p.slice('/api/media/'.length));
+    const root = userActiveRoot(uid);
+    if (!root) return send(res, 404, 'server mode off');
+    return serveMedia(req, res, p.slice('/api/media/'.length), root);
   }
 
   const rel = p === '/' ? 'index.html' : p.replace(/^[/]+/, '');
@@ -785,12 +785,11 @@ server.on('error', function (e) {
 });
 
 server.listen(port, host, function () {
+  const users = DB.listUsers(db);
   console.log('星海 FM · http://' + host + ':' + port + '/');
-  if (MULTI) {
-    console.log('资源库 · 跟随桌面端配置，共 ' + LIBS.length + ' 个');
-    LIBS.forEach(function (l) {
-      const shown = String(l.path).replace(/\\/g, '/');
-      console.log('  ' + (l.id === activeId ? '●' : '○') + ' ' + l.name + '  ' + shown + (fs.existsSync(l.path) ? '' : '  (目录不存在)'));
-    });
-  }
+  console.log('数据库 · ' + dataFilePath() + '（用户 ' + users.length + ' 个' + (NO_AUTH ? '，--no-auth 免密' : '') + '）');
+  users.forEach(function (u) {
+    const libs = DB.listLibs(db, u.id);
+    console.log('  ' + (u.role === 'admin' ? '*' : ' ') + ' ' + u.username + '  资源库 ' + libs.length + ' 个');
+  });
 });
