@@ -405,8 +405,7 @@
     const head = '<div class="view-head"><div>' +
       '<div class="page-title">全部专辑<span class="accent"> · </span><span style="font-size:14px;color:var(--dim);font-weight:500">' + esc(libLabel()) + '</span></div>' +
       '<div class="page-sub">' + s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size) +
-        (s.done ? ' · 已听完 ' + s.done + ' 集' : '') +
-        '，' + (FM.fs.server ? '存放在主机' : '全部存放在本机') + '</div></div></div>';
+        (s.done ? ' · 已听完 ' + s.done + ' 集' : '') + '</div></div></div>';
 
 
     let resume = '';
@@ -1246,6 +1245,8 @@
   }
 
   function toggleFull() {
+    /* 壳里走原生全屏（隐藏系统栏 + 横屏），WebView 的 requestFullscreen 经常直接失败 */
+    if (FM.android) { FM.android.fullscreen(!FM.android.fullscreenOn); return; }
     if (document.fullscreenElement) { document.exitFullscreen(); return; }
     const p = document.documentElement.requestFullscreen();
     if (p && p.catch) p.catch(function () { toast('当前环境无法进入全屏', 'warn'); });
@@ -1270,6 +1271,7 @@
       FM.viz.stop();
       wakeUi();
     } else {
+      if (FM.android && FM.android.fullscreenOn) FM.android.fullscreen(false);
       setCinema(false);
       hideUiNow();
       if (queueOpen) toggleQueue();
@@ -1543,6 +1545,7 @@
   }
 
   function closeSheet() {
+    if (FM.android && FM.android.fullscreenOn) FM.android.fullscreen(false);
     setCinema(false);
     hideUiNow();
     refs.sheet.classList.remove('open');
@@ -1629,12 +1632,33 @@
         opt.preview(r, d ? fmtT(d * r) : '--:--');
       }
     }
+    /* 收尾统一走这里：鼠标在轨道外抬起、或指针捕获失败时也要能复位，
+       否则 dragging/scrubbing 会卡在 true（进度时间不再刷新） */
+    function endDrag(e, commit) {
+      if (!dragging) return;
+      dragging = false;
+      scrubbing = false;
+      root.classList.remove('dragging');
+      if (holder) holder.classList.remove('dragging');
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onCancel);
+      if (!commit) return;
+      const r = ratioAt(e);
+      opt.seek && opt.seek(r);
+      if (opt.live) opt.live(r);
+    }
+    function onUp(e) { endDrag(e, true); }
+    function onCancel() { endDrag(null, false); }
+
     root.addEventListener('pointerdown', function (e) {
       dragging = true;
       scrubbing = true;
       root.classList.add('dragging');
       if (holder) holder.classList.add('dragging');      /* 竖向音量：拖动时弹层别收起来 */
-      root.setPointerCapture && root.setPointerCapture(e.pointerId);
+      /* 捕获只是"锦上添花"：拿不到也不影响，收尾靠 document 上的监听 */
+      try { root.setPointerCapture && root.setPointerCapture(e.pointerId); } catch (err) {}
+      document.addEventListener('pointerup', onUp);
+      document.addEventListener('pointercancel', onCancel);
       const r = ratioAt(e);
       apply(r);
       if (opt.live) opt.live(r);
@@ -1643,20 +1667,6 @@
       const r = ratioAt(e);
       if (dragging) { apply(r); if (opt.live) opt.live(r); }
       else if (opt.preview) opt.preview(r, (P.media.duration ? fmtT(P.media.duration * r) : '--:--'));
-    });
-    root.addEventListener('pointerup', function (e) {
-      if (!dragging) return;
-      dragging = false;
-      scrubbing = false;
-      root.classList.remove('dragging');
-      if (holder) holder.classList.remove('dragging');
-      const r = ratioAt(e);
-      opt.seek && opt.seek(r);
-      if (opt.live) opt.live(r);
-    });
-    root.addEventListener('pointercancel', function () {
-      dragging = false; scrubbing = false; root.classList.remove('dragging');
-      if (holder) holder.classList.remove('dragging');
     });
   }
 
@@ -1791,16 +1801,7 @@
       add.onclick = function () { close(); addLibFlow(); };
       foot.appendChild(add);
     }
-    /* 远程模式：底部是服务器入口，状态点 + 主机名两行，别做成看不懂的箭头按钮 */
-    if (FM.fs.remote) {
-      const lk = FM.fs.link;
-      const tag = lk === 'offline' ? ' · 离线' : (lk === 'auth' ? ' · 未授权' : '');
-      const srv = U.el('button', { class: 'btn btn-ghost lib-remote-btn' + (lk === 'online' ? '' : ' warn'), title: '远程服务器设置' });
-      srv.innerHTML = '<i class="link-dot"></i>' +
-        '<span class="remote-txt"><b>远程服务器' + tag + '</b><small>' + esc(remoteHost()) + '</small></span>';
-      srv.onclick = function () { close(); openRemoteDialog(); };
-      foot.appendChild(srv);
-    }
+    /* 远端设置入口在资源库菜单里（「远程服务器设置…」），抽屉底部不再重复放一个 */
     /* 壳里没有「在文件夹中打开」这类本地动作，换成唯一有用的：换服务器 */
     if (FM.android) {
       const appBtn = U.el('button', { class: 'btn btn-ghost lib-remote-btn', title: '服务器地址' });

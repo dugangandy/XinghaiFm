@@ -7,6 +7,7 @@ package local.xinghai.fm
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
@@ -273,38 +274,63 @@ class MainActivity : Activity() {
         root.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         web?.visibility = View.GONE
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        immersive(true)
+    }
+
+    /* 沉浸式：藏状态栏和导航栏，下拉临时唤出 */
+    @Suppress("DEPRECATION")
+    private fun immersive(on: Boolean) {
         if (Build.VERSION.SDK_INT >= 30) {
-            window.setDecorFitsSystemWindows(false)
+            window.setDecorFitsSystemWindows(!on)
             window.insetsController?.apply {
-                hide(WindowInsets.Type.systemBars())
-                systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                if (on) {
+                    hide(WindowInsets.Type.systemBars())
+                    systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                } else {
+                    show(WindowInsets.Type.systemBars())
+                }
             }
-        } else {
+        } else if (on) {
             window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN
                 or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                 or View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+        } else {
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun hideVideo() {
         val v = customView ?: return
         customView = null
         root.removeView(v)
         web?.visibility = View.VISIBLE
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        if (Build.VERSION.SDK_INT >= 30) {
-            window.setDecorFitsSystemWindows(true)
-            window.insetsController?.show(WindowInsets.Type.systemBars())
-        } else {
-            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
-        }
+        immersive(false)
         customCallback?.onCustomViewHidden()
         customCallback = null
     }
 
-    /* ── 返回键：先让网页处理（关播放页 / 抽屉 / 搜索），再退历史，最后双击退出 ── */
+    /* ── 全屏：网页那边只负责把画面铺满，系统栏和横屏由这里管 ── */
+    private var appFullscreen = false
+
+    fun setFullscreen(on: Boolean) {
+        runOnUiThread {
+            if (appFullscreen == on) return@runOnUiThread
+            appFullscreen = on
+            if (on) {
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                immersive(true)
+            } else {
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                immersive(false)
+            }
+        }
+    }
+
+    /* 返回键：先让网页处理（关播放页 / 抽屉 / 搜索），再退历史，最后双击退出 ── */
     override fun onBackPressed() {
         if (customView != null) {
             hideVideo()
@@ -422,6 +448,9 @@ class MainActivity : Activity() {
         fun setNav(hasPrev: Boolean, hasNext: Boolean) {
             runOnUiThread { PlaybackService.current?.updateNav(hasPrev, hasNext) }
         }
+
+        @JavascriptInterface
+        fun setFullscreen(on: Boolean) = this@MainActivity.setFullscreen(on)
 
         @JavascriptInterface
         fun openSettings() = showServerDialog()

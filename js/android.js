@@ -50,10 +50,18 @@
     syncMedia(true);
   }
 
+  /* 全屏：壳负责隐藏系统栏 + 横屏，网页只把画面铺满（WebView 的 requestFullscreen 不可靠） */
+  function fullscreen(on) {
+    const next = !!on;
+    document.body.classList.toggle('app-fs', next);
+    try { NATIVE.setFullscreen(next); } catch (e) {}
+  }
+
   function $(id) { return document.getElementById(id); }
 
   /* 返回键：从最上层的浮层往下收，返回 true 表示这次返回被网页消化了 */
   function back() {
+    if (document.body.classList.contains('app-fs')) { fullscreen(false); return true; }
     const modalRoot = $('modalRoot');
     if (modalRoot && modalRoot.childElementCount) {
       const mask = modalRoot.querySelector('.modal-mask') || modalRoot.querySelector('.lib-drawer-mask');
@@ -97,6 +105,8 @@
     syncMedia,
     mediaAction,
     back,
+    fullscreen,
+    get fullscreenOn() { return document.body.classList.contains('app-fs'); },
     openSettings: function () { try { NATIVE.openSettings(); } catch (e) {} },
     base: function () { try { return NATIVE.baseUrl(); } catch (e) { return ''; } },
     version: function () { try { return NATIVE.version(); } catch (e) { return ''; } }
