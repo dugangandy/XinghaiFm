@@ -32,7 +32,7 @@
       btnBack15: $('btnBack15'), btnFwd15: $('btnFwd15'),
       pbCur: $('pbCur'), pbDur: $('pbDur'), pbScrub: $('pbScrub'), pbTip: $('pbTip'),
       btnRate: $('btnRate'), btnLoop: $('btnLoop'), btnVol: $('btnVol'), volScrub: $('volScrub'), btnExpand: $('btnExpand'),
-      volNum: $('volNum'), vVolNum: $('vVolNum'),
+      volNum: $('volNum'), vVolNum: $('vVolNum'), btnLogout: $('btnLogout'),
       sheet: $('sheet'), btnCollapse: $('btnCollapse'),
       sheetCover: $('sheetCover'), shTitle: $('shTitle'), shSub: $('shSub'),
       shCur: $('shCur'), shDur: $('shDur'), shScrub: $('shScrub'), shTip: $('shTip'),
@@ -759,6 +759,9 @@
     });
     refs.libSwitch.addEventListener('click', function () { openLibMenu(refs.libSwitch); });
     refs.btnSync.addEventListener('click', function () { doScan(); });
+    if (refs.btnLogout) {
+      refs.btnLogout.addEventListener('click', function () { location.href = '/__auth/logout'; });
+    }
     refs.btnAddCat.addEventListener('click', function () { if (!readonlyBlocked()) editCat(null); });
     refs.btnMenu.addEventListener('click', function () {
       /* 窄屏：侧栏是抽屉，开/关；宽屏：整列折叠，状态记到本地 */
@@ -2208,6 +2211,10 @@
 
   function syncMode() {
     document.body.classList.toggle('is-server', !!FM.fs.server);
+    /* 退出登录只对浏览器直连服务器有意义：Electron 界面没有登录态 */
+    if (refs.btnLogout) {
+      refs.btnLogout.hidden = !(!FM.fs.desktop && !FM.android && !!FM.fs.server);
+    }
   }
 
   function renderAll(opts) {

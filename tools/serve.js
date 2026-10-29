@@ -632,8 +632,9 @@ const server = http.createServer(async function (req, res) {
     }
     return send(res, 200, loginPage('', u.searchParams.get('next') || '/'), { 'content-type': 'text/html; charset=utf-8' });
   }
-  if (!NO_AUTH && p === '/__auth/logout') {
-    res.writeHead(302, { 'set-cookie': SESSION_COOKIE + '=; Path=/; Max-Age=0', 'location': '/__auth' });
+  /* 退出登录：清 cookie 后回登录页；--no-auth 时没有登录页，直接回首页 */
+  if (p === '/__auth/logout') {
+    res.writeHead(302, { 'set-cookie': SESSION_COOKIE + '=; Path=/; Max-Age=0', 'location': NO_AUTH ? '/' : '/__auth' });
     return res.end();
   }
 
