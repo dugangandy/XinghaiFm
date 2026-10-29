@@ -16,8 +16,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaSession
@@ -48,7 +46,6 @@ class PlaybackService : Service() {
     }
 
     private var session: MediaSession? = null
-    private var focusRequest: AudioFocusRequest? = null
     private var wake: PowerManager.WakeLock? = null
     private var registered = false
 
@@ -65,12 +62,6 @@ class PlaybackService : Service() {
             if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY && playing) {
                 act("pause")
             }
-        }
-    }
-
-    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
-        if (playing && (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)) {
-            act("pause")
         }
     }
 
@@ -113,7 +104,6 @@ class PlaybackService : Service() {
     override fun onDestroy() {
         current = null
         if (registered) runCatching { unregisterReceiver(noisy) }
-        abandonFocus()
         releaseWake()
         session?.isActive = false
         session?.release()
@@ -129,13 +119,7 @@ class PlaybackService : Service() {
             return
         }
         playing = on
-        if (on) {
-            acquireWake()
-            requestFocus()
-        } else {
-            abandonFocus()
-            releaseWake()
-        }
+        if (on) acquireWake() else releaseWake()
         refresh()
     }
 
@@ -240,39 +224,9 @@ class PlaybackService : Service() {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     )
 
-    /* ── 音频焦点与唤醒锁 ── */
-    private fun requestFocus() {
-        val am = getSystemService(AudioManager::class.java) ?: return
-        if (Build.VERSION.SDK_INT >= 26) {
-            val req = focusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setOnAudioFocusChangeListener(focusListener)
-                .setWillPauseWhenDucked(true)
-                .build()
-                .also { focusRequest = it }
-            am.requestAudioFocus(req)
-        } else {
-            @Suppress("DEPRECATION")
-            am.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
-        }
-    }
-
-    private fun abandonFocus() {
-        val am = getSystemService(AudioManager::class.java)
-        if (Build.VERSION.SDK_INT >= 26) {
-            val req = focusRequest ?: return
-            am?.abandonAudioFocusRequest(req)
-        } else {
-            @Suppress("DEPRECATION")
-            am?.abandonAudioFocus(focusListener)
-        }
-    }
-
+    /* ── 唤醒锁 ──
+     * 音频焦点交给 WebView（Chromium 自己会申请）：这里再申请一次 AUDIOFOCUS_GAIN，
+     * 系统会把 LOSS 发给同一个 App 里的媒体播放器，表现就是「刚出声就被自动暂停」。 */
     private fun acquireWake() {
         if (wake?.isHeld == true) return
         wake = (getSystemService(PowerManager::class.java)?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "xinghaifm:playback"))
