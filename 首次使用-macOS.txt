@@ -1,0 +1,52 @@
+星海FM · macOS 使用说明（源码包）
+
+这个包是源码 + 打包脚本，不是编译好的 .app。
+（macOS 的 .app 里有 framework 符号链接和代码签名，在 Windows 上交叉打包出来的
+ 往往启动不了，所以这里给你源码，在 Mac 上一条命令出正式产物。）
+
+────────────────────────────
+一、直接跑起来（自己用）
+────────────────────────────
+1. 解压，打开「终端」，cd 到本目录
+2. 装依赖（首次，会下载 Electron 约 100MB）：
+     npm install
+3. 启动：
+     npm start
+
+────────────────────────────
+二、打成可分发的安装包（给别人）
+────────────────────────────
+双击 打包-macOS.command，或者：
+
+     npm install
+     npm run dist:mac
+
+产物在 dist/：星海FM-1.0.0-arm64.dmg、星海FM-1.0.0-x64.dmg 以及对应 zip。
+arm64 给 Apple 芯片，x64 给 Intel。
+
+没有开发者证书时不会签名（package.json 里 build.mac.identity 为 null），
+别人首次打开要「右键 → 打开」放行一次；想彻底免打扰，用 Apple 开发者账号
+签名 + 公证（在 build.mac 里配 identity / notarize）。
+
+────────────────────────────
+三、网络
+────────────────────────────
+打包脚本里已经带了国内镜像：
+  ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+  ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
+如果 npm 本身也慢：npm config set registry https://registry.npmmirror.com
+
+────────────────────────────
+四、其他
+────────────────────────────
+- 需要 macOS 12.7.6+（Monterey）、Node.js 18+
+- 有声书目录：首次启动选一次，路径记在 ~/Library/Application Support/星海FM/config.json
+- 封面：把 .fm-covers 放进音频目录，或跑
+    node tools/fetch-covers.js --root "/Users/你/有声书"
+- 远程访问（服务器模式 + SSH 隧道）：
+    双击「启动-公网.command」即可，对应 Windows 的 启动-公网.bat
+    （先在 .tunnel.json 里填 mediaRoot 和 ssh.host，口令用
+      node tools/serve.js --set-password 设置）
+- 只在本机跑服务器模式：node tools/serve.js 8080 --root "/Users/你/有声书"
+- 图标源文件在 build/logo/*.svg，改完用 build/logo/preview.html 预览；
+  导出各尺寸要重跑渲染脚本（Windows 上用 Electron 渲染，Mac 上也可用同样办法）

@@ -1,0 +1,92 @@
+/* ── 星海 FM · 基础层 ─────────────────────────────────── */
+:root{
+  --bg:#05070e;
+  --bg-2:#080b14;
+  --panel:rgba(15,20,34,.62);
+  --panel-2:rgba(255,255,255,.035);
+  --panel-3:rgba(255,255,255,.06);
+  --line:rgba(255,255,255,.075);
+  --line-2:rgba(255,255,255,.12);
+  --txt:#e9eefb;
+  --txt-2:#aab4cb;
+  --dim:#7a869e;
+  --dim-2:#59637a;
+  --cyan:#22d3ee;
+  --violet:#a855f7;
+  --pink:#f472b6;
+  --lime:#5eead4;
+  --grad:linear-gradient(120deg,#22d3ee 0%,#8b5cf6 52%,#f472b6 100%);
+  --grad-soft:linear-gradient(120deg,rgba(34,211,238,.18),rgba(168,85,247,.18));
+  --glow-cyan:0 0 32px -8px rgba(34,211,238,.65);
+  --shadow-1:0 10px 30px -12px rgba(0,0,0,.7);
+  --shadow-2:0 26px 60px -28px rgba(0,0,0,.9);
+  --r-sm:10px; --r-md:14px; --r-lg:18px; --r-xl:26px;
+  --ease:cubic-bezier(.22,.9,.24,1);
+  --font:"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei UI","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --pb-h:86px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  font-family:var(--font);
+  color:var(--txt);
+  background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  overflow:hidden;
+}
+h1,h2,h3,h4,p{margin:0}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input{font:inherit;color:inherit;background:none;border:0;outline:none}
+a{color:inherit;text-decoration:none}
+ul,ol{margin:0;padding:0;list-style:none}
+::selection{background:rgba(34,211,238,.28)}
+
+[hidden]{display:none !important}
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+.i{width:20px;height:20px;display:block;flex:none;pointer-events:none}
+.tnum{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;letter-spacing:.02em}
+.muted{color:var(--dim)}
+
+/* 滚动条 */
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{
+  background:linear-gradient(180deg,rgba(34,211,238,.28),rgba(168,85,247,.28));
+  border-radius:99px;border:2px solid transparent;background-clip:padding-box;
+}
+::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,rgba(34,211,238,.6),rgba(168,85,247,.6));background-clip:padding-box}
+
+/* ── 背景氛围 ── */
+.bg{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none;background:
+  radial-gradient(1200px 700px at 12% -10%,#0d1a2e 0%,transparent 60%),
+  radial-gradient(900px 600px at 96% 0%,#1a0f2b 0%,transparent 55%),
+  linear-gradient(180deg,#05070e,#04060c 70%,#050810);
+}
+.bg-aurora{position:absolute;border-radius:50%;filter:blur(90px);opacity:.5;mix-blend-mode:screen;will-change:transform}
+.bg-aurora.a1{width:56vw;height:56vw;left:-14vw;top:-18vw;background:radial-gradient(circle at 35% 35%,rgba(34,211,238,.42),transparent 62%);animation:drift1 34s ease-in-out infinite alternate}
+.bg-aurora.a2{width:50vw;height:50vw;right:-12vw;top:-6vw;background:radial-gradient(circle at 60% 40%,rgba(168,85,247,.4),transparent 62%);animation:drift2 42s ease-in-out infinite alternate}
+.bg-aurora.a3{width:44vw;height:44vw;left:38vw;bottom:-26vw;background:radial-gradient(circle at 50% 50%,rgba(244,114,182,.26),transparent 65%);animation:drift3 38s ease-in-out infinite alternate}
+@keyframes drift1{to{transform:translate3d(7vw,4vw,0) scale(1.14)}}
+@keyframes drift2{to{transform:translate3d(-6vw,6vw,0) scale(1.1)}}
+@keyframes drift3{to{transform:translate3d(4vw,-5vw,0) scale(1.18)}}
+
+.bg-grid{position:absolute;inset:-40%;opacity:.5;
+  background-image:linear-gradient(rgba(120,160,255,.055) 1px,transparent 1px),linear-gradient(90deg,rgba(120,160,255,.055) 1px,transparent 1px);
+  background-size:64px 64px;
+  transform:perspective(700px) rotateX(58deg) translateY(-6%);
+  mask-image:radial-gradient(circle at 50% 30%,#000 0%,transparent 72%);
+  -webkit-mask-image:radial-gradient(circle at 50% 30%,#000 0%,transparent 72%);
+  animation:gridMove 22s linear infinite;
+}
+@keyframes gridMove{to{background-position:0 64px,64px 0}}
+.bg-vignette{position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 0%,transparent 40%,rgba(2,4,10,.72) 100%)}
+.bg-noise{position:absolute;inset:0;opacity:.05;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+@media (prefers-reduced-motion:reduce){
+  .bg-aurora,.bg-grid{animation:none}
+  *{animation-duration:.001ms !important;transition-duration:.001ms !important}
+}

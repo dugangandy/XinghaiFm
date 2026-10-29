@@ -1,0 +1,101 @@
+{
+  "name": "xinghai-fm",
+  "productName": "星海FM",
+  "version": "1.0.7",
+  "description": "本地有声书播放器 · 离线、分类管理、倍速播放",
+  "main": "main.js",
+  "author": "local",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "bump": "node tools/bump-version.js",
+    "predist": "node tools/bump-version.js",
+    "dist": "electron-builder --win",
+    "predist:mac": "node tools/bump-version.js",
+    "dist:mac": "electron-builder --mac",
+    "prepack:mac": "node tools/bump-version.js",
+    "pack:mac": "electron-packager . 星海FM --platform=darwin --arch=arm64,x64 --asar --icon=build/icon.icns --out=dist/mac --overwrite --app-bundle-id=local.xinghai.fm --ignore=\"^/(dist|tools|node_modules|\\.tmp-electron)\""
+  },
+  "build": {
+    "appId": "local.xinghai.fm",
+    "productName": "星海FM",
+    "copyright": "本地离线工具",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "index.html",
+      "css/**/*",
+      "js/**/*",
+      "main.js",
+      "preload.js",
+      "README.md",
+      "build/icon.png",
+      "!js/__*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "artifactName": "星海FM-${version}-Setup.${ext}",
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "星海FM",
+      "deleteAppDataOnUninstall": false,
+      "language": "2052",
+      "installerLanguages": [
+        "zh_CN"
+      ]
+    },
+    "portable": {
+      "artifactName": "星海FM-${version}.exe",
+      "requestExecutionLevel": "user",
+      "splashImage": "build/splash.bmp"
+    },
+    "compression": "store",
+    "mac": {
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns",
+      "identity": null,
+      "artifactName": "星海FM-${version}-${arch}.${ext}",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "42.11.18",
+    "electron-builder": "^26.18.0"
+  }
+}

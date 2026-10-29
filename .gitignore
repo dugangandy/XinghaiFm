@@ -1,0 +1,20 @@
+# 依赖与构建产物
+node_modules/
+dist/
+out/
+*.log
+
+# 本地临时文件与验证目录
+.tmp-*/
+.tmp-*.js
+*.tmp
+
+# 本地敏感配置（登录凭据 / 隧道服务器信息）
+.auth.json
+.tunnel.json
+config.json
+appdata/
+
+# 系统文件
+.DS_Store
+Thumbs.db

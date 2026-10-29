@@ -1,0 +1,12 @@
+{
+  "localPort": 8080,
+  "remotePort": 8889,
+  "ssh": {
+    "host": "填你的服务器地址",
+    "port": 22,
+    "key": ""
+  },
+  "configFile": "",
+  "allowLibEdit": false,
+  "maxRetries": 10
+}
