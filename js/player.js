@@ -15,7 +15,20 @@
   const LOOP_LABEL = { all: '列表循环', one: '单集循环', shuffle: '随机播放', off: '顺序播放' };
   const LOOP_ICON = { all: 'repeat', one: 'repeat1', shuffle: 'shuffle', off: 'repeat' };
 
-  const media = document.getElementById('media');
+  /* 音频走独立的 <audio>：安卓 WebView 里那个 <video> 藏在 display:none 的播放页里，
+     暂停后再换源经常起不来（要杀掉 App 才能恢复），桌面 Chrome 没这毛病。
+     视频仍然用 <video>，media 指向「当前在用的那一个」。 */
+  const videoEl = document.getElementById('media');
+  const audioEl = document.getElementById('mediaAudio');
+  let media = videoEl;
+  const ELS = [videoEl, audioEl].filter(Boolean);
+
+  function stopEl(el) {
+    try { el.pause(); } catch (e) {}
+    try { el.removeAttribute('src'); el.load(); } catch (e) {}
+  }
+  function eachEl(fn) { ELS.forEach(function (el) { try { fn(el); } catch (e) {} }); }
+
   const ev = U.emitter();
 
   let queue = [];
@@ -124,6 +137,8 @@
     const o = opts || {};
     const my = ++loadToken;
     cur = track;
+    const el = track.kind === 'video' ? videoEl : audioEl;
+    if (media !== el) { stopEl(media); media = el; }
     setKind(track.kind === 'video' ? 'video' : 'audio');
     ev.emit('track', track, { restored: false });
     updateSession(track);
@@ -134,39 +149,49 @@
       objectUrl = s.url;
       objectRevoke = s.revoke;
       /* 远程库的媒体是跨源的：不声明 CORS，WebAudio 的 MediaElementSource 会把采样全输出 0（进度条走、没声音） */
-      media.crossOrigin = FM.fs.remote ? 'anonymous' : null;
-      media.src = objectUrl;
-      media.playbackRate = rate;
-      media.load();
-      await once(media, 'loadedmetadata');
+      el.crossOrigin = FM.fs.remote ? 'anonymous' : null;
+      el.src = objectUrl;
+      el.playbackRate = rate;
+      el.volume = volume;
+      el.muted = muted;
+      el.load();
+      await once(el, 'loadedmetadata');
       if (my !== loadToken) return;
       /* 扩展名说是视频、实际只有音轨（或者反过来）时以真实轨道为准 */
-      setKind(media.videoWidth > 0 ? 'video' : 'audio');
-      const dur = isFinite(media.duration) ? media.duration : (track.duration || 0);
+      setKind(el.videoWidth > 0 ? 'video' : 'audio');
+      const dur = isFinite(el.duration) ? el.duration : (track.duration || 0);
       if (dur > 0) FM.lib.setDuration(track.id, dur);
       const p = FM.lib.progressOf(track.id);
       let start = o.seek;
       if (start == null && p && p.p > 3 && (!p.d || p.p < p.d - 8)) start = p.p;
       if (start && start > 0) {
-        media.currentTime = dur ? Math.min(start, Math.max(0, dur - 1)) : start;
+        el.currentTime = dur ? Math.min(start, Math.max(0, dur - 1)) : start;
       }
-      ev.emit('time', media.currentTime, dur);
-      if (o.autoplay) await play();
-      else ev.emit('state', false);
+      ev.emit('time', el.currentTime, dur);
+      if (o.autoplay) {
+        armRecover(el, my);
+        await play();
+      } else ev.emit('state', false);
     } catch (e) {
       if (my !== loadToken) return;
       ev.emit('error', e);
     }
   }
 
+  /* 安卓 WebView 上偶发「换源后 play() 一直不落地」：进度不动、没有声音也不报错。
+     2 秒还没起来就把数据源重挂一次，只试一次，正常播放时不会走到这里。 */
+  function armRecover(el, my) {
+    setTimeout(function () {
+      if (my !== loadToken || !cur) return;
+      if (!el.paused || el.error || el.readyState >= 2) return;
+      try { el.load(); el.play(); } catch (e) {}
+    }, 2000);
+  }
+
   /* ── 停止并清空（切换资源库时用） ── */
   function stop() {
     if (cur) saveProgress(true);
-    try { media.pause(); } catch (e) {}
-    if (objectRevoke) { objectRevoke(); objectRevoke = null; }
-    objectUrl = null;
-    media.removeAttribute('src');
-    try { media.load(); } catch (e) {}
+    eachEl(stopEl);
     queue = [];
     index = -1;
     cur = null;
@@ -310,10 +335,12 @@
   /* ── 倍速 ── */
   function setRate(r) {
     rate = Math.round(U.clamp(r, 0.5, 3) * 100) / 100;
-    media.playbackRate = rate;
-    media.preservesPitch = true;
-    media.mozPreservesPitch = true;
-    media.webkitPreservesPitch = true;
+    eachEl(function (el) {
+      el.playbackRate = rate;
+      el.preservesPitch = true;
+      el.mozPreservesPitch = true;
+      el.webkitPreservesPitch = true;
+    });
     persistState({ rate });
     ev.emit('rate', rate);
   }
@@ -332,20 +359,18 @@
   function setVolume(v) {
     volume = U.clamp(v, 0, 1);
     muted = volume === 0;
-    media.volume = volume;
-    media.muted = false;
+    eachEl(function (el) { el.volume = volume; el.muted = false; });
     persistState({ volume });
     ev.emit('volume', volume, muted);
   }
 
   function toggleMute() {
-    if (media.muted || media.volume === 0) {
-      media.muted = false;
-      if (media.volume === 0) media.volume = volume || 1;
-    } else {
-      media.muted = true;
-    }
-    muted = media.muted;
+    const next = !(media.muted || media.volume === 0);
+    eachEl(function (el) {
+      el.muted = next;
+      if (!next && el.volume === 0) el.volume = volume || 1;
+    });
+    muted = next;
     ev.emit('volume', media.muted ? 0 : media.volume, muted);
   }
 
@@ -384,24 +409,37 @@
     ev.emit('sleep', sleepEnd - Date.now());
   }
 
-  /* ── 音频事件 ── */
+  /* ── 媒体事件：audio 与 video 各绑一套，只认当前在用的那个 ── */
   let tick = 0;
-  media.addEventListener('timeupdate', function () {
-    ev.emit('time', media.currentTime, isFinite(media.duration) ? media.duration : (cur ? cur.duration : 0));
-    if (!media.paused) saveProgress(false);
+  ELS.forEach(function (el) {
+    el.addEventListener('timeupdate', function () {
+      if (el !== media) return;
+      ev.emit('time', el.currentTime, isFinite(el.duration) ? el.duration : (cur ? cur.duration : 0));
+      if (!el.paused) saveProgress(false);
+    });
+    el.addEventListener('play', function () {
+      if (el !== media) return;
+      ev.emit('state', true);
+    });
+    el.addEventListener('pause', function () {
+      if (el !== media) return;
+      ev.emit('state', false);
+      saveProgress(true);
+    });
+    el.addEventListener('ended', function () {
+      if (el !== media) return;
+      saveProgress(true);
+      if (cur) FM.lib.setProgress(cur.id, el.duration || cur.duration || 0, el.duration || cur.duration || 0, true);
+      next(true);
+    });
+    el.addEventListener('error', function () {
+      if (el !== media || !el.src) return;
+      ev.emit('error', new Error('音频无法播放'));
+    });
+    el.addEventListener('ratechange', function () {
+      if (el.playbackRate !== rate) el.playbackRate = rate;
+    });
   });
-  media.addEventListener('play', function () { ev.emit('state', true); });
-  media.addEventListener('pause', function () { ev.emit('state', false); saveProgress(true); });
-  media.addEventListener('ended', function () {
-    saveProgress(true);
-    if (cur) FM.lib.setProgress(cur.id, media.duration || cur.duration || 0, media.duration || cur.duration || 0, true);
-    next(true);
-  });
-  media.addEventListener('error', function () {
-    if (!media.src) return;
-    ev.emit('error', new Error('音频无法播放'));
-  });
-  media.addEventListener('ratechange', function () { if (media.playbackRate !== rate) media.playbackRate = rate; });
   window.addEventListener('pagehide', function () { saveProgress(true); });
   window.addEventListener('beforeunload', function () { saveProgress(true); });
 

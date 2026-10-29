@@ -10,16 +10,23 @@
 
   function attach() {
     if (ctx || failed) return !!ctx;
-    const media = document.getElementById('media');
+    /* 安卓壳里不接管音频输出：WebAudio 一旦被系统挂起（切后台、来电），
+       走过它的声音就只剩静音图，而频谱本身只是装饰 */
+    if (window.fmAndroid) { failed = true; return false; }
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) { failed = true; return false; }
       ctx = new AC();
-      srcNode = ctx.createMediaElementSource(media);
       analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
       analyser.smoothingTimeConstant = 0.82;
-      srcNode.connect(analyser);
+      /* 音频和视频各一个源，谁在放谁出声 */
+      ['media', 'mediaAudio'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        ctx.createMediaElementSource(el).connect(analyser);
+      });
+      srcNode = analyser;
       analyser.connect(ctx.destination);
       freq = new Uint8Array(analyser.frequencyBinCount);
       return true;
