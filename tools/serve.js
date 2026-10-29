@@ -251,28 +251,31 @@ function upgradeHash(user, password) {
 function sign(payload, secret) {
   return crypto.createHmac('sha256', Buffer.from(secret, 'base64')).update(payload).digest('base64url');
 }
-/* token = iat.abs.uid.sig，iat 随活跃滑动，abs 是硬上限 */
-function makeToken(iat, abs, uid) {
-  const payload = iat + '.' + abs + '.' + uid;
+/* token = iat.abs.uid.ver.sig，iat 随活跃滑动，abs 是硬上限，ver 是用户 token 版本 */
+function makeToken(iat, abs, uid, ver) {
+  const payload = iat + '.' + abs + '.' + uid + '.' + (Number(ver) || 0);
   return payload + '.' + sign(payload, DB.secret(db));
 }
 function readSession(token) {
   if (!token) return null;
   const parts = String(token).split('.');
-  if (parts.length !== 4) return null;
+  if (parts.length !== 5) return null;
   const iat = parseInt(parts[0], 10);
   const abs = parseInt(parts[1], 10);
   const uid = parts[2];
-  if (!(iat > 0) || !(abs > 0) || !uid) return null;
-  const want = Buffer.from(sign(iat + '.' + abs + '.' + uid, DB.secret(db)));
-  const got = Buffer.from(parts[3]);
+  const ver = parseInt(parts[3], 10);
+  if (!(iat > 0) || !(abs > 0) || !uid || !(ver >= 0)) return null;
+  const want = Buffer.from(sign(iat + '.' + abs + '.' + uid + '.' + ver, DB.secret(db)));
+  const got = Buffer.from(parts[4]);
   if (want.length !== got.length || !crypto.timingSafeEqual(want, got)) return null;
   const now = Math.floor(Date.now() / 1000);
   if (now > abs) return null;
   if (now - iat > SESSION_IDLE) return null;
   const u = DB.getUser(db, uid);
   if (!u) return null;
-  return { iat: iat, abs: abs, uid: uid, username: u.username, role: u.role };
+  /* 改过密码（token_version 变了）→ 旧 token 作废 */
+  if ((Number(u.token_version) || 0) !== ver) return null;
+  return { iat: iat, abs: abs, uid: uid, ver: ver, username: u.username, role: u.role };
 }
 /* 短期票据：带 uid，只能读该用户自己的库（<audio>/<img> 带不了请求头） */
 const TICKET_TTL = 2 * 3600;
@@ -585,7 +588,7 @@ const server = http.createServer(async function (req, res) {
     const key = ip + '|' + username;
     const lock = lockedFor(key);
     if (lock) return send(res, 429, '尝试过多，请 ' + lock + ' 秒后再试');
-    if (NO_AUTH) { const fu = DB.firstUserId(db); const t0 = Math.floor(Date.now() / 1000); return json(res, { token: fu ? makeToken(t0, t0 + SESSION_ABS, fu) : '' }); }
+    if (NO_AUTH) { const fu = DB.getUser(db, DB.firstUserId(db) || ''); const t0 = Math.floor(Date.now() / 1000); return json(res, { token: fu ? makeToken(t0, t0 + SESSION_ABS, fu.id, fu.token_version) : '' }); }
     const user = DB.findUser(db, username);
     if (!user || !DB.checkPassword(user, pw)) { noteFail(key); return send(res, 401, '用户名或密码不正确'); }
     fails.delete(key);
@@ -593,7 +596,7 @@ const server = http.createServer(async function (req, res) {
     DB.touchLogin(db, user.id);
     res.appendHeader('set-cookie', uidCookie(user.id));
     const nowSec = Math.floor(Date.now() / 1000);
-    return json(res, { token: makeToken(nowSec, nowSec + SESSION_ABS, user.id), uid: user.id, username: user.username });
+    return json(res, { token: makeToken(nowSec, nowSec + SESSION_ABS, user.id, user.token_version), uid: user.id, username: user.username });
   }
 
   if (!NO_AUTH && p === '/__auth') {
@@ -617,7 +620,7 @@ const server = http.createServer(async function (req, res) {
       DB.touchLogin(db, user.id);
       const nowSec = Math.floor(Date.now() / 1000);
       res.writeHead(302, {
-        'set-cookie': [sessionCookie(makeToken(nowSec, nowSec + SESSION_ABS, user.id)), uidCookie(user.id)],
+        'set-cookie': [sessionCookie(makeToken(nowSec, nowSec + SESSION_ABS, user.id, user.token_version)), uidCookie(user.id)],
         'location': next.indexOf('/') === 0 ? next : '/'
       });
       return res.end();
@@ -651,7 +654,7 @@ const server = http.createServer(async function (req, res) {
   if (sess) {
     const tick = Math.floor(Date.now() / 1000);
     if (tick - sess.iat > REISSUE_AFTER) {
-      res.setHeader('set-cookie', sessionCookie(makeToken(tick, sess.abs, sess.uid)));
+      res.setHeader('set-cookie', sessionCookie(makeToken(tick, sess.abs, sess.uid, sess.ver)));
     }
   }
 

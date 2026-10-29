@@ -9,7 +9,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const ITERATIONS = 600000;
 const ADMIN_ID = 'u_admin';
 
@@ -32,6 +32,7 @@ function ensureSchema(db) {
     '  iterations INTEGER NOT NULL,',
     '  salt TEXT NOT NULL,',
     '  hash TEXT NOT NULL,',
+    '  token_version INTEGER NOT NULL DEFAULT 0,',
     '  created_at TEXT NOT NULL,',
     '  last_login_at TEXT',
     ');',
@@ -54,6 +55,11 @@ function ensureSchema(db) {
     '  key TEXT PRIMARY KEY, value TEXT',
     ');'
   ].join('\n'));
+  /* 旧库补列：token_version（改密码后让该用户旧 token 立即失效） */
+  const cols = db.prepare('PRAGMA table_info(users)').all();
+  if (!cols.some(function (c) { return c.name === 'token_version'; })) {
+    db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
+  }
   if (!getSetting(db, 'secret')) setSetting(db, 'secret', crypto.randomBytes(32).toString('base64'));
   db.exec('PRAGMA user_version = ' + SCHEMA_VERSION);
 }
@@ -113,7 +119,8 @@ function addUser(db, opts) {
 }
 function setUserPassword(db, id, password) {
   const pw = makePassword(password);
-  db.prepare('UPDATE users SET algo=?, iterations=?, salt=?, hash=? WHERE id=?').run(pw.algo, pw.iterations, pw.salt, pw.hash, id);
+  /* token_version 自增：该用户此前签发的 token 立即失效（其它用户不受影响） */
+  db.prepare('UPDATE users SET algo=?, iterations=?, salt=?, hash=?, token_version = token_version + 1 WHERE id=?').run(pw.algo, pw.iterations, pw.salt, pw.hash, id);
 }
 function removeUser(db, id) { db.prepare('DELETE FROM users WHERE id = ?').run(id); }
 function touchLogin(db, id) { db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), id); }

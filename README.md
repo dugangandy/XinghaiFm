@@ -186,7 +186,7 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
    node tools/init-db.js --set-password admin    # 改密码
    ```
 
-   用户与密码存在 `fm.db`（pbkdf2-sha256 60 万轮哈希），每个用户各自独立的资源库。
+   用户与密码存在 `fm.db`（pbkdf2-sha256 60 万轮哈希），每个用户各自独立的资源库。改密码会立即让**该用户**已登录的设备失效（其它用户不受影响）。
 
 2. **只在本机试**：
 
