@@ -84,6 +84,7 @@ class VideoPlayerActivity : Activity() {
     private var am: AudioManager? = null
 
     private var rate = 1f
+    private var audioOnly = false
     private val RATES = floatArrayOf(0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
     private val FAST = 2f
 
@@ -136,7 +137,8 @@ class VideoPlayerActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        audioOnly = intent?.getBooleanExtra("audio", false) == true
+        requestedOrientation = if (audioOnly) ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         base = (getSharedPreferences("fm", MODE_PRIVATE).getString("base", "") ?: "").trim().trimEnd('/')
         am = getSystemService(AudioManager::class.java)
         slop = ViewConfiguration.get(this).scaledTouchSlop
@@ -150,7 +152,8 @@ class VideoPlayerActivity : Activity() {
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
         buildUi()
-        goImmersive()
+        if (audioOnly) videoFrame.visibility = View.GONE
+        if (!audioOnly) goImmersive()
         if (tracks.isEmpty()) { toast("没有可播放的视频"); finish(); return }
         playIndex(index, startFrom(intent), autoplay)
     }
@@ -826,6 +829,7 @@ class VideoPlayerActivity : Activity() {
     }
 
     private fun mediaUrl(rel: String): String {
+        if (rel.startsWith("http://") || rel.startsWith("https://")) return rel
         val enc = rel.split("/").joinToString("/") { Uri.encode(it) }
         return base + "/api/media/" + enc
     }
@@ -919,7 +923,7 @@ class VideoPlayerActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) goImmersive()
+        if (hasFocus && !audioOnly) goImmersive()
     }
 
     override fun onStart() {

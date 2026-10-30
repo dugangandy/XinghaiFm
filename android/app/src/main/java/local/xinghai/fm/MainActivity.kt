@@ -13,6 +13,8 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -54,6 +56,16 @@ class MainActivity : Activity() {
     private var offline: View? = null
     private var customView: View? = null
     private var customCallback: WebChromeClient.CustomViewCallback? = null
+    private var dlBtn: View? = null
+    private val ui = Handler(Looper.getMainLooper())
+
+    /* 网页弹窗/抽屉打开时把悬浮下载按钮藏起来，别压在上面 */
+    private val dlPoll = object : Runnable {
+        override fun run() {
+            syncDlBtn()
+            ui.postDelayed(this, 700)
+        }
+    }
     private var loadFailed = false
     private var lastBack = 0L
     private var authRetried = false
@@ -216,7 +228,43 @@ class MainActivity : Activity() {
         }
 
         root.addView(w, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        /* 下载入口：网页不参与，壳里给一个小悬浮按钮 */
+        val b = android.widget.ImageButton(this).apply {
+            setImageResource(R.drawable.ic_download)
+            setBackgroundResource(R.drawable.bg_circle_btn)
+            setColorFilter(Color.WHITE)
+            contentDescription = "下载"
+            setOnClickListener { openDownloads() }
+        }
+        val lp = FrameLayout.LayoutParams(dp(44), dp(44), Gravity.END or Gravity.BOTTOM)
+        lp.setMargins(0, 0, dp(14), dp(96))
+        root.addView(b, lp)
+        dlBtn = b
+        ui.removeCallbacks(dlPoll)
+        ui.postDelayed(dlPoll, 700)
+
         load()
+    }
+
+    private fun syncDlBtn() {
+        val w = web ?: return
+        val b = dlBtn ?: return
+        if (customView != null || appFullscreen) { b.visibility = View.GONE; return }
+        runCatching { w.evaluateJavascript(
+            "(function(){try{" +
+                "var m=document.getElementById('modalRoot');if(m&&m.childElementCount)return 1;" +
+                "var s=document.getElementById('sheet');if(s&&s.classList.contains('open'))return 1;" +
+                "var q=document.getElementById('queuePanel');if(q&&q.classList.contains('open'))return 1;" +
+                "var d=document.getElementById('sidebar');if(d&&d.classList.contains('open'))return 1;" +
+                "return 0;}catch(e){return 0;}})()"
+        ) { v ->
+            if (customView == null && !appFullscreen) b.visibility = if (v == "1") View.GONE else View.VISIBLE
+        } }
+    }
+
+    private fun openDownloads() {
+        runCatching { startActivity(Intent(this, DownloadsActivity::class.java)) }
     }
 
     private fun load() {
@@ -280,6 +328,10 @@ class MainActivity : Activity() {
             text = "更换地址"
             setOnClickListener { showServerDialog() }
         })
+        row.addView(Button(this).apply {
+            text = "已下载"
+            setOnClickListener { openDownloads() }
+        })
         box.addView(row)
         offline = box
         root.addView(box, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -301,6 +353,7 @@ class MainActivity : Activity() {
         customCallback = callback
         root.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         web?.visibility = View.GONE
+        dlBtn?.visibility = View.GONE
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         immersive(true)
     }
@@ -333,6 +386,7 @@ class MainActivity : Activity() {
         customView = null
         root.removeView(v)
         web?.visibility = View.VISIBLE
+        dlBtn?.visibility = if (appFullscreen) View.GONE else View.VISIBLE
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         immersive(false)
         customCallback?.onCustomViewHidden()
@@ -346,6 +400,7 @@ class MainActivity : Activity() {
         runOnUiThread {
             if (appFullscreen == on) return@runOnUiThread
             appFullscreen = on
+            dlBtn?.visibility = if (on) View.GONE else View.VISIBLE
             if (on) {
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -452,6 +507,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         if (current === this) current = null
         /* 真正退出（返回两下 / 划掉任务）就停服务；只是按 Home 不会走到这里 */
+        ui.removeCallbacks(dlPoll)
         if (isFinishing) PlaybackService.stop(this)
         super.onDestroy()
     }

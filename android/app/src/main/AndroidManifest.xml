@@ -38,6 +38,13 @@
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- 下载管理：壳内的入口（悬浮按钮 / 离线页），不依赖网页 -->
+        <activity
+            android:name=".DownloadsActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode"
+            android:theme="@style/AppTheme" />
+
         <!-- 原生视频播放器：由网页通过桥接启动，播放整条视频队列 -->
         <activity
             android:name=".VideoPlayerActivity"
