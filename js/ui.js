@@ -521,8 +521,10 @@
           (a.cover ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">' : '<span class="card-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>') +
         '</div>' +
         '<div class="hero-info">' +
-          '<div class="hero-kicker">ALBUM · ' + albumType(a) + '</div>' +
-          '<h1 class="hero-title" title="' + esc(a.title) + '">' + esc(a.title) + '</h1>' +
+          '<div class="hero-heading">' +
+            '<div class="hero-kicker">ALBUM · ' + albumType(a) + '</div>' +
+            '<h1 class="hero-title" title="' + esc(a.title) + '">' + esc(a.title) + '</h1>' +
+          '</div>' +
           '<div class="hero-tags">' + catTags + tagHtml + '</div>' +
           '<div class="hero-meta"><span>' + a.count + ' 集</span><span class="dot"></span><span>' + fmtS(a.size) + '</span>' +
             (st.dur ? '<span class="dot"></span><span>' + fmtD(st.dur) + '</span>' : '') +
