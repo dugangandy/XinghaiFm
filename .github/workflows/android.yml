@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write        # 打 tag 时创建 Release 需要写权限（默认 GITHUB_TOKEN 只读）
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -60,3 +63,16 @@ jobs:
           name: XinghaiFM-apk
           path: out/*.apk
           if-no-files-found: error
+
+      # 只有 tag 触发的构建才发布；workflow_dispatch 手动跑只留 artifact。
+      # runner 自带 gh，不额外引第三方 action。
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V=$(node -p "require('./package.json').version")
+          gh release create "${GITHUB_REF_NAME}" out/*.apk \
+            --title "星海FM ${GITHUB_REF_NAME}" \
+            --notes "Android 调试版 APK：XinghaiFM-${V}-debug.apk（debug 签名，需允许安装未知来源应用）" \
+            --verify-tag
