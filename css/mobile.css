@@ -38,12 +38,16 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
     gap:14px;padding:12px 0 16px;align-items:start;
   }
   .hero-cover{grid-column:1;grid-row:1;width:118px;height:118px;border-radius:16px}
-  .hero-info{display:contents}
-  .hero-heading{grid-column:2;grid-row:1;align-self:center;min-width:0}
-  .hero-tags,.hero-meta,.hero-actions{grid-column:1/-1;margin-top:0}
-  .hero-tags{grid-row:2}
-  .hero-meta{grid-row:3}
-  .hero-actions{grid-row:4}
+  .hero-info{grid-column:2;grid-row:1;min-width:0;padding-bottom:0}
+  .hero-heading .hero-title{
+    display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+    white-space:normal;overflow:hidden;text-overflow:ellipsis;
+  }
+  .hero-heading .hero-tags{margin-top:10px}
+  .hero-actions{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px;
+  }
+  .hero-actions .btn{width:100%;padding:0 10px}
   /* 封面缩小后两个字会顶出去，字也跟着收 */
   .hero-cover .card-char{font-size:38px}
 

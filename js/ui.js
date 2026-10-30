@@ -524,8 +524,8 @@
           '<div class="hero-heading">' +
             '<div class="hero-kicker">ALBUM · ' + albumType(a) + '</div>' +
             '<h1 class="hero-title" title="' + esc(a.title) + '">' + esc(a.title) + '</h1>' +
+            '<div class="hero-tags">' + catTags + tagHtml + '</div>' +
           '</div>' +
-          '<div class="hero-tags">' + catTags + tagHtml + '</div>' +
           '<div class="hero-meta"><span>' + a.count + ' 集</span><span class="dot"></span><span>' + fmtS(a.size) + '</span>' +
             (st.dur ? '<span class="dot"></span><span>' + fmtD(st.dur) + '</span>' : '') +
             '<span class="dot"></span><span>已听 ' + st.pct + '%</span>' +
