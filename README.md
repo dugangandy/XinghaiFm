@@ -12,7 +12,7 @@
 
 ### 桌面版
 
-1. 双击 `dist/星海FM-<版本>-Setup.exe`（安装版）或 `dist/星海FM-<版本>.exe`（便携版）
+1. 双击 `dist/XinghaiFM-<版本>-Setup.exe`（安装版）或 `dist/XinghaiFM-<版本>.exe`（便携版）
 2. 点左上角「选择资源库」，选到有声书所在文件夹
 3. 扫描完成后即可使用；下次启动自动恢复资源库与上次播放位置
 
@@ -159,7 +159,7 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 **两种 Windows 产物**：
 
 - `星海FM-<版本>-Setup.exe`：安装版，装到 `%LOCALAPPDATA%\Programs`，桌面 / 开始菜单有快捷方式，启动约 3 秒
-- `星海FM-<版本>.exe`：便携单文件，免安装，每次启动要解包 ~360 MB 到临时目录，约 10 秒。适合临时试听
+- `XinghaiFM-<版本>.exe`：便携单文件，免安装，每次启动要解包 ~360 MB 到临时目录，约 10 秒。适合临时试听
 
 ### macOS
 

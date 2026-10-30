@@ -53,7 +53,7 @@
       "icon": "build/icon.ico"
     },
     "nsis": {
-      "artifactName": "星海FM-${version}-Setup.${ext}",
+      "artifactName": "XinghaiFM-${version}-Setup.${ext}",
       "oneClick": true,
       "perMachine": false,
       "createDesktopShortcut": true,
@@ -66,7 +66,7 @@
       ]
     },
     "portable": {
-      "artifactName": "星海FM-${version}.exe",
+      "artifactName": "XinghaiFM-${version}.${ext}",
       "requestExecutionLevel": "user",
       "splashImage": "build/splash.bmp"
     },
@@ -75,7 +75,7 @@
       "category": "public.app-category.music",
       "icon": "build/icon.icns",
       "identity": null,
-      "artifactName": "星海FM-${version}-${arch}.${ext}",
+      "artifactName": "XinghaiFM-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
