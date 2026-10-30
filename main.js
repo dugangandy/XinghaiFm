@@ -66,9 +66,13 @@ function getConfig() {
 
 function saveConfig(cfg) {
   const c = cfg || lastCfg;
-  if (!c) return;
-  try { DB.replaceLibs(getDb(), adminUid(), c.libs, c.active); }
-  catch (e) { console.warn('[config] 写入失败', e); }
+  if (!c) throw new Error('资源库配置保存失败：没有可保存的配置');
+  try {
+    DB.replaceLibs(getDb(), adminUid(), c.libs, c.active);
+  } catch (e) {
+    console.warn('[config] 写入失败', e);
+    throw new Error('资源库配置保存失败，请稍后重试');
+  }
   lastCfg = c;
 }
 
@@ -388,7 +392,8 @@ function bindIpc() {
     });
     if (res.canceled || !res.filePaths.length) return null;
     lib.path = res.filePaths[0];
-    saveConfig();
+    /* 选目录期间可能有其它 IPC 刷新 lastCfg，必须保存这次修改的配置对象 */
+    saveConfig(cfg);
     return libView(lib);
   });
 

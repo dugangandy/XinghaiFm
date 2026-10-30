@@ -1807,6 +1807,12 @@
     const foot = U.el('div', { class: 'lib-drawer-foot' });
     /* 单目录模式、或服务端没开 --allow-lib-edit 时，列表是只读的，不给「添加」 */
     const canAdd = !FM.fs.server || FM.fs.libs().some(function (l) { return !l.fixed; });
+    if (FM.fs.remote && !canAdd) {
+      body.insertBefore(U.el('div', {
+        class: 'lib-drawer-tip',
+        text: '无法修改远程资源库。如需修改本地资源库，请先断开远程连接。'
+      }), list_);
+    }
     if (canAdd) {
       const add = U.el('button', { class: 'btn', html: icon('plus') + '<span>添加资源库</span>' });
       add.onclick = function () { close(); addLibFlow(); };
@@ -1926,6 +1932,8 @@
               toast('已重命名');
               renderStat();
               if (after) after();
+            }).catch(function (e) {
+              toast(e.message || '重命名失败', 'warn');
             });
           }
         }

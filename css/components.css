@@ -617,6 +617,10 @@
 .lib-drawer-head .icon-btn{margin-left:auto;flex:none;width:30px;height:30px}
 .lib-drawer-head .icon-btn .i{width:15px;height:15px}
 .lib-drawer-body{flex:1;min-height:0;overflow-y:auto;padding:14px 16px}
+.lib-drawer-tip{
+  margin-bottom:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+  background:rgba(255,255,255,.03);color:var(--dim);font-size:11.5px;line-height:1.7;
+}
 .lib-drawer-foot{
   display:flex;gap:9px;padding:14px 16px 16px;border-top:1px solid var(--line);
 }
