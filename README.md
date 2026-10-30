@@ -149,7 +149,7 @@ npm run dist           # Windows：便携版 exe + 安装版 Setup exe
 npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 ```
 
-**版本号自动递增**：`npm run dist` / `dist:mac` / `pack:mac` 之前会把小版本号 +1 并同步 `package-lock.json`，产物名跟着变。逻辑在 `tools/bump-version.js`，由 `predist` / `predist:mac` / `prepack:mac` 钩子调用；只想涨版本用 `npm run bump`，想不涨版本打一次用 `SKIP_BUMP=1 npm run dist`。
+**版本号手动维护**：打包不会自动改版本号，需要发版时手动执行 `npm run bump`（小版本号 +1 并同步 `package-lock.json`），产物名跟着 `package.json` 的 version 走。逻辑在 `tools/bump-version.js`。
 
 **两种 Windows 产物**：
 

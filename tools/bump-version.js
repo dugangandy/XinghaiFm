@@ -3,10 +3,9 @@
  * 打包前把 package.json 的小版本号(patch) +1，并同步 package-lock.json。
  * 例：1.0.0 -> 1.0.1
  *
- * 由 npm 的 pre 钩子自动调用（predist / predist:mac / prepack:mac），
- * 也可以手动跑：npm run bump
+ * 现在只手动调用：npm run bump（打包流程不再自动涨版本）
  *
- * 想临时不涨版本打包：SKIP_BUMP=1 npm run dist
+ * SKIP_BUMP=1 仍可强制跳过：SKIP_BUMP=1 npm run bump
  */
 const fs = require('fs');
 const path = require('path');

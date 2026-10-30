@@ -11,11 +11,8 @@
     "start": "electron .",
     "init-db": "node tools/init-db.js",
     "bump": "node tools/bump-version.js",
-    "predist": "node tools/bump-version.js",
     "dist": "electron-builder --win",
-    "predist:mac": "node tools/bump-version.js",
     "dist:mac": "electron-builder --mac",
-    "prepack:mac": "node tools/bump-version.js",
     "pack:mac": "electron-packager . 星海FM --platform=darwin --arch=arm64,x64 --asar --icon=build/icon.icns --out=dist/mac --overwrite --app-bundle-id=local.xinghai.fm --ignore=\"^/(dist|tools|node_modules|\\.tmp-electron)\""
   },
   "build": {
