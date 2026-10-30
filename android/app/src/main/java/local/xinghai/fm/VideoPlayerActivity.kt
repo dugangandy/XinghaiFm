@@ -35,8 +35,10 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -97,6 +99,8 @@ class VideoPlayerActivity : Activity() {
     private var sheet: View? = null
     private var scaleMode = 1                 // 0 满屏 1 原比例 2 4:3 3 16:9 4 21:9
     private var loopOne = false            // 单集循环
+    private var bgAudio = false            // 锁屏/切后台后继续播放声音
+    private var videoDetached = false      // 后台时已释放画面，回来要重新挂载
     private var timerMode = 0              // 定时关闭：0 不开启 1 播完当前 2 30分钟 3 60分钟
     private var timerRunnable: Runnable? = null
 
@@ -139,6 +143,7 @@ class VideoPlayerActivity : Activity() {
         rate = readRate()
         scaleMode = getSharedPreferences("fm", MODE_PRIVATE).getInt("videoScale", 1).coerceIn(0, SCALE_NAMES.size - 1)
         loopOne = getSharedPreferences("fm", MODE_PRIVATE).getBoolean("videoLoop", false)
+        bgAudio = getSharedPreferences("fm", MODE_PRIVATE).getBoolean("videoBgPlay", false)
         parseIntent(intent)
         client = OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
@@ -388,6 +393,8 @@ class VideoPlayerActivity : Activity() {
             addView(loopRow())
             addView(divider())
             addView(timerRow())
+            addView(divider())
+            addView(bgPlayRow())
         }
     }
 
@@ -449,6 +456,40 @@ class VideoPlayerActivity : Activity() {
             setTimer(i)
             showHud(if (i == 0) "定时关闭已取消" else "定时关闭：" + TIMER_NAMES[i]); hideHudSoon()
         }
+
+    private fun bgPlayRow(): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(12), 0, dp(12))
+        }
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(TextView(this).apply {
+            text = "后台自动播放"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 13f
+        })
+        texts.addView(TextView(this).apply {
+            text = "锁屏的时候后台自动播放音频"
+            setTextColor(0x99FFFFFF.toInt())
+            textSize = 11f
+            setPadding(0, dp(3), 0, 0)
+        })
+        row.addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(Switch(this).apply {
+            isChecked = bgAudio
+            showText = false
+            setPadding(0, 0, 0, 0)
+            setOnCheckedChangeListener { _, on ->
+                bgAudio = on
+                getSharedPreferences("fm", MODE_PRIVATE).edit().putBoolean("videoBgPlay", on).apply()
+                player?.setWakeMode(if (on) C.WAKE_MODE_NETWORK else C.WAKE_MODE_NONE)
+                showHud(if (on) "后台自动播放已开启" else "后台自动播放已关闭")
+                hideHudSoon()
+            }
+        })
+        return row
+    }
 
     private fun setTimer(mode: Int) {
         timerMode = mode
@@ -742,6 +783,7 @@ class VideoPlayerActivity : Activity() {
                 toast("播放失败：" + error.errorCodeName)
             }
         })
+        p.setWakeMode(if (bgAudio) C.WAKE_MODE_NETWORK else C.WAKE_MODE_NONE)
         p.setVideoTextureView(tex)
         p.setMediaItem(MediaItem.fromUri(url), startMs.coerceAtLeast(0))
         p.setPlaybackSpeed(rate)
@@ -880,9 +922,24 @@ class VideoPlayerActivity : Activity() {
         if (hasFocus) goImmersive()
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (videoDetached) {
+            player?.setVideoTextureView(tex)
+            videoDetached = false
+        }
+    }
+
     override fun onStop() {
         super.onStop()
-        player?.pause()
+        val p = player ?: return
+        if (bgAudio && p.playWhenReady && p.playbackState != Player.STATE_ENDED) {
+            /* 后台只保留声音：释放视频画面，避免锁屏后继续解码画面 */
+            p.clearVideoSurface()
+            videoDetached = true
+        } else {
+            p.pause()
+        }
     }
 
     @Deprecated("Deprecated in Java")
