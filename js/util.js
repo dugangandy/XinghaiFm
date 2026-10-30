@@ -132,12 +132,19 @@ window.FM = window.FM || {};
 
   U.stripExt = n => n.replace(/\.[^.]+$/, '');
 
-  U.initials = function (title) {
+  U.initials = function (title, latinWord) {
     let t = String(title || '').trim();
     if (!t) return '声';
     const m = t.match(/《([^》]+)》/);
-    if (m) return m[1].slice(0, 2);
+    if (m) t = m[1];
+    else {
+      /* 平台名不是专辑名：【极客时间】Vue 开发实战 → Vue 开发实战 */
+      t = t.replace(/^[【\[][^】\]]{1,24}[】\]]\s*/, '');
+      t = t.replace(/^\d{1,4}\s*讲/, '');
+    }
     t = t.replace(/[\s·・|丨—\-:：《》]/g, '');
+    const latin = t.match(/^[A-Za-z][A-Za-z0-9+.#]*/);
+    if (latin) return latin[0].slice(0, latinWord ? 5 : 2);
     if (t.length > 3 && /^[被第]/.test(t)) t = t.slice(1);
     return t.slice(0, 2) || '声';
   };

@@ -196,17 +196,18 @@
 
 .card-cover{
   position:relative;aspect-ratio:1;border-radius:10px;overflow:hidden;
-  background:linear-gradient(148deg,var(--c1,#1b2a44),var(--c2,#3b2a5a));
-  box-shadow:0 12px 26px -18px rgba(0,0,0,.9);
+  background:radial-gradient(110% 90% at 12% 0%,rgba(255,255,255,.18),transparent 48%),
+             linear-gradient(145deg,var(--c1,#1b2a44),var(--c2,#3b2a5a) 72%);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.1),0 16px 34px -22px rgba(0,0,0,.9);
   display:grid;place-items:center;
   transition:box-shadow .3s;
 }
 .card-cover::after{
   content:"";position:absolute;inset:0;
-  background:radial-gradient(130% 100% at 18% 0%,rgba(255,255,255,.32),transparent 52%),
-             radial-gradient(90% 70% at 90% 110%,rgba(0,0,0,.36),transparent 60%);
+  background:linear-gradient(155deg,rgba(4,8,18,.02) 25%,rgba(4,8,18,.4)),
+             linear-gradient(115deg,transparent 42%,rgba(255,255,255,.055) 42.5%,transparent 43%);
 }
-.card-cover .rings{position:absolute;inset:0;opacity:.5}
+.card-cover .rings{position:absolute;width:100%;height:100%;right:-38%;bottom:-38%;opacity:.32}
 .card-cover .rings i{
   position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
   border:1px solid rgba(255,255,255,.16);border-radius:50%;
@@ -215,10 +216,11 @@
 .card-cover .rings i:nth-child(2){width:82%;height:82%}
 .card-cover .rings i:nth-child(3){width:108%;height:108%}
 .card-char{
-  position:relative;z-index:2;font-size:clamp(30px,3.4vw,46px);font-weight:800;
-  color:rgba(255,255,255,.95);letter-spacing:.04em;
-  text-shadow:0 6px 24px rgba(0,0,0,.45);
+  position:relative;z-index:2;max-width:84%;font-size:clamp(30px,3.4vw,46px);font-weight:750;
+  color:rgba(255,255,255,.96);letter-spacing:.02em;white-space:nowrap;text-align:center;
+  text-shadow:0 3px 16px rgba(0,0,0,.32);
 }
+.card-char.word{font-size:clamp(24px,2.8vw,38px);letter-spacing:-.035em}
 .card-play{
   /* 居中悬浮：白色圆 + 品牌紫三角，只在卡片 hover 时渐显（参考喜马拉雅） */
   position:absolute;left:50%;top:50%;z-index:3;
@@ -241,14 +243,15 @@
 .card-body{padding:8px 3px 0}
 .card-title{
   font-size:12.2px;font-weight:650;line-height:1.4;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
-  min-height:2.8em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  min-height:1.4em;
 }
 .card-tags{
   margin-top:4px;font-size:10px;color:var(--dim);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:1.4em;
 }
-.card-foot{display:flex;align-items:center;gap:5px;margin-top:6px;font-size:9.5px;color:var(--dim-2);font-variant-numeric:tabular-nums}
+.card-foot{display:flex;align-items:center;gap:5px;margin-top:6px;overflow:hidden;font-size:9.5px;color:var(--dim-2);font-variant-numeric:tabular-nums}
+.card-foot span{flex:none;white-space:nowrap}
 .card-foot .dot{width:2px;height:2px;border-radius:50%;background:currentColor}
 .card-prog{height:2.5px;border-radius:99px;background:rgba(255,255,255,.09);margin-top:6px;overflow:hidden}
 .card-prog i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#22d3ee,#a855f7);box-shadow:0 0 10px rgba(34,211,238,.8)}

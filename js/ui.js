@@ -352,7 +352,8 @@
   }
 
   /* ── 专辑卡片 ── */
-  function initialOf(a) { return U.initials(a.title); }
+  function initialOf(a) { return U.initials(a.title, true); }
+  function albumType(a) { return a.videoCount ? '视频' : '本地有声书'; }
 
   function albumCard(a) {
     const st = L.albumStat(a);
@@ -361,10 +362,12 @@
     const badges = [];
     if (a.fav) badges.push('<span class="card-badge fav">已收藏</span>');
     if (done) badges.push('<span class="card-badge done">已听完</span>');
-    const tags = (a.tags && a.tags.length) ? a.tags.join(' · ') : '本地有声书';
+    const tags = (a.tags && a.tags.length) ? a.tags.join(' · ') : albumType(a);
+    const initial = initialOf(a);
+    const countLabel = a.videoCount === a.count ? a.count + ' 视频' : a.count + ' 集' + (a.videoCount ? ' · ' + a.videoCount + ' 视频' : '');
     const art = a.cover
       ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">'
-      : '<div class="rings"><i></i><i></i><i></i></div><span class="card-char">' + esc(initialOf(a)) + '</span>';
+      : '<div class="rings"><i></i><i></i><i></i></div><span class="card-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span>';
     return '<article class="card' + (a.fav ? ' fav' : '') + '" data-id="' + a.id + '" draggable="true" style="' +
       U.coverVars(a.seed) + '">' +
       '<div class="card-cover' + (a.cover ? ' has-photo' : '') + '">' +
@@ -373,9 +376,9 @@
         '<button class="card-play" data-act="play-album" data-id="' + a.id + '" title="播放全部">' + icon('play') + '</button>' +
       '</div>' +
       '<div class="card-body">' +
-        '<h3 class="card-title">' + esc(a.title) + '</h3>' +
+        '<h3 class="card-title" title="' + esc(a.title) + '">' + esc(a.title) + '</h3>' +
         '<div class="card-tags">' + esc(tags) + '</div>' +
-        '<div class="card-foot"><span>' + a.count + ' 集' + (a.videoCount ? ' · ' + a.videoCount + ' 视频' : '') + '</span><span class="dot"></span><span>' + fmtS(a.size) + '</span><span class="dot"></span><span>' + pct + '%</span></div>' +
+        '<div class="card-foot"><span>' + countLabel + '</span><span class="dot"></span><span>' + fmtS(a.size) + '</span><span class="dot"></span><span>' + pct + '%</span></div>' +
         '<div class="card-prog"><i style="width:' + pct + '%"></i></div>' +
       '</div>' +
     '</article>';
@@ -515,10 +518,10 @@
         '<div class="head-actions"><button class="btn btn-ghost" data-act="more-album" data-id="' + a.id + '">' + icon('more') + '更多</button></div></div>' +
       '<section class="album-hero" style="' + U.coverVars(a.seed) + '">' +
         '<div class="hero-cover' + (a.cover ? ' has-photo' : '') + '">' +
-          (a.cover ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">' : '<span class="card-char">' + esc(initialOf(a)) + '</span>') +
+          (a.cover ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">' : '<span class="card-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>') +
         '</div>' +
         '<div class="hero-info">' +
-          '<div class="hero-kicker">ALBUM · 本地有声书</div>' +
+          '<div class="hero-kicker">ALBUM · ' + albumType(a) + '</div>' +
           '<h1 class="hero-title">' + esc(a.title) + '</h1>' +
           '<div class="hero-tags">' + catTags + tagHtml + '</div>' +
           '<div class="hero-meta"><span>' + a.count + ' 集</span><span class="dot"></span><span>' + fmtS(a.size) + '</span>' +
