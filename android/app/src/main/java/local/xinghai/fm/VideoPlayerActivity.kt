@@ -29,6 +29,7 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -39,6 +40,7 @@ import android.widget.Toast
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -55,6 +57,7 @@ class VideoPlayerActivity : Activity() {
     private data class Track(val rel: String, val id: String, val title: String, val sub: String)
 
     private lateinit var rootLayout: FrameLayout
+    private lateinit var videoFrame: AspectLayout
     private lateinit var tex: TextureView
     private lateinit var controls: View
     private lateinit var hud: TextView
@@ -86,10 +89,21 @@ class VideoPlayerActivity : Activity() {
     private var hideRunnable: Runnable? = null
     private val hudRunnable = Runnable { fadeHud(false) }
     private val longRunnable = Runnable { enterFast() }
+    private val singleTapRunnable = Runnable { toggleControls() }
+    private var lastTapAt = 0L
 
     private var controlsShown = true
     private var locked = false
     private var sheet: View? = null
+    private var scaleMode = 1                 // 0 满屏 1 原比例 2 4:3 3 16:9 4 21:9
+    private var loopOne = false            // 单集循环
+    private var timerMode = 0              // 定时关闭：0 不开启 1 播完当前 2 30分钟 3 60分钟
+    private var timerRunnable: Runnable? = null
+
+    /* 画面尺寸：满屏（拉伸铺满全屏）／原比例（保持宽高比，留黑边） */
+    private val SCALE_NAMES = arrayOf("满屏", "原比例", "4:3", "16:9")
+    private val LOOP_NAMES = arrayOf("连续播放", "单集循环")
+    private val TIMER_NAMES = arrayOf("不开启", "播完当前", "30分钟", "60分钟")
 
     private var downX = 0f
     private var downY = 0f
@@ -123,6 +137,8 @@ class VideoPlayerActivity : Activity() {
         am = getSystemService(AudioManager::class.java)
         slop = ViewConfiguration.get(this).scaledTouchSlop
         rate = readRate()
+        scaleMode = getSharedPreferences("fm", MODE_PRIVATE).getInt("videoScale", 1).coerceIn(0, SCALE_NAMES.size - 1)
+        loopOne = getSharedPreferences("fm", MODE_PRIVATE).getBoolean("videoLoop", false)
         parseIntent(intent)
         client = OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
@@ -175,7 +191,16 @@ class VideoPlayerActivity : Activity() {
         val root = FrameLayout(this).apply { setBackgroundColor(0xFF000000.toInt()) }
         rootLayout = root
         tex = TextureView(this)
-        root.addView(tex, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        /* 画面层：按视频原始宽高比摆放，不再拉伸铺满 */
+        videoFrame = AspectLayout(this)
+        applyScale(scaleMode, false)
+        videoFrame.addView(tex, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        root.addView(videoFrame, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        /* 手势层：覆盖全屏（含上下黑边），控件层在其上 */
+        val gestureLayer = View(this)
+        root.addView(gestureLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         val frame = FrameLayout(this)
         root.addView(frame, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -201,6 +226,7 @@ class VideoPlayerActivity : Activity() {
         titles.addView(titleView); titles.addView(subView)
         top.addView(back)
         top.addView(titles, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        top.addView(iconBtn(R.drawable.ic_more, 44) { showSettingsPanel() })
         frame.addView(top, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
 
         /* 底部 */
@@ -224,13 +250,13 @@ class VideoPlayerActivity : Activity() {
         rowA.addView(durView)
         bottom.addView(rowA)
 
-        /* 行 B：右侧文字按钮「倍速 / 选集」 */
+        /* 行 B：右侧「选集」（倍速、画面等设置统一收到右上角三点里） */
         val rowB = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
             setPadding(0, dp(2), 0, 0)
         }
-        speedBtn = textBtn("倍速") { showSpeedSheet() }
+        speedBtn = textBtn("倍速") { showSpeedPanel() }
         episodeBtn = textBtn("选集") { showEpisodeDrawer() }
         rowB.addView(speedBtn)
         rowB.addView(episodeBtn)
@@ -273,7 +299,7 @@ class VideoPlayerActivity : Activity() {
         root.addView(hud, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER).apply { topMargin = -dp(96) })
 
         controls = frame
-        bindGestures()
+        bindGestures(gestureLayer)
         setContentView(root)
         setControls(true, false)
     }
@@ -308,56 +334,207 @@ class VideoPlayerActivity : Activity() {
         setOnClickListener { onClick() }
     }
 
-    /* ── 底部弹出选择（倍速 / 选集 共用） ── */
-    private fun showSheet(title: String, labels: List<String>, current: Int, onPick: (Int) -> Unit) {
-        closeSheet()
-        val dim = FrameLayout(this).apply {
-            setBackgroundColor(0xCC000000.toInt())
-            isClickable = true
-            setOnClickListener { closeSheet() }
-        }
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundResource(R.drawable.bg_sheet)
-            setPadding(dp(16), dp(14), dp(16), dp(18))
-            isClickable = true
-        }
-        panel.addView(TextView(this).apply {
-            text = title; setTextColor(0xFFFFFFFF.toInt()); textSize = 15f
-            setPadding(dp(6), dp(2), dp(6), dp(10))
-        })
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        labels.forEachIndexed { i, label ->
-            list.addView(TextView(this).apply {
-                text = label
-                textSize = 14f
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-                setPadding(dp(10), dp(12), dp(10), dp(12))
-                setTextColor(if (i == current) 0xFF22D3EE.toInt() else 0xFFE6EDF5.toInt())
-                setOnClickListener { onPick(i); closeSheet() }
-            })
-        }
-        val scroll = ScrollView(this).apply { addView(list) }
-        panel.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        dim.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300), Gravity.BOTTOM))
-        rootLayout.addView(dim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        sheet = dim
-    }
-
     private fun closeSheet() {
         sheet?.let { (it.parent as? ViewGroup)?.removeView(it) }
         sheet = null
     }
 
-    private fun showSpeedSheet() {
-        val labels = RATES.map { fmtRate(it) + "×" }
-        var cur = 0
-        for (k in RATES.indices) if (abs(RATES[k] - rate) < 0.001f) { cur = k; break }
-        showSheet("倍速播放", labels, cur) { i -> setRate(RATES[i]); showHud("倍速 " + fmtRate(RATES[i]) + "×"); hideHudSoon() }
+    /* ── 右侧设置面板（倍速 / 画面尺寸共用）：占屏宽 30%，从右滑出 ── */
+    private fun openRightPanel(fill: LinearLayout.() -> Unit) {
+        closeSheet()
+        val dim = FrameLayout(this).apply {
+            setBackgroundColor(0x66000000)
+            isClickable = true
+            setOnClickListener { closeSheetAnimated() }
+        }
+        val panelW = panelWidth()
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_drawer)
+            setPadding(dp(16), dp(6), dp(14), dp(16))
+            isClickable = true
+        }
+        panel.addView(divider())
+        panel.fill()
+        panel.addView(divider())
+        dim.addView(panel, FrameLayout.LayoutParams(panelW, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
+        rootLayout.addView(dim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        sheet = dim
+        panel.translationX = panelW.toFloat()
+        panel.animate().translationX(0f).setDuration(200).start()
     }
 
-    /* 选集：从右侧滑出，占屏宽 60% */
+    private fun panelWidth(): Int =
+        (resources.displayMetrics.widthPixels * 0.34f).toInt().coerceAtLeast(dp(230))
+
+    private fun chipView(name: String): TextView = TextView(this).apply {
+        text = name
+        textSize = 13f
+        maxLines = 1
+        gravity = Gravity.CENTER
+        setPadding(dp(8), dp(6), dp(8), dp(6))
+    }
+
+    private fun styleChip(v: TextView, selected: Boolean) {
+        v.setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFC9D4E2.toInt())
+        if (selected) v.setBackgroundResource(R.drawable.bg_chip) else v.background = null
+    }
+
+    /* 右上角三点：播放设置 */
+    private fun showSettingsPanel() {
+        openRightPanel {
+            addView(scaleRow())
+            addView(divider())
+            addView(loopRow())
+            addView(divider())
+            addView(timerRow())
+        }
+    }
+
+    /* 一行设置：标题在左，选项在右；放不下时单行左右滑动，不换行 */
+    private fun chipGridRow(label: String, names: Array<String>,
+                            selectedOf: () -> Int, onPick: (Int) -> Unit): LinearLayout {
+        val chips = ArrayList<TextView>()
+        val opts = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        names.forEachIndexed { i, name ->
+            val v = chipView(name)
+            chips.add(v)
+            opts.addView(v, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
+        }
+        val scroller = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(opts, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(13), 0, dp(13))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        row.addView(TextView(this).apply {
+            text = label
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 13f
+            maxLines = 1
+        })
+        /* 选项紧跟标题，固定 10dp 间距；剩余宽度全给可滚区，放不下就滑 */
+        row.addView(scroller, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            .apply { marginStart = dp(10) })
+
+        val paint = {
+            val sel = selectedOf()
+            chips.forEachIndexed { i, v -> styleChip(v, i == sel) }
+            scroller.post { chips.getOrNull(sel)?.let { c -> scroller.smoothScrollTo(Math.max(0, c.left - dp(8)), 0) } }
+        }
+        chips.forEachIndexed { i, v -> v.setOnClickListener { onPick(i); paint() } }
+        paint()
+        return row
+    }
+
+    private fun scaleRow(): LinearLayout =
+        chipGridRow("画面尺寸", SCALE_NAMES, { scaleMode }) { i ->
+            applyScale(i)
+            showHud("画面 " + SCALE_NAMES[i]); hideHudSoon()
+        }
+
+    private fun loopRow(): LinearLayout =
+        chipGridRow("播放方式", LOOP_NAMES, { if (loopOne) 1 else 0 }) { i ->
+            loopOne = i == 1
+            getSharedPreferences("fm", MODE_PRIVATE).edit().putBoolean("videoLoop", loopOne).apply()
+            showHud(LOOP_NAMES[i]); hideHudSoon()
+        }
+
+    private fun timerRow(): LinearLayout =
+        chipGridRow("定时关闭", TIMER_NAMES, { timerMode }) { i ->
+            setTimer(i)
+            showHud(if (i == 0) "定时关闭已取消" else "定时关闭：" + TIMER_NAMES[i]); hideHudSoon()
+        }
+
+    private fun setTimer(mode: Int) {
+        timerMode = mode
+        timerRunnable?.let { ui.removeCallbacks(it) }
+        timerRunnable = null
+        val ms = when (mode) { 2 -> 30 * 60_000L; 3 -> 60 * 60_000L; else -> 0L }
+        if (ms > 0) {
+            val r = Runnable {
+                timerMode = 0
+                player?.pause()
+                showHud("定时关闭：已暂停"); hideHudSoon()
+            }
+            timerRunnable = r
+            ui.postDelayed(r, ms)
+        }
+    }
+
+    /* 倍速：右侧面板，方块磁贴样式（沿用现有 6 档） */
+    private fun showSpeedPanel() {
+        var cur = 0
+        for (k in RATES.indices) if (abs(RATES[k] - rate) < 0.001f) { cur = k; break }
+        val tiles = ArrayList<TextView>()
+        val grid = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, dp(6))
+        }
+        RATES.indices.chunked(3).forEach { idxs ->
+            val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            idxs.forEach { i ->
+                val t = TextView(this).apply {
+                    text = fmtRate(RATES[i]) + "×"
+                    textSize = 14f
+                    maxLines = 1
+                    gravity = Gravity.CENTER
+                }
+                tiles.add(t)
+                line.addView(t, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                    marginStart = dp(4); marginEnd = dp(4)
+                })
+            }
+            grid.addView(line, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { if (idxs.first() > 0) topMargin = dp(8) })
+        }
+        val paint = { tiles.forEachIndexed { i, v -> styleTile(v, i == cur) } }
+        tiles.forEachIndexed { i, v ->
+            v.setOnClickListener {
+                cur = i; setRate(RATES[i]); paint()
+                showHud("倍速 " + fmtRate(RATES[i]) + "×"); hideHudSoon()
+            }
+        }
+        paint()
+
+        openRightPanel {
+            addView(TextView(this@VideoPlayerActivity).apply {
+                text = "倍速"
+                setTextColor(0xB3FFFFFF.toInt())
+                textSize = 13f
+                setPadding(dp(2), dp(14), 0, dp(10))
+            })
+            addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    private fun styleTile(v: TextView, selected: Boolean) {
+        v.setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFD6DEE9.toInt())
+        v.setBackgroundResource(if (selected) R.drawable.bg_tile_on else R.drawable.bg_tile)
+    }
+
+    private fun divider(): View = View(this).apply {
+        setBackgroundColor(0x26FFFFFF)
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)))
+    }
+
+    /* 画面尺寸：满屏拉伸；原比例按片源；固定比例把画面拉伸进该比例的框里 */
+    private fun applyScale(i: Int, save: Boolean = true) {
+        scaleMode = i.coerceIn(0, SCALE_NAMES.size - 1)
+        videoFrame.stretch = scaleMode == 0
+        videoFrame.fixedRatio = when (scaleMode) {
+            2 -> 4f / 3f
+            3 -> 16f / 9f
+            else -> 0f
+        }
+        if (save) getSharedPreferences("fm", MODE_PRIVATE).edit().putInt("videoScale", scaleMode).apply()
+    }
+
+    /* 选集：从右侧滑出，宽度与设置面板一致（屏宽 30%） */
     private fun showEpisodeDrawer() {
         closeSheet()
         val dim = FrameLayout(this).apply {
@@ -365,7 +542,7 @@ class VideoPlayerActivity : Activity() {
             isClickable = true
             setOnClickListener { closeSheetAnimated() }
         }
-        val panelW = (resources.displayMetrics.widthPixels * 0.6f).toInt()
+        val panelW = panelWidth()
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundResource(R.drawable.bg_drawer)
@@ -412,8 +589,8 @@ class VideoPlayerActivity : Activity() {
     }
 
     /* ── 手势 ── */
-    private fun bindGestures() {
-        tex.setOnTouchListener { v, e ->
+    private fun bindGestures(target: View) {
+        target.setOnTouchListener { v, e ->
             if (locked) return@setOnTouchListener true
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -455,7 +632,19 @@ class VideoPlayerActivity : Activity() {
                     val dur = System.currentTimeMillis() - downT
                     if (gesture == 3) exitFast()
                     else if (gesture == 1 || gesture == 2) hideHudSoon()
-                    else if (!moved && dur < 500) toggleControls()
+                    else if (!moved && dur < 500 && e.actionMasked == MotionEvent.ACTION_UP) {
+                        /* 单击=显隐控件（延迟 240ms 等第二击）；双击=播放/暂停 */
+                        val now = System.currentTimeMillis()
+                        if (now - lastTapAt < 300) {
+                            ui.removeCallbacks(singleTapRunnable)
+                            lastTapAt = 0
+                            togglePlay()
+                        } else {
+                            lastTapAt = now
+                            ui.removeCallbacks(singleTapRunnable)
+                            ui.postDelayed(singleTapRunnable, 240)
+                        }
+                    }
                     gesture = 0
                 }
             }
@@ -536,6 +725,14 @@ class VideoPlayerActivity : Activity() {
                 emit("state", trackJson().put("playing", playing))
                 if (playing) scheduleHide() else showControls()
             }
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                var w = videoSize.width * videoSize.pixelWidthHeightRatio
+                var h = videoSize.height.toFloat()
+                if (videoSize.unappliedRotationDegrees == 90 || videoSize.unappliedRotationDegrees == 270) {
+                    val t = w; w = h; h = t
+                }
+                if (w > 0f && h > 0f) videoFrame.ratio = w / h
+            }
             override fun onPlaybackStateChanged(state: Int) {
                 loading.visibility = if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
                 if (state == Player.STATE_ENDED) ui.post { onEnded() }
@@ -578,8 +775,12 @@ class VideoPlayerActivity : Activity() {
     }
 
     private fun onEnded() {
-        if (index + 1 < tracks.size) playIndex(index + 1, 0, true)
-        else { emit("ended", trackJson()); player?.pause() }
+        when {
+            loopOne -> { player?.seekTo(0); player?.play() }
+            timerMode == 1 -> { timerMode = 0; emit("ended", trackJson()); player?.pause() }
+            index + 1 < tracks.size -> playIndex(index + 1, 0, true)
+            else -> { emit("ended", trackJson()); player?.pause() }
+        }
     }
 
     private fun mediaUrl(rel: String): String {
@@ -704,6 +905,7 @@ class VideoPlayerActivity : Activity() {
         ui.removeCallbacks(ticker)
         ui.removeCallbacks(hudRunnable)
         ui.removeCallbacks(longRunnable)
+        ui.removeCallbacks(singleTapRunnable)
         hideRunnable?.let { ui.removeCallbacks(it) }
         player?.release()
         player = null
@@ -786,3 +988,57 @@ class VideoSeekBar(ctx: Context) : View(ctx) {
     fun setProgress(p: Float) { if (!dragging) { progress = p.coerceIn(0f, 1f); invalidate() } }
     fun setBuffered(b: Float) { buffered = b.coerceIn(0f, 1f); invalidate() }
 }
+
+/* ── 画面容器：stretch=false 保持原比例居中留黑边；true 拉伸铺满 ──
+ * 只决定视频画面在屏幕上的尺寸与居中方式，容器本身始终占满全屏。
+ */
+class AspectLayout(ctx: Context) : ViewGroup(ctx) {
+
+    var stretch = false
+        set(v) { if (field != v) { field = v; requestLayout() } }
+
+    /** 视频宽高比（width / height），<=0 表示未知，按铺满处理 */
+    var ratio = 0f
+        set(v) { if (field != v) { field = v; requestLayout() } }
+
+    /** 强制画面比例（0 = 跟随片源），如 4:3 / 16:9；画面会拉伸进该比例的框 */
+    var fixedRatio = 0f
+        set(v) { if (field != v) { field = v; requestLayout() } }
+
+    private var childW = 0
+    private var childH = 0
+
+    init { setClipChildren(true) }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val pw = MeasureSpec.getSize(widthMeasureSpec)
+        val ph = MeasureSpec.getSize(heightMeasureSpec)
+        setMeasuredDimension(pw, ph)
+
+        val r = if (fixedRatio > 0f) fixedRatio else ratio
+        if (stretch || r <= 0f || pw <= 0 || ph <= 0) {
+            childW = pw; childH = ph
+        } else if (pw / ph.toFloat() > r) {
+            /* 屏幕比画面更宽：贴高度，左右留边 */
+            childH = ph; childW = (ph * r + 0.5f).toInt()
+        } else {
+            /* 屏幕比画面更窄：贴宽度，上下留边 */
+            childW = pw; childH = (pw / r + 0.5f).toInt()
+        }
+
+        if (childCount > 0) {
+            getChildAt(0).measure(
+                MeasureSpec.makeMeasureSpec(childW, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(childH, MeasureSpec.EXACTLY)
+            )
+        }
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        if (childCount == 0) return
+        val cx = (width - childW) / 2
+        val cy = (height - childH) / 2
+        getChildAt(0).layout(cx, cy, cx + childW, cy + childH)
+    }
+}
+
