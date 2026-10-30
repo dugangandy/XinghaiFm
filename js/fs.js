@@ -24,6 +24,8 @@
   let granted = false;
   let serverMode = false;      // 由 tools/serve.js 的 config.json 库列表提供的服务器模式
   let serverVersion = '';      // 服务端 package.json 的版本号（浏览器直连时用来显示）
+  let favSet = new Set();      // 当前用户 + 当前库的收藏专辑 id
+  let favLibId = '';           // favSet 属于哪个库（拉取失败时判断要不要清空）
 
   /* 桌面端连远程后端：本地 UI 不变，数据通路全部走远端 API。
      有 REMOTE 时 NATIVE 只代表"跑在 Electron 里"，不再代表"用本地文件"。 */
@@ -310,6 +312,12 @@
     }
     syncActive();
     applyMode();
+    await loadFavs(activeId);
+    /* 恢复索引是在收藏之前渲染的：拿到的收藏要贴回去再刷一遍，否则首屏心是空的 */
+    if (FM.lib && FM.lib.applyFavs && FM.lib.albums().length) {
+      FM.lib.applyFavs(favSet);
+      if (FM.ui && FM.ui.renderAll) FM.ui.renderAll({ quiet: true });
+    }
     return { libs: libs.slice(), active: activeId, missing: !!(activeLib && activeLib.missing) };
   }
 
@@ -422,6 +430,8 @@
     granted = true;
     syncActive();
     applyMode();
+    await loadFavs(id);
+    if (FM.lib && FM.lib.applyFavs) FM.lib.applyFavs(favSet);
     return activeLib;
   }
 
@@ -541,6 +551,63 @@
       });
       return true;
     } catch (e) { return false; }
+  }
+
+  /* ── 收藏：跟用户绑定，存数据库 ──
+     桌面端走 IPC（本机 fm.db），服务端/远程走 /api/favs，网页本地库退回 localStorage。 */
+  async function loadFavs(libId) {
+    const id = libId || activeId;
+    if (!id) { favSet = new Set(); favLibId = ''; return favSet; }
+    const next = new Set();
+    try {
+      if (DESKTOP_FS) {
+        (await window.fmNative.favs(id) || []).forEach(x => next.add(String(x)));
+      } else if (serverMode) {
+        const r = await apiFetch('/api/favs?libId=' + encodeURIComponent(id), { cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const d = await r.json();
+        (d.ids || []).forEach(x => next.add(String(x)));
+      } else {
+        const v = FM.store.read('favs:' + id, []);
+        (Array.isArray(v) ? v : []).forEach(x => next.add(String(x)));
+      }
+    } catch (e) {
+      console.warn('[favs] 读取失败', e);
+      /* 拉失败不清空：弱网下别让收藏看起来“丢了”；但换库失败不能留着上一个库的 */
+      if (favLibId !== id) { favSet = new Set(); favLibId = ''; }
+      return favSet;
+    }
+    favSet = next;
+    favLibId = id;
+    return favSet;
+  }
+
+  async function setFav(albumId, on) {
+    const id = activeId, a = String(albumId || '');
+    if (!id || !a) return false;
+    const next = !!on;
+    if (next) favSet.add(a); else favSet.delete(a);
+    try {
+      if (DESKTOP_FS) {
+        const ok = await window.fmNative.setFav(id, a, next);
+        if (ok === false) throw new Error('写入失败');
+      } else if (serverMode) {
+        const r = await apiFetch('/api/favs', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ libId: id, albumId: a, fav: next })
+        });
+        if (!r.ok) throw new Error((await r.text()) || 'HTTP ' + r.status);
+      } else {
+        FM.store.write('favs:' + id, Array.from(favSet));
+        FM.store.touch('favs:' + id);
+      }
+      return true;
+    } catch (e) {
+      if (next) favSet.delete(a); else favSet.add(a);
+      console.warn('[favs] 写入失败', e);
+      return false;
+    }
   }
 
   async function openLib(id) {
@@ -723,6 +790,7 @@
 
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushProgress, refreshLibs,
+    loadFavs, setFav,
     scan, getFile, src, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,
     libs: () => libs.slice(),
@@ -734,6 +802,7 @@
     get link() { return linkState; },
     onLink,
     get server() { return serverMode; },
+    get favIds() { return favSet; },
     get version() { return serverVersion; },
     get mode() { return mode; },
     get rootName() { return activeLib ? activeLib.name : ''; },

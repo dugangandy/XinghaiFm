@@ -9,7 +9,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const ITERATIONS = 600000;
 const ADMIN_ID = 'u_admin';
 
@@ -53,6 +53,14 @@ function ensureSchema(db) {
     ');',
     'CREATE TABLE IF NOT EXISTS settings (',
     '  key TEXT PRIMARY KEY, value TEXT',
+    ');',
+    'CREATE TABLE IF NOT EXISTS favs (',
+    '  user_id TEXT NOT NULL,',
+    '  lib_id TEXT NOT NULL,',
+    '  album_id TEXT NOT NULL,',
+    '  created_at INTEGER NOT NULL,',
+    '  PRIMARY KEY (user_id, lib_id, album_id),',
+    '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE',
     ');'
   ].join('\n'));
   /* 旧库补列：token_version（改密码后让该用户旧 token 立即失效） */
@@ -61,6 +69,9 @@ function ensureSchema(db) {
     db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
   }
   if (!getSetting(db, 'secret')) setSetting(db, 'secret', crypto.randomBytes(32).toString('base64'));
+  /* v4：favs 的主键已经覆盖 (user_id, lib_id)，早期的冗余索引清掉 */
+  const uv = (db.prepare('PRAGMA user_version').get() || {}).user_version || 0;
+  if (uv < 4) { try { db.exec('DROP INDEX IF EXISTS idx_favs_user'); } catch (e) {} }
   db.exec('PRAGMA user_version = ' + SCHEMA_VERSION);
 }
 
@@ -161,6 +172,58 @@ function setActiveLib(db, uid, id) {
   } catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} return false; }
 }
 
+/* ── 收藏（按用户 + 资源库） ──
+   桌面端固定 admin、服务端按登录用户；同一个专辑在不同用户/库里互不影响。 */
+function listFavs(db, uid, libId) {
+  return db.prepare('SELECT album_id FROM favs WHERE user_id = ? AND lib_id = ? ORDER BY created_at')
+    .all(String(uid || ''), String(libId || '')).map(function (r) { return r.album_id; });
+}
+function setFav(db, uid, libId, albumId, on) {
+  const u = String(uid || ''), l = String(libId || ''), a = String(albumId || '');
+  if (!u || !l || !a) return false;
+  if (on) {
+    db.prepare('INSERT INTO favs(user_id, lib_id, album_id, created_at) VALUES(?,?,?,?) ON CONFLICT(user_id, lib_id, album_id) DO NOTHING')
+      .run(u, l, a, Date.now());
+  } else {
+    db.prepare('DELETE FROM favs WHERE user_id = ? AND lib_id = ? AND album_id = ?').run(u, l, a);
+  }
+  /* 返回写入是否成功，而不是写入后的状态：调用方要能区分“失败”和“取消收藏” */
+  return true;
+}
+
+/* 旧版收藏存在库目录 .fm-meta.json 的 albumMeta[*].fav 里：每个用户/库只搬一次。
+   文件还没生成时返回 0 且不打标记，下次调用再试。 */
+function favsMigrated(db, uid, libId) {
+  return getSetting(db, 'favMig:' + uid + ':' + libId) === '1';
+}
+function markFavsMigrated(db, uid, libId) {
+  setSetting(db, 'favMig:' + uid + ':' + libId, '1');
+}
+/* 资源库被移除时顺手清掉它的收藏，避免残留孤儿行 */
+function clearFavs(db, uid, libId) {
+  if (!uid || !libId) return 0;
+  return db.prepare('DELETE FROM favs WHERE user_id = ? AND lib_id = ?').run(String(uid), String(libId)).changes || 0;
+}
+function migrateLegacyFavs(db, uid, libId, dir) {
+  if (!uid || !libId || !dir) return 0;
+  if (favsMigrated(db, uid, libId)) return 0;
+  let meta = null;
+  try { meta = JSON.parse(fs.readFileSync(path.join(dir, '.fm-meta.json'), 'utf8')); } catch (e) { return 0; }
+  if (!meta) return 0;
+  const am = meta.albumMeta || {};
+  const prefix = String(meta.root || dir) + '|';
+  let n = 0;
+  Object.keys(am).forEach(function (k) {
+    if (k.indexOf(prefix) !== 0) return;
+    const m = am[k];
+    if (!m || !m.fav) return;
+    setFav(db, uid, libId, k.slice(prefix.length), true);
+    n++;
+  });
+  markFavsMigrated(db, uid, libId);
+  return n;
+}
+
 /* ── remote（设备级） ── */
 function getRemote(db) {
   const r = db.prepare('SELECT base, token, uid FROM remote WHERE id = 1').get();
@@ -218,5 +281,6 @@ module.exports = {
   listUsers, countUsers, findUser, getUser, adminUser, firstUserId, newUserId,
   addUser, setUserPassword, removeUser, touchLogin,
   listLibs, activeLib, replaceLibs, setActiveLib,
+  listFavs, setFav, clearFavs, favsMigrated, markFavsMigrated, migrateLegacyFavs,
   getRemote, setRemote, migrate
 };

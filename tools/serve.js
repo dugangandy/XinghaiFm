@@ -218,6 +218,7 @@ function mutateLibs(uid, body) {
     if (!name) return { code: 400, msg: '名称不能为空' };
     lib.name = name;
   } else if (act === 'remove') {
+    DB.clearFavs(db, uid, id);
     libs.splice(libs.findIndex(l => l.id === id), 1);
     if (active === id) active = libs[0] ? libs[0].id : null;
     console.log('[lib] 远程移除资源库：' + lib.name);
@@ -230,14 +231,16 @@ function mutateLibs(uid, body) {
 
 /* 写接口限流：同一 IP 每秒最多 5 次 */
 const writeHits = new Map();
-function writeAllowed(ip) {
+function writeAllowed(ip, limit, scope) {
   const now = Date.now();
-  const rec = writeHits.get(ip) || { n: 0, since: now };
+  /* 按用途分开计数：收藏连点不该把进度上报/资源库操作的额度吃掉 */
+  const key = ip + '|' + (scope || '');
+  const rec = writeHits.get(key) || { n: 0, since: now };
   if (now - rec.since > 1000) { rec.n = 0; rec.since = now; }
   rec.n++;
-  writeHits.set(ip, rec);
+  writeHits.set(key, rec);
   if (writeHits.size > 256) writeHits.clear();
-  return rec.n <= 5;
+  return rec.n <= (limit || 5);
 }
 
 /* ── 用户与会话（多用户，token 带 uid） ── */
@@ -709,6 +712,31 @@ const server = http.createServer(async function (req, res) {
       });
       return json(res, { ok: true });
     } catch (e) { return send(res, 500, e.message); }
+  }
+  if (p === '/api/favs') {
+    const own = function (id) { return userLibs(uid).some(function (l) { return l.id === id; }); };
+    if (req.method === 'GET') {
+      const libId = u.searchParams.get('libId') || (userActiveLib(uid) || {}).id;
+      if (!libId) return json(res, { ids: [] });
+      const lib = userLibs(uid).find(function (l) { return l.id === libId; });
+      if (!lib) return send(res, 403, 'unknown lib');
+      /* 升级后第一次读收藏：把 .fm-meta.json 里的旧收藏搬进库（每用户/库一次） */
+      await DB.migrateLegacyFavs(db, uid, libId, lib.path);
+      return json(res, { libId: libId, ids: DB.listFavs(db, uid, libId) });
+    }
+    if (req.method !== 'POST') return send(res, 405, 'GET/POST only');
+    /* 连续收藏专辑是正常操作，给比进度上报更宽的额度 */
+    if (!writeAllowed(ip, 20, 'fav')) return send(res, 429, 'too many writes');
+    let body = '';
+    for await (const chunk of req) { body += chunk; if (body.length > 1024) return send(res, 413, 'too large'); }
+    let rec = null;
+    try { rec = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    const libId = String((rec && rec.libId) || (userActiveLib(uid) || {}).id || '');
+    const albumId = String((rec && rec.albumId) || '');
+    if (!libId || !albumId || albumId.length > 64) return send(res, 400, 'bad fav');
+    if (!own(libId)) return send(res, 403, 'unknown lib');
+    DB.setFav(db, uid, libId, albumId, !!(rec && rec.fav));
+    return json(res, { ok: true, fav: !!(rec && rec.fav) });
   }
   if (p === '/api/lib') {
     if (req.method !== 'POST') return send(res, 405, 'POST only');

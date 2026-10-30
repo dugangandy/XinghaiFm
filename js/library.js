@@ -19,26 +19,34 @@
     { id: 'c-history', kw: [
       '历史', '曾国藩', '李鸿章', '张之洞', '左宗棠', '湘军', '太平天国', '晚清', '民国',
       '大明王朝', '明朝', '大唐', '唐朝', '宋朝', '元朝', '清朝', '王朝', '帝国',
-      '长征', '二战', '一战', '战争', '抗美援朝', '知青', '上山下乡', '世界史', '军事', '战役'
+      '长征', '二战', '一战', '战争', '抗美援朝', '知青', '上山下乡', '世界史', '军事', '战役',
+      '史记', '资治通鉴', '三国', '唐史', '宋史', '明史', '清史', '近代史', '古代史',
+      '南渡北归', '抗战', '抗日战争', '传记', '毛泽东', '蒋介石', '通史',
+      '英国史', '美国史', '法国史', '德国史', '日本史', '欧洲史'
     ] },
     { id: 'c-literature', kw: [
       '平凡的世界', '人世间', '主角', '一句顶一万句', '狼图腾', '路遥', '梁晓声', '刘震云', '茅盾',
       '三体', '刘慈欣', '哈利·波特', '哈利波特', '许子东', '张爱玲', '鲁迅', '红楼梦',
-      '蒙曼', '马瑞芳', '双播', '原著'
+      '蒙曼', '马瑞芳', '双播', '原著',
+      '世界名著', '名著', '余罪', '刑侦', '遥远的救世主', '茅盾文学奖', '文学奖',
+      '水浒', '西游记', '三国演义', '聊斋', '儒林外史', '封神'
     ] },
     { id: 'c-psych', kw: [
       '亲密关系', '墨菲定律', '被讨厌的勇气', '心理学', '阿德勒',
-      '情绪', '焦虑', '沟通', '自我成长', '幸福'
+      '情绪', '焦虑', '沟通', '自我成长', '幸福',
+      '亲子', '育儿', '家庭教育', '自律', '情商', '原生家庭', '婚姻', '养成课'
     ] },
     { id: 'c-classic', kw: [
       '金刚经', '心经', '地藏经', '论语', '道德经', '佛',
       '古文观止', '唐宋八大家', '中华经典', '郭继承', '康震', '国学',
-      '孟子', '庄子', '老子', '中庸', '唐诗', '宋词', '王阳明', '易经', '孙子兵法'
+      '孟子', '庄子', '老子', '中庸', '唐诗', '宋词', '王阳明', '易经', '孙子兵法',
+      '诗词', '世说新语', '传习录', '菜根谭', '三字经', '弟子规', '千字文', '四书五经'
     ] },
-    { id: 'c-film', kw: ['风筝', '影视', '原声剧', '广播剧'] },
+    { id: 'c-film', kw: ['风筝', '影视', '原声剧', '广播剧', '电视剧'] },
     { id: 'c-science', kw: [
       '科普', '物理', '数学', '数理化', '化学', '生物', '天文', '医学', '科学家', '科学',
-      '博物馆', '古典音乐', '音乐', '艺术', '经济', '货币', '金融', '美元'
+      '博物馆', '古典音乐', '音乐', '艺术', '经济', '货币', '金融', '美元',
+      '科技', '发明', '宇宙', '昆虫', '自然', '地理', '商业', '管理', '投资', '法律', '哲学'
     ] }
   ];
 
@@ -166,6 +174,7 @@
     const metas = db.albumMeta();
     const durs = db.durations();
     const cats = ensureCats();
+    const favs = FM.fs.favIds || new Set();
     const nextAlbums = [];
     const nextTracks = [];
     const albumIds = new Set();
@@ -219,12 +228,12 @@
       /* 同名但属于别的库：不继承，切回去时元数据仍然完好 */
       const own = meta.root === rootKey;
 
-      /* 没被手动改过的专辑：每次扫描重新跑关键词，规则升级才能生效。
-         只增不减，避免旧版本手工加的分类被抹掉。 */
-      if (own && meta.auto !== false) {
+      /* 只补空：已经有分类的专辑一律不动（人工整理过的不能被规则改掉）。
+         空分类的大多是新专辑，或旧版本关键词没命中，扫描时补一次。
+         规则升级也不再往已分类的专辑里追加。 */
+      if (own && meta.auto !== false && !(meta.cats || []).length) {
         const auto = autoCats(dirName);
-        const merged = Array.from(new Set((meta.cats || []).concat(auto)));
-        if (merged.length !== (meta.cats || []).length) meta.cats = merged;
+        if (auto.length) meta.cats = auto;
         meta.auto = true;
       }
 
@@ -243,7 +252,7 @@
         size: totalSize,
         duration: totalDur,
         cats: own ? (meta.cats || []).filter(id => cats.some(c => c.id === id)) : [],
-        fav: own && !!meta.fav,
+        fav: favs.has(albumId),
         pinned: own && !!meta.pinned,
         hidden: own && !!meta.hidden,
         addedAt: (own && meta.addedAt) || Date.now()
@@ -273,7 +282,7 @@
           const m = metas[rootKey + '|' + a.id];
           if (!m) return;
           a.cats = (m.cats || []).filter(id => cats.some(c => c.id === id));
-          a.fav = !!m.fav;
+          a.fav = favs.has(a.id);
           a.pinned = !!m.pinned;
           a.hidden = !!m.hidden;
           a.title = m.title || a.origTitle;
@@ -342,7 +351,7 @@
       const own = !m.root || m.root === rootKey;
       return Object.assign({}, a, {
         cats: own ? (m.cats || []).filter(id => cats.some(c => c.id === id)) : [],
-        fav: own && !!m.fav, pinned: own && !!m.pinned, hidden: own && !!m.hidden,
+        fav: !!(FM.fs.favIds && FM.fs.favIds.has(a.id)), pinned: own && !!m.pinned, hidden: own && !!m.hidden,
         title: (own && m.title) || a.title
       });
     }).sort((a, b) => (b.pinned - a.pinned) || U.naturalCompare(a.dirName, b.dirName));
@@ -429,11 +438,17 @@
     const m = metas[metaKey(albumId)] || {};
     const a = albumMap.get(albumId);
     if (!a) return;
-    a.fav = !!m.fav;
+    a.fav = !!(FM.fs.favIds && FM.fs.favIds.has(albumId));
     a.pinned = !!m.pinned;
     a.hidden = !!m.hidden;
     a.title = m.title || a.origTitle;
     a.cats = (m.cats || []).slice();
+  }
+
+  /* 收藏从数据库刷新后同步到内存模型（切库/拉取完成后调用） */
+  function applyFavs(ids) {
+    const set = ids instanceof Set ? ids : new Set(ids || []);
+    albums.forEach(function (a) { a.fav = set.has(a.id); });
   }
 
   function setMeta(albumId, patch) {
@@ -520,7 +535,7 @@
     search,
     stats,
     progressOf, setProgress, albumStat,
-    setMeta, recomputeAlbum, catCount,
+    setMeta, recomputeAlbum, applyFavs, catCount,
     cats, addCat, updateCat, removeCat,
     get rootName() { return rootName; },
     get libId() { return libId; },

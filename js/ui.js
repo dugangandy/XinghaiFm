@@ -112,10 +112,17 @@
     }, 2400);
   }
 
-  /* 服务器模式（远程访问）只让听，不让改分类/收藏 —— 那些以桌面端为准 */
+  /* 归类写的是桌面端本地的专辑元数据：只有「桌面端 + 本地资源库」能改 */
+  function assignBlocked() {
+    if (FM.fs.native && !FM.fs.server) return false;
+    toast('归类只能在桌面端本地资源库修改', 'warn');
+    return true;
+  }
+
+  /* 远端只读的其它整理动作（置顶/重命名/隐藏） */
   function readonlyBlocked() {
     if (!FM.fs.server) return false;
-    toast('远端只读：分类和收藏请在本机修改', 'warn');
+    toast('远端只读：整理请在桌面端修改', 'warn');
     return true;
   }
 
@@ -511,6 +518,9 @@
     const catTags = cats.map(c => '<span class="tag cat">' + esc(c.name) + '</span>').join('');
     const tagHtml = a.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join('');
     const done = a.count > 0 && st.doneCount >= a.count;
+    /* 归类只写桌面端本地元数据：非桌面/远端模式不渲染这个按钮（收藏不受限） */
+    const assignBtn = (FM.fs.native && !FM.fs.server) ?
+      '<button class="btn" data-act="assign" data-id="' + a.id + '">' + icon('folder') + '归类</button>' : '';
 
     const wrap = U.el('div');
     wrap.innerHTML =
@@ -534,7 +544,7 @@
             '<button class="btn btn-primary" data-act="play-album" data-id="' + a.id + '">' + icon('play') + (st.started ? '继续播放' : '播放全部') + '</button>' +
             '<button class="btn" data-act="queue-album" data-id="' + a.id + '">' + icon('list') + '加入队列</button>' +
             '<button class="btn' + (a.fav ? ' danger' : '') + '" data-act="fav" data-id="' + a.id + '">' + icon(a.fav ? 'heart-fill' : 'heart') + (a.fav ? '已收藏' : '收藏') + '</button>' +
-            '<button class="btn" data-act="assign" data-id="' + a.id + '">' + icon('folder') + '归类</button>' +
+            assignBtn +
           '</div>' +
         '</div>' +
       '</section>' +
@@ -767,7 +777,7 @@
     if (refs.btnLogout) {
       refs.btnLogout.addEventListener('click', function () { location.href = '/__auth/logout'; });
     }
-    refs.btnAddCat.addEventListener('click', function () { if (!readonlyBlocked()) editCat(null); });
+    refs.btnAddCat.addEventListener('click', function () { if (!assignBlocked()) editCat(null); });
     refs.btnMenu.addEventListener('click', function () {
       /* 窄屏：侧栏是抽屉，开/关；宽屏：整列折叠，状态记到本地 */
       if (window.matchMedia('(max-width:979.98px)').matches) {
@@ -819,7 +829,7 @@
       e.preventDefault();
       item.classList.remove('drop-target');
       const id = e.dataTransfer.getData('text/plain') || dragId;
-      if (id) { if (!readonlyBlocked()) assignCat(id, item.dataset.cat, true); }
+      if (id) { if (!assignBlocked()) assignCat(id, item.dataset.cat, true); }
     });
 
     refs.searchInput.addEventListener('input', U.debounce(function () {
@@ -907,11 +917,11 @@
       switch (act) {
         case 'play-album': P.playAlbum(id); break;
         case 'queue-album': { const list = L.albumTracks(id); P.addToQueue(list); toast('已加入播放队列（' + list.length + ' 集）'); break; }
-        case 'fav': { if (readonlyBlocked()) break; const a = L.album(id); if (!a) break; const next = !a.fav; L.setMeta(id, { fav: next }); toast(next ? '已加入收藏' : '已取消收藏'); renderAll(); break; }
-        case 'assign': if (!readonlyBlocked()) assignModal(id); break;
+        case 'fav': toggleFavorite(id); break;
+        case 'assign': if (!assignBlocked()) assignModal(id); break;
         case 'more-album': albumMenu(id, actEl); break;
         case 'more-track': trackMenu(id, actEl); break;
-        case 'edit-cat': if (!readonlyBlocked()) editCat(id); break;
+        case 'edit-cat': if (!assignBlocked()) editCat(id); break;
         case 'back': history.back(); break;
         case 'resume': { const t = L.track(id); if (t) P.playTrack(t); break; }
         case 'open-album': if (id) go('#/album/' + id); break;
@@ -998,9 +1008,9 @@
       { label: '播放全部', icon: 'play', onClick: () => P.playAlbum(id) },
       { label: '加入队列', icon: 'list', onClick: () => { P.addToQueue(L.albumTracks(id)); toast('已加入播放队列'); } },
       { sep: true },
-      { label: a.fav ? '取消收藏' : '收藏专辑', icon: 'heart', onClick: () => { if (readonlyBlocked()) return; L.setMeta(id, { fav: !a.fav }); renderAll(); } },
+      { label: a.fav ? '取消收藏' : '收藏专辑', icon: 'heart', onClick: () => toggleFavorite(id) },
       { label: a.pinned ? '取消置顶' : '置顶专辑', icon: 'up', onClick: () => { if (readonlyBlocked()) return; L.setMeta(id, { pinned: !a.pinned }); renderAll(); } },
-      { label: '归类…', icon: 'folder', onClick: () => { if (!readonlyBlocked()) assignModal(id); } },
+      { label: '归类…', icon: 'folder', onClick: () => { if (!assignBlocked()) assignModal(id); } },
       { label: '重命名…', icon: 'edit', onClick: () => { if (!readonlyBlocked()) renameAlbum(id); } },
       { sep: true },
       { label: a.hidden ? '取消隐藏' : '隐藏专辑', icon: 'close', danger: !a.hidden, onClick: () => { if (readonlyBlocked()) return; const next = !a.hidden; L.setMeta(id, { hidden: next }); toast(next ? '已隐藏，可在首页底部找回' : '已取消隐藏'); renderAll(); } }
@@ -1505,16 +1515,30 @@
     if (P.current) paintTrack(P.current);
   }
 
+  /* 收藏：跟数据库/用户走，先乐观更新，写失败再回滚；同专辑在途时忽略连点 */
+  const favPending = new Set();
+  function toggleFavorite(albumId) {
+    const a = L.album(albumId);
+    if (!a || favPending.has(albumId)) return;
+    const next = !a.fav;
+    favPending.add(albumId);
+    a.fav = next;
+    toast(next ? '已加入收藏' : '已取消收藏');
+    renderAll();
+    if (P.current) paintTrack(P.current);
+    FM.fs.setFav(albumId, next).then(function (ok) {
+      if (ok) return;
+      a.fav = !next;
+      toast('收藏失败，请稍后重试', 'warn');
+      renderAll();
+      if (P.current) paintTrack(P.current);
+    }).catch(function () {}).then(function () { favPending.delete(albumId); });
+  }
+
   function toggleFavOfCurrent() {
     const t = P.current;
     if (!t) return;
-    const a = L.album(t.albumId);
-    if (!a) return;
-    const next = !a.fav;
-    L.setMeta(a.id, { fav: next });
-    toast(next ? '已加入收藏' : '已取消收藏');
-    if (P.current) paintTrack(P.current);
-    renderAll();
+    toggleFavorite(t.albumId);
   }
 
   /* 档位显示：整数补一位小数，1 → 1.0×、1.25 → 1.25× */
@@ -2186,6 +2210,8 @@
     const o = opts || {};
     const libId = o.libId || FM.fs.activeId;
     if (!libId || libId !== FM.fs.activeId) return false;
+    /* 收藏可能在别的端刚改过：扫描前重拉一次，别让界面停在旧状态 */
+    try { await FM.fs.loadFavs(libId); } catch (e) {}
     const my = ++scanSeq;
     setScanBusy(true, '正在扫描资源库…');
     try {

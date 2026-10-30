@@ -405,6 +405,7 @@ function bindIpc() {
     cfg.libs.splice(i, 1);
     if (cfg.active === id) cfg.active = cfg.libs[0] ? cfg.libs[0].id : null;
     saveConfig();
+    DB.clearFavs(getDb(), adminUid(), id);
     return { active: cfg.active };
   });
 
@@ -471,6 +472,22 @@ function bindIpc() {
         updatedAt: data.updatedAt || 0
       };
     } catch (err) { return null; }
+  });
+
+  /* 收藏：跟用户绑定，落 SQLite（桌面端固定 admin 用户） */
+  ipcMain.handle('fm:favs', function (e, libId) {
+    const cfg = getConfig();
+    const id = libId || cfg.active;
+    if (!id) return [];
+    const lib = cfg.libs.find(l => l.id === id);
+    /* 升级后第一次读收藏：把 .fm-meta.json 里的旧收藏搬进库（每库一次） */
+    if (lib) DB.migrateLegacyFavs(getDb(), adminUid(), id, lib.path);
+    return DB.listFavs(getDb(), adminUid(), id);
+  });
+  ipcMain.handle('fm:setFav', function (e, libId, albumId, on) {
+    const id = libId || (activeLib() && activeLib().id);
+    if (!id || !albumId) return false;
+    return DB.setFav(getDb(), adminUid(), id, albumId, !!on);
   });
 
   /* 在文件管理器里定位某一集 */
