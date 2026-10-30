@@ -47,8 +47,8 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .hero-heading .hero-tags{margin-top:10px}
   .hero-meta,.hero-actions{grid-column:1/-1;margin-top:0}
   .hero-meta{grid-row:2}
-  .hero-actions{grid-row:3;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-  .hero-actions .btn{width:100%;padding:0 10px}
+  .hero-actions{grid-row:3;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  .hero-actions .btn{width:100%;min-width:0;padding:0 6px}
   /* 封面缩小后两个字会顶出去，字也跟着收 */
   .hero-cover .card-char{font-size:38px}
 
