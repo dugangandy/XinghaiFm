@@ -13,6 +13,7 @@
     "bump": "node tools/bump-version.js",
     "dist": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
+    "dist:apk": "node tools/build-apk.js",
     "pack:mac": "electron-packager . 星海FM --platform=darwin --arch=arm64,x64 --asar --icon=build/icon.icns --out=dist/mac --overwrite --app-bundle-id=local.xinghai.fm --ignore=\"^/(dist|tools|node_modules|\\.tmp-electron)\""
   },
   "build": {

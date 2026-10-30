@@ -27,15 +27,23 @@ android/
 仓库 → **Actions** → **Android APK** → **Run workflow**，跑完在 Artifacts 里下载 `XinghaiFM-apk`。
 推送 `v*` 标签（如 `git tag v1.1.0 && git push --tags`）也会自动构建。
 
-### 方式二：本机命令行
+### 方式二：本机命令行（推荐）
 
-需要 **JDK 17** 与 **Android SDK（platform 34 + build-tools 34.0.0）**，然后：
+装好 **JDK 17+** 和 **Android SDK（platform 34 + build-tools 34.0.0）** 后，在仓库根目录：
+
+```bash
+npm run dist:apk                # debug 包
+npm run dist:apk -- --release   # release 包（同样用 debug 签名）
+```
+
+脚本会自己找 JDK / Gradle（也可以用 `JAVA_HOME`、`GRADLE_HOME`、`ANDROID_HOME` 指定），
+构建完把产物拷成 `out/XinghaiFM-<version>-debug.apk`。
+
+也可以手动跑：
 
 ```bash
 cd android
-# 没有 wrapper 时先生成一次
-gradle wrapper --gradle-version 8.9
-./gradlew assembleDebug        # Windows: gradlew.bat assembleDebug
+gradle assembleDebug           # 有 wrapper 时用 ./gradlew assembleDebug
 ```
 
 产物：`app/build/outputs/apk/debug/app-debug.apk`
