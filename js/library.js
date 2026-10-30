@@ -99,13 +99,6 @@
         if (tags.length < 3) tags.push(inner);
         return ' ';
       }).replace(/\s+/g, ' ').trim();
-      /* 单个空格分隔时，取首个词作标题，其余够短就做标签 */
-      const sp = head.indexOf(' ');
-      if (sp > 1 && sp <= 14) {
-        const rest = head.slice(sp + 1).trim();
-        if (rest && rest.length <= 28) tags.push(rest);
-        head = head.slice(0, sp);
-      }
     }
     parts.forEach(function (p) { if (p.length <= 26) tags.push(p); });
     let title = head || s;
