@@ -239,6 +239,15 @@
   background:rgba(6,9,16,.5);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.16);color:#dff3ff;
 }
 .card-badge.done{color:#7ef7d0;border-color:rgba(94,234,212,.4);background:rgba(6,30,26,.55)}
+/* 已收藏：封面右上角的心形图标（替代原来的文字徽标） */
+.card-fav{
+  position:absolute;right:8px;top:8px;z-index:3;
+  width:24px;height:24px;border-radius:50%;display:grid;place-items:center;
+  background:rgba(6,9,16,.52);backdrop-filter:blur(8px);
+  border:1px solid rgba(255,255,255,.14);color:#ff7387;
+  box-shadow:0 6px 16px -10px rgba(0,0,0,.85);
+}
+.card-fav .i{width:13px;height:13px}
 
 .card-body{padding:8px 3px 0}
 .card-title{
@@ -256,7 +265,6 @@
 .card-prog{height:2.5px;border-radius:99px;background:rgba(255,255,255,.09);margin-top:6px;overflow:hidden}
 .card-prog i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#22d3ee,#a855f7);box-shadow:0 0 10px rgba(34,211,238,.8)}
 .card.playing .card-cover{box-shadow:0 0 0 1.5px rgba(34,211,238,.85),0 0 34px -8px rgba(34,211,238,.85)}
-.card.fav .card-badge.fav{display:flex}
 
 /* 专辑详情 */
 .album-hero{display:flex;gap:26px;align-items:flex-end;padding:24px 0 26px;flex-wrap:wrap}

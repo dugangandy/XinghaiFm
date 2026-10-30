@@ -367,7 +367,6 @@
     const pct = st.pct;
     const done = a.count > 0 && st.doneCount >= a.count;
     const badges = [];
-    if (a.fav) badges.push('<span class="card-badge fav">已收藏</span>');
     if (done) badges.push('<span class="card-badge done">已听完</span>');
     const tags = (a.tags && a.tags.length) ? a.tags.join(' · ') : albumType(a);
     const initial = initialOf(a);
@@ -379,6 +378,7 @@
       U.coverVars(a.seed) + '">' +
       '<div class="card-cover' + (a.cover ? ' has-photo' : '') + '">' +
         art +
+        (a.fav ? '<span class="card-fav" title="已收藏">' + icon('heart-fill') + '</span>' : '') +
         badges.join('') +
         '<button class="card-play" data-act="play-album" data-id="' + a.id + '" title="播放全部">' + icon('play') + '</button>' +
       '</div>' +
