@@ -27,5 +27,7 @@ contextBridge.exposeInMainWorld('fmNative', {
   openLib: (id) => ipcRenderer.invoke('fm:openLib', id),
   reveal: (rel) => ipcRenderer.invoke('fm:reveal', rel),
   saveMeta: (libPath, json) => ipcRenderer.invoke('fm:saveMeta', libPath, json),
-  loadMeta: (libPath) => ipcRenderer.invoke('fm:loadMeta', libPath)
+  loadMeta: (libPath) => ipcRenderer.invoke('fm:loadMeta', libPath),
+  /* 后台补完封面时通知一次，页面据此重读封面索引 */
+  onCovers: (cb) => ipcRenderer.on('fm:covers', (e, info) => { try { cb(info); } catch (err) {} })
 });

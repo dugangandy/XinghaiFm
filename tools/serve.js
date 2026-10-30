@@ -41,6 +41,7 @@ const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 
 const APP_ROOT = path.resolve(__dirname, '..');
+const covers = require('../cover-fetch');
 /* 版本号：打包前已把 package.json 的 version 自增，这里读出来给远程页面显示 */
 const APP_VERSION = (function () {
   try { return String(JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || ''); }
@@ -732,6 +733,9 @@ const server = http.createServer(async function (req, res) {
       const data = await scanFolder(root);
       const a = userActiveLib(uid);
       data.libId = a ? a.id : null;
+      /* 新专辑的封面在后台补，接口先返回；页面轮询 /api/covers 拿结果 */
+      data.coversPending = await covers.pendingOf(root);
+      if (data.coversPending) covers.auto(root);
       return json(res, data);
     } catch (e) { return send(res, 500, e.message); }
   }

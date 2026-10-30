@@ -110,6 +110,20 @@
       } catch (e) { console.warn('[boot] 恢复上次播放失败', e); }
     }
 
+    /* 后台补完封面：重读索引，卡片换成真封面，界面不闪 */
+    if (window.fmNative && window.fmNative.onCovers) {
+      window.fmNative.onCovers(function (info) {
+        /* 补封面期间切了库，这次结果和当前库无关，忽略 */
+        if (info && info.libId && FM.fs.activeId && info.libId !== FM.fs.activeId) return;
+        FM.covers.load().then(function (n) {
+          if (!n) return;
+          FM.covers.apply();
+          FM.ui.renderAll({ quiet: true });
+          if (FM.player.current) FM.ui.paintTrack(FM.player.current);
+        }).catch(function () {});
+      });
+    }
+
     FM.fs.load().then(function (r) {
       /* 封面索引是独立文件，先加载再渲染一次，卡片就能直接显示真封面 */
       return FM.covers.load().then(function (n) {

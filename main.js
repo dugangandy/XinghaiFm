@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const { Readable } = require('node:stream');
 const DB = require('./db');
+const covers = require('./cover-fetch');
 
 const ROOT = __dirname;
 const MEDIA = new Set([
@@ -413,6 +414,14 @@ function bindIpc() {
     if (!fs.existsSync(lib.path)) throw new Error('资源库目录不存在：' + lib.name);
     const res = await scanFolder(lib.path);
     res.libId = lib.id;
+    /* 有新专辑就在后台去喜马拉雅补封面，扫完先返回，界面不用等 */
+    res.coversPending = await covers.pendingOf(lib.path);
+    if (res.coversPending) {
+      covers.auto(lib.path).then(function (r) {
+        if (!r || !r.ok) return;
+        if (win && !win.isDestroyed()) win.webContents.send('fm:covers', { libId: lib.id, added: r.ok });
+      });
+    }
     return res;
   });
 

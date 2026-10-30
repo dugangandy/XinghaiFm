@@ -24,7 +24,7 @@
 
 - **资源库**：一个目录一个库，可加多个（有声书 / 课程 / 广播剧…），侧栏一键切换
 - **目录即专辑**：每个顶层子目录自动成为专辑，按集号自然排序（第 2 集在第 10 集之前）
-- **专辑封面**：`node tools/fetch-covers.js` 按目录名搜同名专辑下载封面到 `.fm-covers/`，搜不到才退回渐变封面
+- **专辑封面**：扫描到新专辑时自动去喜马拉雅按目录名搜同名专辑，下载封面到 `.fm-covers/`，搜不到才退回渐变封面
 - **自动去重**：同名文件只保留体积最大的一个
 - **智能分类**：首次扫描按关键词归入历史军事 / 文学小说 / 心理成长 / 国学经典 / 影视原声，可增删改
 - **分类管理**：新建、换色、重命名、删除；专辑卡片可直接拖到左侧分类，一个专辑可属多个分类
@@ -81,6 +81,10 @@ ffmpeg -i 某剧集.mkv -c copy 某剧集.mp4     # 只换容器，几秒钟
 
 封面由脚本先抓到本地，播放器只读本地文件，界面无外链请求。
 
+扫描资源库时如果发现有目录还没有封面，主进程会在后台自动去喜马拉雅搜一张回来（搜的是同名专辑，按标题相似度挑），抓完界面自动换上，不用手动跑命令。服务端模式同理，由服务端那台机器去抓。
+
+命令行保留下来，方便单独处理某个目录：
+
 ```bash
 node tools/fetch-covers.js                       # 默认抓 E:\迅雷下载\output
 node tools/fetch-covers.js --root "D:/有声书"     # 换目录
@@ -130,7 +134,8 @@ fm/
 ├─ index.html          页面骨架（图标精灵、侧栏、播放条、播放页）
 ├─ css/                base / layout / components
 ├─ js/                 util · store · media · fs · covers · library · viz · player · ui · app
-├─ tools/              fetch-covers.js · serve.js · tunnel.js · bump-version.js
+├─ cover-fetch.js      抓封面（扫描到新专辑时自动跑，也可命令行单跑）
+├─ tools/              serve.js · tunnel.js · bump-version.js（fetch-covers.js 是兼容入口）
 ├─ main.js             Electron 主进程（选目录、扫描、读文件、自定义协议）
 ├─ preload.js          暴露给页面的原生能力
 ├─ build/              应用图标与启动图

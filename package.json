@@ -30,6 +30,7 @@
       "main.js",
       "preload.js",
       "db.js",
+      "cover-fetch.js",
       "README.md",
       "build/icon.png",
       "!js/__*"

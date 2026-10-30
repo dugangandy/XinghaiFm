@@ -2206,11 +2206,33 @@
       if (!o.silent) renderAll();
       else if (libSignature() !== before) renderAll({ quiet: true });
       if (!o.silent) toast('资源库已更新：' + L.albums().length + ' 个专辑 · ' + L.tracks().length + ' 集');
+      /* 服务端扫完也会在后台补封面，隔一会儿读一次索引，拿到新图就重绘 */
+      if (FM.fs.server && scan.coversPending) watchCovers(libId);
       return true;
     } finally {
       /* 只有最新那次扫描能收起进度，旧扫描收尾不许关掉新扫描的提示 */
       if (my === scanSeq) setScanBusy(false);
     }
+  }
+
+  /* 等后台封面任务：每 15 秒看一次索引，数量变了才重绘，最多看 5 分钟 */
+  let coverWatch = 0;
+  function watchCovers(libId) {
+    const my = ++coverWatch;
+    let tries = 0;
+    let last = FM.covers.count;
+    const timer = setInterval(async function () {
+      if (my !== coverWatch || libId !== FM.fs.activeId || ++tries > 20) { clearInterval(timer); return; }
+      try {
+        const n = await FM.covers.load();
+        if (n && n !== last) {
+          last = n;
+          FM.covers.apply();
+          renderAll({ quiet: true });
+          if (FM.player.current) paintTrack(FM.player.current);
+        }
+      } catch (e) {}
+    }, 15000);
   }
 
   async function autoRescan(silent) {
