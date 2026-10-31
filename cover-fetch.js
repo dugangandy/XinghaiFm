@@ -105,10 +105,20 @@ async function fetchText(url, headers) {
   return { status: res.status, text: await res.text() };
 }
 
-async function fetchImage(url) {
-  const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(30000) });
+async function fetchImage(url, extra) {
+  const res = await fetch(url, { headers: Object.assign({}, HEADERS, extra || {}), signal: AbortSignal.timeout(30000) });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return { buf: Buffer.from(await res.arrayBuffer()), type: res.headers.get('content-type') || '' };
+}
+
+async function postJson(url, body, headers) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: Object.assign({}, HEADERS, headers || {}),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20000)
+  });
+  return { status: res.status, text: await res.text() };
 }
 
 /* 360 搜索：无 site: 的普通查询最稳。www 会时不时弹安全验证，m 站通常还通，
@@ -427,9 +437,11 @@ async function saveCoverForDir(root, dirName, opt) {
     buf = Buffer.from(m[2], 'base64');
     ext = /png/i.test(m[1]) ? '.png' : /webp/i.test(m[1]) ? '.webp' : '.jpg';
   } else if (opt.url) {
-    const clean = String(opt.url).replace(/!.*$/, '');
-    const dl = /xmcdn\.com/.test(clean) ? clean + '!op_type=3&columns=600&rows=600' : clean;
-    const got = await fetchImage(dl);
+    let dl = String(opt.url);
+    /* 喜马拉雅 CDN 换成 600×600；百度图片保持原地址，下载时带 Referer */
+    if (/xmcdn\.com/.test(dl)) dl = dl.replace(/!.*$/, '') + '!op_type=3&columns=600&rows=600';
+    const isBaidu = /baidu\.com|bdimg\.com|bdstatic\.com|bcebos\.com/.test(dl);
+    const got = await fetchImage(dl, isBaidu ? { referer: 'https://image.baidu.com/' } : null);
     buf = got.buf;
     ext = /png/i.test(got.type) ? '.png' : '.jpg';
   } else {
@@ -469,8 +481,76 @@ async function removeCover(root, dirName) {
 }
 
 /* 按标题去喜马拉雅搜几张候选封面（封面的勾选在网页里做，这里只返回可预览的 URL） */
+/* 极客时间：/serv/v3/search 不用登录，返回课程 + 封面；技术课程优先用它 */
+async function searchGeekbang(query, maxN) {
+  const n = maxN || 4;
+  const q = String(query || '').trim();
+  if (!q) return [];
+  try {
+    const r = await postJson('https://time.geekbang.org/serv/v3/search',
+      { keyword: q, page: 0, size: Math.max(n * 3, 12) },
+      {
+        'content-type': 'application/json',
+        'accept': 'application/json, text/plain, */*',
+        'referer': 'https://time.geekbang.org/',
+        'origin': 'https://time.geekbang.org'
+      });
+    if (r.status !== 200) { console.warn('[cover] 极客时间返回 HTTP ' + r.status); return []; }
+    let j = null;
+    try { j = JSON.parse(r.text); } catch (e) { return []; }
+    if (!j || j.code !== 0) return [];
+    const list = (j.data && j.data.list) || [];
+    const cands = [];
+    for (const x of list) {
+      if (!x || x.item_type !== 'product') continue;
+      const p = x.product || {};
+      if (!p.cover || !p.id) continue;
+      const title = String(p.title || '').replace(/<[^>]+>/g, '').trim();
+      const score = scoreOf(q, title);
+      if (score < MIN_SCORE) continue;
+      cands.push({ id: String(p.id), title: title, url: p.cover, score: +score.toFixed(3), source: 'geekbang' });
+    }
+    cands.sort((a, b) => b.score - a.score);
+    return cands.slice(0, n);
+  } catch (e) { console.warn('[cover] 极客时间请求失败：' + e.message); return []; }
+}
+
+/* 百度图片：没有官方 API，抓搜索页背后的 acjson；只在喜马拉雅没命中时兜底 */
+async function searchBaidu(query, maxN) {
+  const n = maxN || 4;
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const api = 'https://image.baidu.com/search/acjson?tn=resultjson_com&ipn=rj&ct=201326592&is=&fp=result'
+    + '&word=' + encodeURIComponent(q) + '&pn=0&rn=' + Math.max(n * 3, 12);
+  try {
+    const r = await fetchText(api, {
+      'accept': 'application/json, text/plain, */*',
+      'referer': 'https://image.baidu.com/search/index?tn=baiduimage&word=' + encodeURIComponent(q)
+    });
+    if (r.status !== 200) { console.warn('[cover] 百度返回 HTTP ' + r.status); return []; }
+    let j = null;
+    try { j = JSON.parse(r.text); } catch (e) { console.warn('[cover] 百度返回不是 JSON（可能被反爬拦了）'); return []; }
+    const docs = (j && j.data) || [];
+    const out = [];
+    for (let i = 0; i < docs.length && out.length < n; i++) {
+      const d = docs[i];
+      if (!d) continue;
+      /* 百度偶尔给 http:// 的图，统一升到 https，否则 fm:// 安全上下文里会被当混合内容拦掉 */
+      const url = String(d.middleURL || d.thumbURL || d.hoverURL || '').replace(/^http:\/\//, 'https://');
+      if (!url) continue;
+      const title = String(d.fromPageTitleEnc || d.di || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      out.push({ id: 'bd' + i, title: title || q, url: url, source: 'baidu' });
+    }
+    return out;
+  } catch (e) { console.warn('[cover] 百度请求失败：' + e.message); return []; }
+}
+
 async function searchCandidates(title, maxN) {
   const n = maxN || 4;
+  /* 1. 极客时间：技术课程在这儿最准，有结果就直接用 */
+  const gb = await searchGeekbang(title || '', n);
+  if (gb.length) return gb;
+  /* 2. 喜马拉雅 */
   let cands = [];
   for (const q of queriesOf(title || '')) {
     cands = cands.concat(await searchXm(q));
@@ -490,9 +570,11 @@ async function searchCandidates(title, maxN) {
     seen.add(c.id);
     const clean = c.cover.replace(/!.*$/, '');
     const url = /xmcdn\.com/.test(clean) ? clean + '!op_type=3&columns=600&rows=600' : clean;
-    out.push({ id: c.id, title: c.title, url: url, score: +c.score.toFixed(3) });
+    out.push({ id: c.id, title: c.title, url: url, score: +c.score.toFixed(3), source: 'xmly' });
     if (out.length >= n) break;
   }
+  /* 3. 极客时间和喜马拉雅都没匹配 → 最后试百度图片 */
+  if (!out.length) return await searchBaidu(title || '', n);
   return out;
 }
 

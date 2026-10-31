@@ -183,7 +183,8 @@
   }
   function filterCandidates(list, kw) {
     if (!list || !list.length) return [];
-    /* 新版后端已经带 score 并筛过，直接用；旧版没 score，客户端自己筛 */
+    /* 新版后端已经带 score 并筛过，直接用；百度来源按图搜词，不做标题过滤；旧版没 score 才客户端筛 */
+    if (list.every(function (c) { return c.source === 'baidu'; })) return list.slice(0, 4);
     if (list.some(function (c) { return typeof c.score === 'number'; })) return list.slice(0, 4);
     const scored = list.map(function (c) { return { c: c, s: titleScore(kw, c.title) }; })
       .filter(function (x) { return x.s >= 0.5; });

@@ -1659,7 +1659,7 @@
     let deleteMode = false;
     let delBtn = null, saveBtn = null;
 
-    const preview = U.el('img', { class: 'cover-img', style: { width: '116px', height: '116px', objectFit: 'cover', borderRadius: '12px', display: a.cover ? 'block' : 'none' } });
+    const preview = U.el('img', { class: 'cover-img', referrerpolicy: 'no-referrer', style: { width: '116px', height: '116px', objectFit: 'cover', borderRadius: '12px', display: a.cover ? 'block' : 'none' } });
     if (a.cover) preview.src = a.cover;
     const previewBox = U.el('div', { style: { width: '116px', height: '116px', flex: 'none', borderRadius: '12px', overflow: 'hidden', background: 'rgba(255,255,255,.06)' } }, [preview]);
     const candsBox = U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } });
@@ -1693,7 +1693,7 @@
       autoBtn.disabled = false;
       autoBtn.textContent = '自动获取';
       renderCands(list || []);
-      if (!list || !list.length) toast('没搜到匹配的候选封面，换个关键词试试', 'warn');
+      if (!list || !list.length) toast('没搜到匹配的封面（喜马拉雅 + 百度都没结果），换个关键词；若刚更新代码，请重启应用', 'warn');
     }
     autoBtn.addEventListener('click', searchCover);
     kwInput.addEventListener('keydown', function (e) {
@@ -1706,11 +1706,11 @@
         /* 缩略图下面带标题，一眼能看出这张图对应哪张专辑 */
         const cell = U.el('div', { style: { width: '64px', cursor: 'pointer', position: 'relative' } }, [
           U.el('div', { style: { width: '64px', height: '64px', borderRadius: '8px', overflow: 'hidden' } }, [
-            U.el('img', { src: c.url, alt: '', title: c.title, style: { width: '100%', height: '100%', objectFit: 'cover' } })
+            U.el('img', { src: c.url, alt: '', title: c.title, referrerpolicy: 'no-referrer', style: { width: '100%', height: '100%', objectFit: 'cover' } })
           ]),
           U.el('span', {
             style: { position: 'absolute', left: '2px', top: '2px', padding: '0 4px', borderRadius: '5px', fontSize: '8px', lineHeight: '1.5', color: '#e6f3ff', background: 'rgba(0,0,0,.62)' },
-            text: c.source === 'baidu' ? '百度' : '喜马'
+            text: c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马'
           }),
           U.el('div', {
             title: c.title,
