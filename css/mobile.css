@@ -92,6 +92,11 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   /* 音频模式用沉浸式封面，原封面卡片不再单独显示 */
   .sheet:not(.is-video) .sheet-cover{display:none}
   .sheet-cover{width:min(66vw,34vh);border-radius:20px}
+  /* 无封面：唱片定格在封面区正中，position:fixed 不占流式高度（不影响下方标题/进度/控制按钮） */
+  .sheet.no-cover:not(.is-video) .sheet-disc{
+    display:block;position:fixed;left:50%;top:calc(clamp(300px,60vh,460px) * .5);
+    transform:translate(-50%,-50%);width:min(66vw,34vh);z-index:1;
+  }
   .sc-char{font-size:clamp(40px,9vh,64px)}
   .sheet-meta h2{font-size:17px}
   .sheet-meta p{font-size:11.5px;margin-top:4px}
@@ -125,6 +130,7 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .sheet-top{grid-area:top}
   .sheet-stage{grid-area:stage;margin:0;flex:none}
   .sheet-cover{width:min(46vh,230px)}
+  .sheet-disc{width:min(46vh,230px)}
   .sheet-meta{grid-area:meta;text-align:left}
   .sheet-scrub-row{grid-area:scrub}
   .sheet-controls{grid-area:controls;justify-content:flex-start}

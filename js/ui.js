@@ -34,7 +34,7 @@
       btnRate: $('btnRate'), btnLoop: $('btnLoop'), btnVol: $('btnVol'), volScrub: $('volScrub'), btnExpand: $('btnExpand'),
       volNum: $('volNum'), vVolNum: $('vVolNum'), btnLogout: $('btnLogout'),
       sheet: $('sheet'), sheetArt: $('sheetArt'), sheetArtImg: $('sheetArtImg'), btnCollapse: $('btnCollapse'),
-      sheetCover: $('sheetCover'), shTitle: $('shTitle'), shSub: $('shSub'),
+      sheetCover: $('sheetCover'), sheetDisc: $('sheetDisc'), shTitle: $('shTitle'), shSub: $('shSub'),
       shCur: $('shCur'), shDur: $('shDur'), shScrub: $('shScrub'), shTip: $('shTip'),
       shPlay: $('shPlay'), shPrev: $('shPrev'), shNext: $('shNext'), shBack: $('shBack'), shFwd: $('shFwd'),
       shRate: $('shRate'), shSleep: $('shSleep'), shLoop: $('shLoop'), shFav: $('shFav'),
@@ -1798,6 +1798,9 @@
     if (el.classList.contains('sheet-cover')) {
       const c = el.querySelector('.sc-char');
       if (c) c.textContent = char;
+      const d = refs.sheetDisc;
+      if (d) { const dc = d.querySelector('.disc-char'); if (dc) dc.textContent = char.charAt(0); }
+      if (refs.sheet) refs.sheet.classList.toggle('no-cover', !(album && album.cover));
     } else {
       const sp = el.querySelector('span');
       if (sp) sp.textContent = char;
@@ -1806,6 +1809,7 @@
       const c = U.coverColors(seed);
       el.style.setProperty('--c1', c[0]);
       el.style.setProperty('--c2', c[1]);
+      if (refs.sheetDisc) { refs.sheetDisc.style.setProperty('--c1', c[0]); refs.sheetDisc.style.setProperty('--c2', c[1]); }
     }
     paintPhoto(el, album && album.cover);
   }
