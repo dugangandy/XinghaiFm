@@ -69,7 +69,9 @@ object Dl {
     private val pending = ConcurrentHashMap<String, Item>()     // rel -> 排队中还没开始的条目
     private val failed = ConcurrentHashMap<String, Item>()      // rel -> 下载失败的条目（可重试）
     private val wifiPaused = ConcurrentHashMap<String, Item>()   // rel -> 断 WIFI 暂停、等 WIFI 回来再续的条目
-    private val pausedByWifi = java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())  // rel -> 正因断网中止，catch 里别再当失败
+    private val pausedAttempt = ConcurrentHashMap<String, Long>() // rel -> 被暂停的那次 run 的 attempt
+    private val attempt = ConcurrentHashMap<String, Long>()       // rel -> 当前这次下载的 attempt（防旧请求覆盖新状态）
+    private val attemptSeq = java.util.concurrent.atomic.AtomicLong(0)
     private val startedOnWifi = ConcurrentHashMap<String, Boolean>()   // rel -> 入队时是否在 WIFI 上
 
     @Volatile private var netRegistered = false
@@ -262,7 +264,7 @@ object Dl {
         if (active.isEmpty()) return
         for (it in active) {
             wifiPaused[it.rel] = it
-            pausedByWifi.add(it.rel)
+            pausedAttempt[it.rel] = attempt[it.rel] ?: -1L
             pending.remove(it.rel)
             states.remove(it.rel)          // 立刻摘掉，WIFI 若马上回来 enqueue 不会因为还在 downloading 被跳过
             calls[it.rel]?.cancel()
@@ -278,7 +280,6 @@ object Dl {
         if (base.isEmpty()) return
         val batch = ArrayList<Item>(wifiPaused.values)
         wifiPaused.clear()
-        for (it in batch) pausedByWifi.remove(it.rel)
         val n = enqueue(base, batch)
         if (n > 0) notice("WIFI 已恢复，继续下载 " + n + " 个")
     }
@@ -392,25 +393,28 @@ object Dl {
             cancelled.remove(item.rel)
             /* 之前断网暂停的，现在重新起跑：从待续队列摘掉，别等 WIFI 回来又加一遍 */
             wifiPaused.remove(item.rel)
-            pausedByWifi.remove(item.rel)
             states[rec.rel] = "queued"
             pending[rec.rel] = rec
             failed.remove(rec.rel)
             startedOnWifi[rec.rel] = onWifi
-            workers.execute { run(base, rec) }
+            val aid = attemptSeq.incrementAndGet()
+            attempt[rec.rel] = aid
+            workers.execute { run(base, rec, aid) }
             queued++
         }
         notifyChange()
         return queued
     }
 
-    private fun run(base: String, it: Item) {
+    private fun run(base: String, it: Item, aid: Long) {
         val c = appCtx ?: return
+        /* 已被更新的尝试取代（断网恢复 / 重新入队）：这次直接作废，别动共享状态 */
+        if (attempt[it.rel] != aid) return
         pending.remove(it.rel)
         /* 排队期间就被取消：连请求都别发 */
         if (cancelled.remove(it.rel)) { states.remove(it.rel); notifyChange(); return }
         /* 排队期间 WIFI 断了被暂停：别开跑，等 resume 重新入队 */
-        if (pausedByWifi.contains(it.rel)) { states.remove(it.rel); notifyChange(); return }
+        if (pausedAttempt[it.rel] == aid) { states.remove(it.rel); notifyChange(); return }
         states[it.rel] = "downloading"
         loaded[it.rel] = 0L
         totals[it.rel] = it.size.coerceAtLeast(1L)
@@ -477,7 +481,9 @@ object Dl {
             if (cancelled.remove(it.rel)) {
                 tmp.delete()                       // 用户主动取消：不留半截
                 states.remove(it.rel)
-            } else if (pausedByWifi.contains(it.rel)) {
+            } else if (attempt[it.rel] != aid) {
+                /* 已被新尝试接管：旧请求的异常不管，也不许动新状态 */
+            } else if (pausedAttempt[it.rel] == aid) {
                 /* WIFI 断开导致的中止：.part 留着，状态交给 pauseForWifi，别报错 */
                 states.remove(it.rel)
             } else {
@@ -497,13 +503,20 @@ object Dl {
                 Handler(Looper.getMainLooper()).post { runCatching { onError?.invoke(text) } }
             }
         } finally {
-            calls.remove(it.rel)
-            inflight.remove(it.rel)
-            pending.remove(it.rel)
-            loaded.remove(it.rel)
-            totals.remove(it.rel)
-            /* 真正结束（完成/失败/用户取消）就清掉断网标记；还在 wifiPaused 里的留着等续传 */
-            if (!wifiPaused.containsKey(it.rel)) { pausedByWifi.remove(it.rel); startedOnWifi.remove(it.rel) }
+            /* 只清理自己这次尝试的临时状态，别把新一次尝试的 calls/进度抹掉 */
+            if (attempt[it.rel] == aid) {
+                calls.remove(it.rel)
+                inflight.remove(it.rel)
+                pending.remove(it.rel)
+                loaded.remove(it.rel)
+                totals.remove(it.rel)
+                /* 还在 wifiPaused 里的保留 attempt/pausedAttempt，等 resume 用；真正结束才清掉 */
+                if (pausedAttempt[it.rel] != aid) {
+                    attempt.remove(it.rel)
+                    pausedAttempt.remove(it.rel)
+                    startedOnWifi.remove(it.rel)
+                }
+            }
             notifyChange()
         }
     }
@@ -525,7 +538,7 @@ object Dl {
         if (it != null && it.uid.isNotEmpty() && it.uid != me) return
         /* 断网暂停中的条目：从待续队列摘掉，.part 也删了，免得 WIFI 回来自动又下起来 */
         wifiPaused.remove(rel)?.let { p -> runCatching { partOf(p).delete() } }
-        pausedByWifi.remove(rel)
+        pausedAttempt.remove(rel)
         startedOnWifi.remove(rel)
         cancelled.add(rel)
         failed.remove(rel)
@@ -583,7 +596,7 @@ object Dl {
         for ((rel, item) in wifiPaused) {
             if (item.libId == libId && item.album == album && (item.uid.isEmpty() || item.uid == currentUid())) {
                 pausedGone.add(item)
-                pausedByWifi.remove(rel)
+                pausedAttempt.remove(rel)
                 startedOnWifi.remove(rel)
             }
         }

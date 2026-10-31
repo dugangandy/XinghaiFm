@@ -131,7 +131,7 @@
     const now = Math.floor(Date.now() / 1000);
     if (!ticketCache || ticketCache.exp - now < 60) {
       const r = await apiFetch('/api/ticket', { cache: 'no-store' });
-      if (!r.ok) throw new Error(U.NET_FAIL);
+      if (!r.ok) throw new Error(r.status === 401 ? '登录已过期，请重新登录' : U.NET_FAIL);
       ticketCache = await r.json();
     }
     if (!ticketCache.t) return API_BASE + path;

@@ -1704,10 +1704,14 @@
       candsBox.innerHTML = '';
       list.forEach(function (c) {
         /* 缩略图下面带标题，一眼能看出这张图对应哪张专辑 */
-        const cell = U.el('div', { style: { width: '64px', cursor: 'pointer' } }, [
+        const cell = U.el('div', { style: { width: '64px', cursor: 'pointer', position: 'relative' } }, [
           U.el('div', { style: { width: '64px', height: '64px', borderRadius: '8px', overflow: 'hidden' } }, [
             U.el('img', { src: c.url, alt: '', title: c.title, style: { width: '100%', height: '100%', objectFit: 'cover' } })
           ]),
+          U.el('span', {
+            style: { position: 'absolute', left: '2px', top: '2px', padding: '0 4px', borderRadius: '5px', fontSize: '8px', lineHeight: '1.5', color: '#e6f3ff', background: 'rgba(0,0,0,.62)' },
+            text: c.source === 'baidu' ? '百度' : '喜马'
+          }),
           U.el('div', {
             title: c.title,
             style: { marginTop: '3px', fontSize: '9px', lineHeight: '1.2', color: 'var(--dim-2)', maxWidth: '64px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
@@ -1716,7 +1720,7 @@
         ]);
         cell.title = c.title || '';
         cell.addEventListener('click', function () {
-          pending = { kind: 'xmly', url: c.url, albumId: c.id, title: c.title };
+          pending = { kind: 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' };
           deleteMode = false;
           preview.src = c.url;
           preview.style.display = 'block';
@@ -2225,8 +2229,15 @@
     P.on('volume', paintVolume);
     P.on('loop', paintLoop);
     P.on('sleep', paintSleep);
-    /* 播放失败大多是断网/文件取不到：统一文案，别把原生报错抛给用户 */
-    P.on('error', function () { toast(U.NET_FAIL, 'warn'); });
+    /* 只有确实断网才用统一网络文案；本地文件损坏/编码问题不要误报成断网 */
+    P.on('error', function (e) {
+      const m = (e && e.message) ? String(e.message) : '';
+      const offline = (typeof navigator !== 'undefined' && navigator.onLine === false) ||
+        (FM.fs && FM.fs.link === 'offline');
+      if (m === U.NET_FAIL || offline) toast(U.NET_FAIL, 'warn');
+      else if (m === '登录已过期，请重新登录') toast(m, 'warn');
+      else toast('播放失败，请稍后重试', 'warn');
+    });
     P.on('sleepend', function () { toast('定时关闭已生效'); });
     P.on('rewind', function (sec) { toast('已回退 ' + Math.round(sec) + ' 秒'); });
     P.on('queue', function () { if (queueOpen) renderQueue(); });
