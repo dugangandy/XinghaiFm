@@ -14,6 +14,7 @@
   let urlOf = new Map();        // 目录名 -> <img> 能直接用的地址
   let index = [];               // [{ key, norm, url }]
   let cache = new Map();
+  let coverVer = new Map();     // 目录名 -> 换图版本号（加在 URL 上，逼浏览器重新取图）
   let loaded = false;
 
   /* 只留字母数字，书名里的书名号、空格、感叹号、竖线都不参与比较 */
@@ -142,15 +143,85 @@
     if (!FM.lib || !FM.lib.albums) return 0;
     let n = 0;
     FM.lib.albums().forEach(function (a) {
-      const url = of(a);
+      const key = a.dirName || a.key;
+      let url = of(a);
+      /* 换图后文件名可能没变（旧版后端是覆盖同名文件），加个版本参数逼浏览器重新取图 */
+      const v = coverVer.get(key);
+      if (url && v) url += (url.indexOf('?') >= 0 ? '&' : '?') + 'r=' + v;
       a.cover = url || null;
       if (url) n++;
     });
     return n;
   }
 
+  /* ── 手动编辑封面：搜索候选 / 保存 / 删除，都在用户点「保存」后才落盘 ── */
+  async function search(title) {
+    try {
+      if (FM.fs.native && window.fmNative && window.fmNative.searchCover) {
+        return (await window.fmNative.searchCover(title)) || [];
+      }
+      if (FM.fs.server) {
+        const r = await FM.fs.apiFetch('/api/covers/search?q=' + encodeURIComponent(title || ''));
+        return r && r.ok ? (await r.json()) : [];
+      }
+    } catch (e) { console.warn('[covers] 搜索失败', e); }
+    return [];
+  }
+
+  /* 失败时返回 { ok:false, reason }：界面要把原因说出来，否则只会看到「保存失败」 */
+  async function save(album, payload) {
+    const dirName = album && (album.dirName || album.key);
+    if (!dirName || !payload) return { ok: false, reason: '缺少专辑目录或图片' };
+    /* 先记版本：保存成功的 fm:covers 事件会立刻 apply()，得让它用带版本的新 URL；
+       保存失败也无害（文件没变，重新取到的还是旧图） */
+    coverVer.set(dirName, Date.now());
+    if (FM.fs.native) {
+      if (!window.fmNative || !window.fmNative.saveCover) return { ok: false, reason: '请重启应用（封面写入未加载）' };
+      try {
+        const entry = await window.fmNative.saveCover(dirName, payload);
+        if (!entry) return { ok: false, reason: '本地写入失败' };
+      } catch (e) { console.warn('[covers] 保存失败', e); return { ok: false, reason: '本地写入异常' }; }
+    } else if (FM.fs.server) {
+      try {
+        const r = await FM.fs.apiFetch('/api/cover', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ dirName: dirName, payload: payload })
+        });
+        if (!r || !r.ok) return { ok: false, reason: '服务端返回 ' + (r ? r.status : '无响应') + '（服务端可能是旧版本，重启 serve.js / 更新 APK）' };
+      } catch (e) { console.warn('[covers] 保存失败', e); return { ok: false, reason: '服务端请求失败' }; }
+    } else {
+      return { ok: false, reason: '当前模式不支持' };
+    }
+    await load();
+    apply();
+    return { ok: true };
+  }
+
+  async function remove(album) {
+    const dirName = album && (album.dirName || album.key);
+    if (!dirName) return { ok: false, reason: '缺少专辑目录' };
+    if (FM.fs.native) {
+      if (!window.fmNative || !window.fmNative.deleteCover) return { ok: false, reason: '请重启应用（封面写入未加载）' };
+      try {
+        if (!await window.fmNative.deleteCover(dirName)) return { ok: false, reason: '本地删除失败' };
+      } catch (e) { console.warn('[covers] 删除失败', e); return { ok: false, reason: '本地删除异常' }; }
+    } else if (FM.fs.server) {
+      try {
+        const r = await FM.fs.apiFetch('/api/cover?dir=' + encodeURIComponent(dirName), { method: 'DELETE' });
+        if (!r || !r.ok) return { ok: false, reason: '服务端返回 ' + (r ? r.status : '无响应') };
+      } catch (e) { console.warn('[covers] 删除失败', e); return { ok: false, reason: '服务端请求失败' }; }
+    } else {
+      return { ok: false, reason: '当前模式不支持' };
+    }
+    coverVer.delete(dirName);            // 删掉封面后不要再带旧的版本参数
+    await load();
+    apply();
+    return { ok: true };
+  }
+
   FM.covers = {
-    load, apply, of,
+    load, apply, of, search, save, remove,
     get ready() { return loaded; },
     get count() { return index.length; }
   };

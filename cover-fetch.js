@@ -406,6 +406,93 @@ function cli() {
   run(root, opt).catch(function (e) { console.error(e); process.exit(1); });
 }
 
-module.exports = { run: run, auto: auto, pendingOf: pendingOf, titleOf: titleOf, cli: cli };
+/* ── 给网页手动编辑封面用（不再自动拉取，改由用户点「保存」才落盘） ── */
+async function readMap(coverDir) {
+  const mapFile = path.join(coverDir, 'covers.json');
+  try { return JSON.parse(await fsp.readFile(mapFile, 'utf8')) || {}; } catch (e) { return {}; }
+}
+async function writeMap(coverDir, map) {
+  await fsp.writeFile(path.join(coverDir, 'covers.json'), JSON.stringify(map, null, 2), 'utf8');
+}
+
+/* 手动保存一张封面：opt 里给 dataUrl（上传）或 url（自动获取到的候选），其余字段原样记进 covers.json */
+async function saveCoverForDir(root, dirName, opt) {
+  const coverDir = path.join(path.resolve(root), COVER_DIR);
+  await fsp.mkdir(coverDir, { recursive: true });
+  const map = await readMap(coverDir);
+  let buf, ext;
+  if (opt.dataUrl) {
+    const m = /^data:([^;]+);base64,(.*)$/.exec(String(opt.dataUrl));
+    if (!m) throw new Error('无效的图片数据');
+    buf = Buffer.from(m[2], 'base64');
+    ext = /png/i.test(m[1]) ? '.png' : /webp/i.test(m[1]) ? '.webp' : '.jpg';
+  } else if (opt.url) {
+    const clean = String(opt.url).replace(/!.*$/, '');
+    const dl = /xmcdn\.com/.test(clean) ? clean + '!op_type=3&columns=600&rows=600' : clean;
+    const got = await fetchImage(dl);
+    buf = got.buf;
+    ext = /png/i.test(got.type) ? '.png' : '.jpg';
+  } else {
+    throw new Error('没有图片来源');
+  }
+  /* 文件名带上图片内容指纹：换图时 URL 会跟着变，浏览器才不会继续用旧缓存。
+     （之前固定用 sha1(dirName)，同一张专辑第二次换图 URL 不变，界面就一直是旧图） */
+  const stamp = crypto.createHash('sha1').update(buf).digest('hex').slice(0, 10);
+  const file = opt.file || (crypto.createHash('sha1').update(dirName).digest('hex').slice(0, 16) + '-' + stamp + ext);
+  /* 换图后旧文件还在 covers.json 里就清掉，免得留孤儿文件 */
+  const old = map[dirName];
+  if (old && old.file && old.file !== file) {
+    try { await fsp.unlink(path.join(coverDir, old.file)); } catch (e) {}
+  }
+  await fsp.writeFile(path.join(coverDir, file), buf);
+  map[dirName] = {
+    file: file,
+    title: opt.title || dirName,
+    albumId: opt.albumId || '',
+    score: opt.source === 'xmly' ? 0.99 : 1,
+    at: new Date().toISOString().slice(0, 10),
+    source: opt.source || 'user'
+  };
+  await writeMap(coverDir, map);
+  return map[dirName];
+}
+
+/* 删掉某专辑封面：covers.json 条目 + 图片文件一起清 */
+async function removeCover(root, dirName) {
+  const coverDir = path.join(path.resolve(root), COVER_DIR);
+  let map = {};
+  try { map = JSON.parse(await fsp.readFile(path.join(coverDir, 'covers.json'), 'utf8')) || {}; } catch (e) {}
+  const entry = map[dirName];
+  if (entry && entry.file) { try { await fsp.unlink(path.join(coverDir, entry.file)); } catch (e) {} }
+  delete map[dirName];
+  await writeMap(coverDir, map);
+}
+
+/* 按标题去喜马拉雅搜几张候选封面（封面的勾选在网页里做，这里只返回可预览的 URL） */
+async function searchCandidates(title, maxN) {
+  const n = maxN || 4;
+  let cands = [];
+  for (const q of queriesOf(title || '')) {
+    cands = cands.concat(await searchXm(q));
+    cands = Array.from(new Map(cands.map(c => [c.id, c])).values());
+    if (cands.length >= 12) break;
+    await sleep(500);
+  }
+  cands = cands.filter(c => c.cover);
+  const seen = new Set();
+  const out = [];
+  for (const c of cands) {
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    const clean = c.cover.replace(/!.*$/, '');
+    const url = /xmcdn\.com/.test(clean) ? clean + '!op_type=3&columns=600&rows=600' : clean;
+    out.push({ id: c.id, title: c.title, url: url });
+    if (out.length >= n) break;
+  }
+  return out;
+}
+
+module.exports = { run: run, auto: auto, pendingOf: pendingOf, titleOf: titleOf, cli: cli,
+  searchCandidates: searchCandidates, saveCoverForDir: saveCoverForDir, removeCover: removeCover };
 
 if (require.main === module) cli();
