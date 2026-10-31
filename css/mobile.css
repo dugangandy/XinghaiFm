@@ -85,9 +85,12 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
     padding:calc(12px + var(--sat)) 18px calc(18px + var(--sab));
     gap:12px;justify-content:flex-start;
   }
-  .sheet-top{margin-bottom:calc(clamp(300px,60vh,460px) - 50px)}
-  .sheet-art{height:clamp(300px,60vh,460px)}
+  .sheet-top{position:static;margin-bottom:calc(clamp(300px,60vh,460px) - 50px)}
+  .sheet-art{display:block;height:clamp(300px,60vh,460px)}
+  .sheet-art-veil{display:block}
   .sheet-stage{flex:none;margin:10px 0 6px}
+  /* 音频模式用沉浸式封面，原封面卡片不再单独显示 */
+  .sheet:not(.is-video) .sheet-cover{display:none}
   .sheet-cover{width:min(66vw,34vh);border-radius:20px}
   .sc-char{font-size:clamp(40px,9vh,64px)}
   .sheet-meta h2{font-size:17px}

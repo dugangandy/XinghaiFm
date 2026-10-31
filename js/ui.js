@@ -1587,24 +1587,35 @@
   function albumMenu(id, anchor) {
     const a = L.album(id);
     if (!a) return;
+    /* 权限：归类只在桌面原生本地库可用；置顶/重命名/隐藏在远端只读模式下无权限。
+       无权限的项直接不加入菜单（而非显示后点击才提示）。 */
+    const canAssign = FM.fs.native && !FM.fs.server;   // 归类…
+    const canModify = !FM.fs.server;                    // 置顶 / 重命名 / 隐藏
     const items = [
       { label: '播放全部', icon: 'play', onClick: () => P.playAlbum(id) },
-      { label: '加入队列', icon: 'list', onClick: () => { P.addToQueue(L.albumTracks(id)); toast('已加入播放队列'); } },
-      { sep: true },
-      { label: a.fav ? '取消收藏' : '收藏专辑', icon: 'heart', onClick: () => toggleFavorite(id) },
-      { label: a.pinned ? '取消置顶' : '置顶专辑', icon: 'up', onClick: () => { if (readonlyBlocked()) return; L.setMeta(id, { pinned: !a.pinned }); renderAll(); } },
-      { label: '归类…', icon: 'folder', onClick: () => { if (!assignBlocked()) assignModal(id); } },
-      { label: '重命名…', icon: 'edit', onClick: () => { if (!readonlyBlocked()) renameAlbum(id); } },
-      { sep: true },
-      { label: a.hidden ? '取消隐藏' : '隐藏专辑', icon: 'close', danger: !a.hidden, onClick: () => { if (readonlyBlocked()) return; const next = !a.hidden; L.setMeta(id, { hidden: next }); toast(next ? '已隐藏，可在首页底部找回' : '已取消隐藏'); renderAll(); } }
+      { label: '加入队列', icon: 'list', onClick: () => { P.addToQueue(L.albumTracks(id)); toast('已加入播放队列'); } }
     ];
-    /* 紧跟在「加入队列」后面 */
-    if (canDownload()) items.splice(2, 0, { label: '下载全部', icon: 'download', onClick: () => downloadTracks(L.albumTracks(id)) });
+    if (canDownload()) items.push({ label: '下载全部', icon: 'download', onClick: () => downloadTracks(L.albumTracks(id)) });
+    items.push({ sep: true });
+    items.push({ label: a.fav ? '取消收藏' : '收藏专辑', icon: 'heart', onClick: () => toggleFavorite(id) });
+    if (canModify) items.push({ label: a.pinned ? '取消置顶' : '置顶专辑', icon: 'up', onClick: () => { if (readonlyBlocked()) return; L.setMeta(id, { pinned: !a.pinned }); renderAll(); } });
+    if (canAssign) items.push({ label: '归类…', icon: 'folder', onClick: () => { if (!assignBlocked()) assignModal(id); } });
+    if (canModify) items.push({ label: '重命名…', icon: 'edit', onClick: () => { if (!readonlyBlocked()) renameAlbum(id); } });
+    items.push({ sep: true });
+    if (canModify) items.push({ label: a.hidden ? '取消隐藏' : '隐藏专辑', icon: 'close', danger: !a.hidden, onClick: () => { if (readonlyBlocked()) return; const next = !a.hidden; L.setMeta(id, { hidden: next }); toast(next ? '已隐藏，可在首页底部找回' : '已取消隐藏'); renderAll(); } });
     if (window.fmNative && window.fmNative.isDesktop) {
       items.push({ sep: true },
         { label: '在文件夹中显示', icon: 'folder', onClick: () => { const t = L.albumTracks(id)[0]; nativeReveal(t && t.rel); } });
     }
-    openMenu(anchor, items);
+    /* 去掉过滤后可能残留的首尾 / 连续分隔线 */
+    const cleaned = [];
+    items.forEach(function (it) {
+      const prev = cleaned[cleaned.length - 1];
+      if (it.sep && (!prev || prev.sep)) return;
+      cleaned.push(it);
+    });
+    if (cleaned.length && cleaned[cleaned.length - 1].sep) cleaned.pop();
+    openMenu(anchor, cleaned);
   }
 
   function nativeReveal(rel) {
