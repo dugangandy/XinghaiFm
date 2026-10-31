@@ -256,7 +256,7 @@ class VideoPlayerActivity : Activity() {
         seek = VideoSeekBar(this)
         seek.onSeek = { ratio -> player?.let { if (it.duration > 0) it.seekTo((ratio * it.duration).toLong()) } ; showControls() }
         durView = timeText()
-        speedBtn = textBtn(fmtRate(rate) + "×") { showSpeedPanel() }
+        speedBtn = textBtn(fmtRate(rate) + "x") { showSpeedPanel() }
         episodeBtn = textBtn("选集") { showEpisodeDrawer() }
         episodeIcon = iconBtn(R.drawable.ic_list, 40) { showEpisodeDrawer() }.apply {
             contentDescription = "选集"
@@ -639,7 +639,7 @@ class VideoPlayerActivity : Activity() {
             val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             idxs.forEach { i ->
                 val t = TextView(this).apply {
-                    text = fmtRate(RATES[i]) + "×"
+                    text = fmtRate(RATES[i]) + "x"
                     textSize = 14f
                     maxLines = 1
                     gravity = Gravity.CENTER
@@ -656,7 +656,7 @@ class VideoPlayerActivity : Activity() {
         tiles.forEachIndexed { i, v ->
             v.setOnClickListener {
                 cur = i; setRate(RATES[i]); paint()
-                showHud("倍速 " + fmtRate(RATES[i]) + "×"); hideHudSoon()
+                showHud("倍速 " + fmtRate(RATES[i]) + "x"); hideHudSoon()
             }
         }
         paint()
@@ -823,7 +823,7 @@ class VideoPlayerActivity : Activity() {
         if (gesture != 0) return
         gesture = 3
         player?.setPlaybackSpeed(FAST)
-        showHud("快进 " + fmtRate(FAST) + "×")
+        showHud("快进 " + fmtRate(FAST) + "x")
     }
 
     private fun exitFast() {
@@ -927,7 +927,7 @@ class VideoPlayerActivity : Activity() {
     private fun setRate(r: Float) {
         rate = r
         player?.setPlaybackSpeed(r)
-        if (::speedBtn.isInitialized) speedBtn.text = fmtRate(r) + "×"
+        if (::speedBtn.isInitialized) speedBtn.text = fmtRate(r) + "x"
         getSharedPreferences("fm", MODE_PRIVATE).edit().putFloat("videoRate", r).apply()
     }
 
