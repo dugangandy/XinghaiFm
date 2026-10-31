@@ -142,6 +142,10 @@
 
 <!-- ── 底部播放条 ───────────────────────────────────────── -->
 <div class="playerbar" id="playerbar" hidden>
+  <div class="pb-progress" id="pbProgress" role="slider" aria-label="播放进度" tabindex="0">
+    <div class="pb-progress-fill"></div>
+    <div class="scrub-tip" id="pbProgressTip">0:00</div>
+  </div>
   <div class="pb-left">
     <div class="pb-cover" id="pbCover" data-char="声"><span></span></div>
     <div class="pb-meta">
@@ -173,7 +177,7 @@
   </div>
 
   <div class="pb-right">
-    <button class="chip rate-chip" id="btnRate" title="倍速">1.0×</button>
+    <button class="chip rate-chip" id="btnRate" title="倍速">1.0x</button>
     <button class="icon-btn loop-btn" id="btnLoop" title="播放模式"><svg class="i"><use href="#i-repeat"/></svg></button>
     <div class="vol-wrap" id="volWrap">
       <button class="icon-btn" id="btnVol" title="静音 (M)"><svg class="i"><use href="#i-volume"/></svg></button>
@@ -241,7 +245,7 @@
               <button class="icon-btn v-ic" id="vNext" title="下一集 (N)"><svg class="i"><use href="#i-next"/></svg></button>
               <span class="v-time"><b id="vCur">0:00</b><em>/</em><span id="vDur">0:00</span></span>
               <i class="v-gap"></i>
-              <button class="v-txt" id="vRate" title="倍速">1.0×</button>
+              <button class="v-txt" id="vRate" title="倍速">1.0x</button>
               <div class="vol-wrap v-vol">
                 <button class="icon-btn v-ic" id="vVol" title="静音 (M)"><svg class="i"><use href="#i-volume"/></svg></button>
                 <div class="vol-pop">
@@ -283,7 +287,7 @@
     </div>
 
     <div class="sheet-extra">
-      <button class="chip" id="shRate"><span>倍速</span><b>1.0×</b></button>
+      <button class="chip" id="shRate"><span>倍速</span><b>1.0x</b></button>
       <button class="chip" id="shLoop"><svg class="i"><use href="#i-repeat"/></svg><span>列表循环</span></button>
       <button class="chip" id="shSleep"><svg class="i"><use href="#i-moon"/></svg><span>定时关闭</span></button>
       <button class="chip" id="shFav"><svg class="i"><use href="#i-heart"/></svg><span>收藏</span></button>

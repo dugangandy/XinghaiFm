@@ -271,6 +271,17 @@ body.is-server #libSwitch .lib-caret{display:none}
 .pb-scrub-row .tnum{font-size:10.5px;color:var(--dim);min-width:38px;text-align:center}
 .pb-scrub-row .cur{color:var(--txt-2)}
 
+/* 窄屏播放条顶部细进度线：桌面已有完整 scrub，默认不显示（媒体查询里打开） */
+.pb-progress{display:none;position:absolute;left:0;right:0;top:0;height:3px;z-index:4;
+  background:rgba(255,255,255,.1);cursor:pointer;touch-action:none;--p:0%}
+/* 视觉 3px，热区往下扩 12px，方便手指按到（横向只取 x，不影响比例） */
+.pb-progress::before{content:"";position:absolute;left:0;right:0;top:0;bottom:-12px}
+.pb-progress-fill{position:absolute;left:0;top:0;bottom:0;width:var(--p);border-radius:0 2px 2px 0;
+  background:linear-gradient(90deg,#22d3ee,#8b5cf6 70%,#f472b6);box-shadow:0 0 10px -2px rgba(34,211,238,.7)}
+.pb-progress.dragging{cursor:grabbing}
+.pb-progress .scrub-tip{bottom:16px}
+.pb-progress.dragging .scrub-tip{opacity:1}
+
 .pb-right{display:flex;align-items:center;gap:6px;flex:1;justify-content:flex-end}
 .vol-wrap{display:flex;align-items:center;gap:6px}
 
@@ -451,6 +462,7 @@ body.is-server #libSwitch .lib-caret{display:none}
   .pb-left{flex:0 1 auto;max-width:46%}
   .pb-center{position:static;flex:1;min-width:0}
   .pb-scrub-row{display:none}
+  .pb-progress{display:block}
   .pb-controls{gap:6px;justify-content:flex-end}
   .pb-right .vol-wrap,.pb-right .loop-btn,.pb-fav{display:none}
   .pb-title{max-width:30vw;font-size:12.5px}

@@ -4,7 +4,7 @@
   const U = FM.util;
   const RATES = [0.75, 1, 1.25, 1.5, 2, 3];
 
-  /* 把倍速吸附到档位表里最接近的一档：旧版本存过 1.75× / 2.5× 这类已删掉的档 */
+  /* 把倍速吸附到档位表里最接近的一档：旧版本存过 1.75x / 2.5x 这类已删掉的档 */
   function snapRate(r) {
     if (RATES.indexOf(r) >= 0) return r;
     return RATES.reduce(function (best, x) {
@@ -431,7 +431,7 @@
 
   function cycleRate(dir) {
     const i = RATES.indexOf(rate);
-    /* 档位表缩过之后，老状态里可能存着 1.75× 这种不存在的档：从最接近的一档起步 */
+    /* 档位表缩过之后，老状态里可能存着 1.75x 这种不存在的档：从最接近的一档起步 */
     const near = RATES.findIndex(r => r >= rate);
     const base = i >= 0 ? i : (near < 0 ? RATES.length - 1 : near);
     const n = U.clamp(base + (dir || 1), 0, RATES.length - 1);

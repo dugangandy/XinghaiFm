@@ -31,6 +31,7 @@
       btnPrev: $('btnPrev'), btnPlay: $('btnPlay'), btnNext: $('btnNext'),
       btnBack15: $('btnBack15'), btnFwd15: $('btnFwd15'),
       pbCur: $('pbCur'), pbDur: $('pbDur'), pbScrub: $('pbScrub'), pbTip: $('pbTip'),
+      pbProgress: $('pbProgress'), pbProgressTip: $('pbProgressTip'),
       btnRate: $('btnRate'), btnLoop: $('btnLoop'), btnVol: $('btnVol'), volScrub: $('volScrub'), btnExpand: $('btnExpand'),
       volNum: $('volNum'), vVolNum: $('vVolNum'), btnLogout: $('btnLogout'),
       sheet: $('sheet'), sheetArt: $('sheetArt'), sheetArtImg: $('sheetArtImg'), btnCollapse: $('btnCollapse'),
@@ -2146,6 +2147,7 @@
     refs.vDur.textContent = fmtT(dur);
     const pct = dur > 0 ? (cur / dur * 100) : 0;
     refs.pbScrub.style.setProperty('--p', pct + '%');
+    refs.pbProgress.style.setProperty('--p', pct + '%');
     refs.shScrub.style.setProperty('--p', pct + '%');
     refs.vScrub.style.setProperty('--p', pct + '%');
     paintBuffer();
@@ -2175,7 +2177,7 @@
   }
 
   function paintRate(r) {
-    const txt = (Math.round(r * 100) / 100) + '×';
+    const txt = (Math.round(r * 100) / 100) + 'x';
     refs.btnRate.textContent = txt;
     refs.vRate.textContent = txt;
     const b = refs.shRate.querySelector('b');
@@ -2323,8 +2325,8 @@
     toggleFavorite(t.albumId);
   }
 
-  /* 档位显示：整数补一位小数，1 → 1.0×、1.25 → 1.25× */
-  function fmtRate(r) { return (r % 1 === 0 ? r.toFixed(1) : String(r)) + '×'; }
+  /* 档位显示：整数补一位小数，1 → 1.0x、1.25 → 1.25x */
+  function fmtRate(r) { return (r % 1 === 0 ? r.toFixed(1) : String(r)) + 'x'; }
 
   /* 倍速菜单：只列档位，当前档高亮打勾（参考 B 站的紧凑弹出层） */
   function rateMenu(anchor) {
@@ -2423,6 +2425,12 @@
 
   /* ── 进度条拖动 ── */
   function bindScrubs() {
+    /* 窄屏顶部细进度线：self 表示容器本身就是轨道 */
+    setupScrub(refs.pbProgress, {
+      self: true,
+      seek: r => P.seekRatio(r),
+      preview: (r, text) => { refs.pbProgressTip.textContent = text; refs.pbProgressTip.style.setProperty('--tipx', (r * 100) + '%'); }
+    });
     setupScrub(refs.pbScrub, {
       seek: r => P.seekRatio(r),
       preview: (r, text) => { refs.pbTip.textContent = text; refs.pbTip.style.setProperty('--tipx', (r * 100) + '%'); }
@@ -2532,8 +2540,8 @@
         case 'p': case 'P': P.prev(); break;
         case 'm': case 'M': P.toggleMute(); break;
         case 'f': case 'F': refs.sheet.classList.contains('open') ? closeSheet() : openSheet(); break;
-        case '[': P.cycleRate(-1); toast('倍速 ' + P.rate + '×'); break;
-        case ']': P.cycleRate(1); toast('倍速 ' + P.rate + '×'); break;
+        case '[': P.cycleRate(-1); toast('倍速 ' + P.rate + 'x'); break;
+        case ']': P.cycleRate(1); toast('倍速 ' + P.rate + 'x'); break;
         case 'Escape':
           if (cinema) { setCinema(false); break; }
           if (refs.sheet.classList.contains('open')) closeSheet();
