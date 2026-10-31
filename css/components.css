@@ -524,7 +524,7 @@
 .tk-play:hover{background:var(--grad);border-color:transparent;color:#04070d;box-shadow:0 0 18px -2px rgba(34,211,238,.75);transform:scale(1.08)}
 .track.playing .tk-play{opacity:1;border-color:rgba(34,211,238,.55);color:var(--cyan);background:rgba(34,211,238,.1)}
 .tk-dur{flex:none;font-size:11.5px;color:var(--dim-2);font-variant-numeric:tabular-nums;min-width:44px;text-align:right}
-.tk-more{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:var(--dim-2);opacity:0;transition:.18s;flex:none}
+.tk-more{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:var(--dim-2);opacity:1;transition:.18s;flex:none}
 .track:hover .tk-more{opacity:1}
 .tk-more:hover{color:#fff;background:rgba(255,255,255,.1)}
 .tk-more .i{width:16px;height:16px}

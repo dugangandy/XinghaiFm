@@ -33,7 +33,7 @@
       pbCur: $('pbCur'), pbDur: $('pbDur'), pbScrub: $('pbScrub'), pbTip: $('pbTip'),
       btnRate: $('btnRate'), btnLoop: $('btnLoop'), btnVol: $('btnVol'), volScrub: $('volScrub'), btnExpand: $('btnExpand'),
       volNum: $('volNum'), vVolNum: $('vVolNum'), btnLogout: $('btnLogout'),
-      sheet: $('sheet'), btnCollapse: $('btnCollapse'),
+      sheet: $('sheet'), sheetArt: $('sheetArt'), sheetArtImg: $('sheetArtImg'), btnCollapse: $('btnCollapse'),
       sheetCover: $('sheetCover'), shTitle: $('shTitle'), shSub: $('shSub'),
       shCur: $('shCur'), shDur: $('shDur'), shScrub: $('shScrub'), shTip: $('shTip'),
       shPlay: $('shPlay'), shPrev: $('shPrev'), shNext: $('shNext'), shBack: $('shBack'), shFwd: $('shFwd'),
@@ -1937,6 +1937,7 @@
     refs.pbSub.textContent = (a ? a.title : '') + (a ? ' · 第 ' + (t.order + 1) + ' 集' : '');
     paintCover(refs.pbCover, a, t);
     paintCover(refs.sheetCover, a, t);
+    paintSheetArt(a);
     refs.shTitle.textContent = t.title;
     refs.shSub.textContent = (a ? a.title : '') + ' · ' + (t.ext || '').toUpperCase();
     refs.vTitle.textContent = t.title;
@@ -1952,6 +1953,25 @@
     paintTime(0, t.duration || (p && p.d) || 0);
     applyPlayingState();
     renderNav();
+  }
+
+  /* 沉浸式渐变封面：有封面就整幅铺顶（再向下渐隐），没有用专辑配色兜底 */
+  function paintSheetArt(album) {
+    const el = refs.sheetArt;
+    if (!el) return;
+    const c = U.coverColors(album && album.seed != null ? album.seed : 0);
+    el.style.backgroundImage = 'linear-gradient(160deg,' + c[0] + ',' + c[1] + ')';
+    const img = refs.sheetArtImg;
+    if (!img) return;
+    if (album && album.cover) {
+      img.onerror = function () { img.style.display = 'none'; };
+      if (img.getAttribute('src') !== album.cover) img.src = album.cover;
+      img.style.display = 'block';
+    } else {
+      img.onerror = null;
+      img.removeAttribute('src');
+      img.style.display = 'none';
+    }
   }
 
   function paintTime(cur, dur) {

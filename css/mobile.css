@@ -83,8 +83,10 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .sheet{background:radial-gradient(120% 80% at 50% 0%,#0c1526,#05070e 70%)}
   .sheet-inner{
     padding:calc(12px + var(--sat)) 18px calc(18px + var(--sab));
-    gap:12px;justify-content:center;
+    gap:12px;justify-content:flex-start;
   }
+  .sheet-top{margin-bottom:calc(clamp(300px,60vh,460px) - 50px)}
+  .sheet-art{height:clamp(300px,60vh,460px)}
   .sheet-stage{flex:none;margin:10px 0 6px}
   .sheet-cover{width:min(66vw,34vh);border-radius:20px}
   .sc-char{font-size:clamp(40px,9vh,64px)}

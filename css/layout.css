@@ -66,7 +66,9 @@
   background:linear-gradient(100deg,#fff,#bfe9ff 40%,#d9b8ff);-webkit-background-clip:text;background-clip:text;color:transparent}
 .brand-text small{font-size:9px;letter-spacing:.22em;color:var(--dim-2);margin-top:3px}
 .brand-line{display:flex;align-items:baseline;gap:6px}
-.brand-ver{font-size:10px;font-weight:600;letter-spacing:.02em;color:var(--dim-2)}
+.brand-ver{font-size:9px;font-weight:700;letter-spacing:.02em;color:#cfe9ff;
+  padding:1px 7px;border-radius:99px;line-height:1.5;white-space:nowrap;
+  background:rgba(120,180,255,.13);border:1px solid rgba(120,180,255,.22)}
 
 .side-actions{display:flex;gap:8px}
 .side-main-btn{
@@ -283,6 +285,18 @@ body.is-server #libSwitch .lib-caret{display:none}
   overflow:hidden;
 }
 .sheet.open{transform:translateY(0)}
+/* 沉浸式渐变封面（音频）：封面图铺顶、向下渐隐，背景取封面主色 */
+.sheet-art{
+  position:absolute;left:0;right:0;top:0;height:clamp(300px,56vh,440px);z-index:0;overflow:hidden;
+  background-size:cover;background-position:center top;
+  -webkit-mask-image:linear-gradient(180deg,#000 0%,#000 52%,transparent 100%);
+  mask-image:linear-gradient(180deg,#000 0%,#000 52%,transparent 100%);
+}
+.sheet-art-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none}
+.sheet-art-veil{
+  position:absolute;inset:0;z-index:1;pointer-events:none;
+  background:linear-gradient(180deg,rgba(5,7,14,.38) 0%,rgba(5,7,14,.12) 26%,rgba(5,7,14,.82) 68%,#05070e 100%);
+}
 .sheet-glow{
   position:absolute;left:50%;top:42%;width:120vmin;height:120vmin;transform:translate(-50%,-50%);
   background:radial-gradient(circle,rgba(34,211,238,.16),rgba(168,85,247,.12) 38%,transparent 66%);
@@ -295,12 +309,14 @@ body.is-server #libSwitch .lib-caret{display:none}
 }
 .sheet-inner{
   position:relative;z-index:2;flex:1;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:clamp(10px,2.2vh,22px);
-  padding:20px 24px 34px;max-width:760px;width:100%;margin:0 auto;min-height:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:clamp(10px,2.2vh,22px);
+  padding:calc(12px + env(safe-area-inset-top,0px)) 24px 30px;max-width:760px;width:100%;margin:0 auto;min-height:0;overflow-y:auto;
 }
-.sheet-top{display:flex;align-items:center;justify-content:space-between;width:100%;gap:12px}
+.sheet-top{display:flex;align-items:center;justify-content:space-between;width:100%;gap:12px;margin-bottom:calc(clamp(300px,56vh,440px) - 54px)}
 .sheet-kicker{font-size:10px;letter-spacing:.42em;color:var(--dim);transform:translateX(.2em)}
 .sheet-stage{position:relative;display:grid;place-items:center;margin:clamp(4px,1.4vh,16px) 0}
+/* 音频模式用沉浸式封面，原封面卡片不再单独显示（视频模式仍走 vstage） */
+.sheet:not(.is-video) .sheet-cover{display:none}
 .sheet-cover{
   position:relative;width:clamp(180px,26vh,300px);aspect-ratio:1;border-radius:26px;overflow:hidden;
   background:linear-gradient(150deg,var(--c1,#1b2a44),var(--c2,#3b2a5a));
@@ -398,6 +414,8 @@ body.is-server #libSwitch .lib-caret{display:none}
 /* 画面舞台：默认 16:9 居中，影院模式贴边 */
 .sheet.is-video{background:#000}
 .sheet.is-video .sheet-glow,
+.sheet.is-video .sheet-art,
+.sheet.is-video .sheet-art-veil,
 .sheet.is-video .viz,
 .sheet.is-video .sheet-top,
 .sheet.is-video .sheet-cover,
