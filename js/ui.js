@@ -180,45 +180,86 @@
     return '<span class="tk-dl" title="已下载">' + icon('download') + '</span>';
   }
 
-  /* 壳推来「下载有变化」：下载页整页重画，其它页面只补标记，别打断滚动 */
-  /* 条目集合 / 状态变了才整页重画；只是进度在动就原地改数字，别把列表抖没 */
+  /* 壳推来「下载有变化」：下载页原地改数字，其它页面只补标记，别打断滚动 */
+  /* 只有「有哪些条目」变了才整页重画（新入队 / 删除）；下载中→完成这种状态变化
+     一秒来好几次，整页重画会把列表刷得一直闪、滚动也跟着跳回顶部，所以只就地改文案 */
   let dlSig = null;
-  function dlSignature() {
-    const map = dlMap();
-    return Object.keys(map).sort().map(function (rel) {
-      const e = map[rel];
-      return rel + ':' + (e.state || 'done');
-    }).join('|');
+  function dlKeysSignature() {
+    return Object.keys(dlMap()).sort().join('|');
+  }
+
+  function inDlView() {
+    return state.view === 'downloads' || state.view.indexOf('dl') === 0;
   }
 
   function downloadsChanged() {
-    const sig = dlSignature();
+    const sig = dlKeysSignature();
     const changed = sig !== dlSig;
     dlSig = sig;
-    if (state.view === 'downloads' || state.view.indexOf('dl') === 0) {
-      if (changed) renderMain();
-      else patchDlProgress();
-    } else {
-      if (changed) syncDownloadFlags();
-      if (changed) renderNav();
+    if (inDlView()) {
+      if (changed) {
+        /* 条目真变了才重建；重建时保住滚动位置，别让正在看的那一段跳回顶部 */
+        const top = refs.view.scrollTop;
+        renderMain({ quiet: true });
+        refs.view.scrollTop = top;
+        renderNav();
+      } else {
+        patchDlProgress();
+      }
       return;
     }
-    if (changed) renderNav();
+    if (!changed) return;
+    syncDownloadFlags();
+    renderNav();
   }
 
-  /* 原地刷新进度文案：行上的「下载中 42%」、专辑行上的「下载中 3 集 · 41%」 */
+  /* 原地刷新下载页：进度、状态、汇总数字都在原节点上改，整页不重建 */
   function patchDlProgress() {
+    const v = refs.view;
     const map = dlMap();
-    U.$$('.dl-state', refs.view).forEach(function (el) {
+    /* 状态文案：下载中 42% / 排队中 / 下载失败，做完就空 */
+    U.$$('.dl-state', v).forEach(function (el) {
       const e = map[el.dataset.rel];
-      el.textContent = dlStateText(e);
+      const txt = dlStateText(e);
+      if (el.textContent !== txt) el.textContent = txt;
       el.classList.toggle('bad', !!(e && e.state === 'error'));
     });
-    U.$$('.dl-live', refs.view).forEach(function (el) {
-      const albumId = el.dataset.album;
-      const s = dlSummary(dlAll(albumId));
-      el.textContent = s.active ? '下载中 ' + s.active + ' 集 · ' + s.pct + '%' : (s.bad ? '有 ' + s.bad + ' 集失败' : '');
+    /* 下载详情的曲目行：下完的那一集要能点了，大小也是下完才有 */
+    if (state.view === 'dlAlbum') {
+      U.$$('.dl-track[data-id]', v).forEach(function (li) {
+        const t = L.track(li.dataset.id);
+        if (!t) return;
+        const e = map[t.rel] || {};
+        li.dataset.act = (!e.state || e.state === 'done') ? 'row-play-dl' : 'dl-wait';
+        setNodeHtml(li.querySelector('.dl-tk-meta'), dlTrackMetaHtml(t, e));
+      });
+    }
+    /* 下载管理的专辑行：大小 / 集数 / 下载中 3 集 · 41% */
+    U.$$('.dl-meta[data-album]', v).forEach(function (el) {
+      const a = L.album(el.dataset.album);
+      if (a) setNodeHtml(el, dlAlbumMetaHtml(dlSummary(dlAll(a.id)), a));
     });
+    /* 抬头汇总 */
+    if (state.view === 'downloads') {
+      const groups = dlGroups();
+      const sub = v.querySelector('.dl-sub');
+      if (sub) sub.textContent = dlPageSubText(groups);
+      const used = v.querySelector('.dl-used');
+      if (used) used.textContent = '已占用 ' + fmtS(dlUsedSize(groups));
+    }
+    if (state.view === 'dlAlbum' && state.albumId) {
+      const a = L.album(state.albumId);
+      if (!a) return;
+      const hero = v.querySelector('.dl-hero-sub');
+      if (hero) hero.textContent = dlHeroSubText(dlTracks(a.id).length, a.count, dlSummary(dlAll(a.id)));
+      const tc = v.querySelector('.dl-tool-count');
+      if (tc) tc.textContent = dlToolCountText(a.id);
+    }
+  }
+
+  /* 内容没变就别动节点，别每秒重建一遍 */
+  function setNodeHtml(el, html) {
+    if (el && el.innerHTML !== html) el.innerHTML = html;
   }
 
   function syncDownloadFlags() {
@@ -360,7 +401,8 @@
   /* ── 侧栏 ── */
   function renderNav() {
     const all = L.albums();
-    const favCount = all.filter(a => a.fav && !a.hidden).length;
+    const favCount = all.filter(a => a.fav && !a.hidden).length
+      + (FM.fs.favTrackIds ? FM.fs.favTrackIds.size : 0);
     const cont = continueList(999).length;
     const recent = recentList(999).length;
     const items = [
@@ -372,7 +414,9 @@
     /* 下载管理只存在于 APK：和「我的收藏」一样是个网页视图 */
     if (canDownload()) items.push({ key: 'downloads', hash: '#/downloads', label: '下载管理', icon: 'download', count: dlCount() });
     refs.nav.innerHTML = items.map(function (it) {
-      const on = (state.view === it.key || (it.key === 'downloads' && state.view.indexOf('dl') === 0 /* dlAlbum / dlRemove */)) && !state.q;
+      const on = (state.view === it.key
+        || (it.key === 'downloads' && state.view.indexOf('dl') === 0)   /* dlAlbum / dlRemove */
+        || (it.key === 'fav' && state.view === 'favTracks')) && !state.q;
       return '<button class="nav-item' + (on ? ' active' : '') + '" data-hash="' + it.hash + '">' +
         icon(it.icon) + '<span>' + it.label + '</span>' +
         (it.count ? '<span class="count">' + it.count + '</span>' : '') + '</button>';
@@ -460,6 +504,7 @@
     else if (seg[0] === 'downloads' && seg[2] === 'more') { state.view = 'dlMore'; state.albumId = seg[1]; }
     else if (seg[0] === 'downloads' && seg[2] === 'remove') { state.view = 'dlRemove'; state.albumId = seg[1]; }
     else if (seg[0] === 'downloads' && seg[1]) { state.view = 'dlAlbum'; state.albumId = seg[1]; }
+    else if (seg[0] === 'fav' && seg[1] === 'tracks') { state.view = 'favTracks'; }
     else { state.view = seg[0]; }
     if (state.view === 'dlRemove') state.dlSel = {};
     if (state.view === 'dlMore') state.dlMoreSel = {};
@@ -472,6 +517,8 @@
     renderNav();
     renderCats();
     refs.view.scrollTop = 0;
+    /* 刚按最新清单画好，别让半秒后的推送再重建一遍 */
+    if (inDlView()) dlSig = dlKeysSignature();
   }
 
   function renderMain(opts) {
@@ -483,7 +530,8 @@
     if (state.q) node = viewSearch(state.q);
     else if (state.view === 'album') node = viewAlbum(state.albumId);
     else if (state.view === 'cat') node = viewCat(state.cat);
-    else if (state.view === 'fav') node = viewGridPage('我的收藏', '收藏的专辑会出现在这里', L.allAlbums({ fav: true, showHidden: state.showHidden }));
+    else if (state.view === 'fav') node = viewFav();
+    else if (state.view === 'favTracks') node = viewFavTracks();
     else if (state.view === 'downloads') node = viewDownloads();
     else if (state.view === 'dlAlbum') node = viewDlAlbum(state.albumId);
     else if (state.view === 'dlRemove') node = viewDlRemove(state.albumId);
@@ -608,6 +656,84 @@
     return wrap;
   }
 
+  /* ── 我的收藏：移动端用列表行（我收藏的声音 + 专辑），桌面仍用卡片 ── */
+  function isNarrow() {
+    try { return window.matchMedia('(max-width:979.98px)').matches; } catch (e) { return false; }
+  }
+
+  /* 收藏的曲目：按收藏时间倒序（Set 保持写入顺序，最后一条最新） */
+  function favTrackList() {
+    const ids = FM.fs.favTrackIds ? Array.from(FM.fs.favTrackIds) : [];
+    return ids.reverse().map(function (id) { return L.track(id); }).filter(Boolean);
+  }
+
+  /* 我收藏的声音：一条汇总入口，封面用最近收藏那集的专辑封面 + 心形角标 */
+  function favSoundsRow(tracks) {
+    const top = tracks[0];
+    const a = top ? L.album(top.albumId) : null;
+    const art = a && a.cover ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">' : '';
+    return '<div class="fav-row fav-sounds" data-act="open-fav-tracks">' +
+      '<span class="fav-thumb"' + (a ? ' style="' + U.coverVars(a.seed) + '"' : '') + '>' +
+        art + '<span class="fav-star">' + icon('heart-fill') + '</span>' +
+      '</span>' +
+      '<span class="fav-body">' +
+        '<span class="fav-title">我收藏的声音</span>' +
+        '<span class="fav-sub">' + esc(top ? top.title : '') + '</span>' +
+        '<span class="fav-meta">' + tracks.length + ' 条声音</span>' +
+      '</span>' +
+      '<span class="fav-chev">' + icon('chevron') + '</span>' +
+    '</div>';
+  }
+
+  function favAlbumRow(a) {
+    const st = L.albumStat(a);
+    const art = a.cover
+      ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">'
+      : '<span class="fav-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>';
+    const p = lastPlayed(L.albumTracks(a.id));
+    return '<div class="fav-row" data-act="open-album" data-id="' + a.id + '">' +
+      '<span class="fav-thumb" style="' + U.coverVars(a.seed) + '">' + art + '</span>' +
+      '<span class="fav-body">' +
+        '<span class="fav-title">' + esc(a.title) + '</span>' +
+        (p ? '<span class="fav-sub">继续听：' + esc(p.title) + '</span>' : '') +
+        '<span class="fav-meta">共 ' + a.count + ' 集 · 已听 ' + st.doneCount + ' 集</span>' +
+      '</span>' +
+      '<button class="fav-more" data-act="more-album" data-id="' + a.id + '" title="更多">' + icon('more') + '</button>' +
+    '</div>';
+  }
+
+  function viewFav() {
+    const albums = L.allAlbums({ fav: true, showHidden: state.showHidden });
+    const tracks = favTrackList();
+    const empty = '<div class="empty"><div class="empty-art">' + icon('heart') + '</div><h3>还是空的</h3><p>在专辑卡片或播放页点收藏，就会出现在这里。</p></div>';
+    const wrap = U.el('div');
+    if (!isNarrow()) {
+      wrap.innerHTML = '<div class="view-head"><div><div class="page-title">我的收藏</div>' +
+        '<div class="page-sub">' + albums.length + ' 个专辑' + (tracks.length ? ' · ' + tracks.length + ' 条声音' : '') + '</div></div></div>' +
+        (tracks.length ? favSoundsRow(tracks) : '') +
+        (albums.length ? gridHtml(albums) : '') +
+        (!albums.length && !tracks.length ? empty : '');
+      return wrap;
+    }
+    wrap.innerHTML = '<div class="view-head"><div><div class="page-title">我的收藏</div>' +
+      '<div class="page-sub">' + albums.length + ' 个专辑 · ' + tracks.length + ' 条声音</div></div></div>' +
+      (!albums.length && !tracks.length ? empty
+        : '<div class="fav-list">' + (tracks.length ? favSoundsRow(tracks) : '') + albums.map(favAlbumRow).join('') + '</div>');
+    return wrap;
+  }
+
+  function viewFavTracks() {
+    const tracks = favTrackList();
+    const wrap = U.el('div');
+    wrap.innerHTML = '<div class="view-head" style="padding:10px 2px 0"><button class="link-btn" data-act="back">← 返回</button>' +
+      '<div class="head-actions">' + (tracks.length ? '<button class="btn btn-ghost" data-act="play-fav-tracks">' + icon('play') + '播放全部</button>' : '') + '</div></div>' +
+      '<div class="view-head"><div><div class="page-title">我收藏的声音</div>' +
+      '<div class="page-sub">' + tracks.length + ' 条</div></div></div>' +
+      (tracks.length ? '<div class="track-list">' + tracks.map(flatTrack).join('') + '</div>'
+        : '<div class="empty"><div class="empty-art">' + icon('heart') + '</div><h3>还没有收藏的声音</h3><p>在播放页点心形，收藏的内容会出现在这里。</p></div>');
+    return wrap;
+  }
+
   function viewCat(catId) {
     const cat = L.cats().find(c => c.id === catId);
     if (!cat) return viewGridPage('分类不存在', '该分类可能已被删除', L.albums());
@@ -622,26 +748,74 @@
     return wrap;
   }
 
-  /* 下载管理：占了多少 / 还剩多少 + 有下载内容的专辑列表（至少下一集才算） */
-  function viewDownloads() {
-    /* 有下载记录的专辑都进来：正在下的也算，别等下完才出现 */
-    const albums = L.allAlbums({ showHidden: state.showHidden }).map(function (a) {
+  /* ── 下载页的文案 ──
+   * 静态渲染和原地刷新共用一份，别写两套：下载中一秒变好几次，只有文案是同一个来源
+   * 才不会出现「刚下完的集还写着下载中」这种错位。
+   */
+  /* 有下载记录的专辑（正在下的也算，别等下完才出现） */
+  function dlGroups() {
+    return L.allAlbums({ showHidden: state.showHidden }).map(function (a) {
       const tracks = dlAll(a.id);
       return { album: a, tracks: tracks, sum: dlSummary(tracks) };
     }).filter(function (x) { return x.tracks.length > 0; });
+  }
 
-    let used = 0, count = 0, running = 0;
-    albums.forEach(function (x) { used += x.sum.size; count += x.sum.done; running += x.sum.active; });
+  function dlPageSubText(groups) {
+    let count = 0, running = 0;
+    groups.forEach(function (x) { count += x.sum.done; running += x.sum.active; });
+    return groups.length + ' 个专辑 · ' + count + ' 集' + (running ? ' · 下载中 ' + running : '');
+  }
+
+  function dlUsedSize(groups) {
+    return groups.reduce(function (n, x) { return n + x.sum.size; }, 0);
+  }
+
+  function dlLiveHtml(s, albumId) {
+    if (!s.active && !s.bad) return '';
+    return '<span class="dl-live" data-album="' + albumId + '">' +
+      (s.active ? '下载中 ' + s.active + ' 集 · ' + s.pct + '%' : '有 ' + s.bad + ' 集失败') + '</span>';
+  }
+
+  function dlAlbumMetaHtml(s, a) {
+    return '<span>' + icon('folder') + fmtS(s.size) + '</span>' +
+      '<span>' + icon('headphones') + s.done + ' 集' + (s.done < a.count ? '（共 ' + a.count + '）' : '') + '</span>' +
+      dlLiveHtml(s, a.id);
+  }
+
+  function dlHeroSubText(doneCount, total, sum) {
+    return '已下载 ' + doneCount + ' 条 / 共 ' + total + ' 条' +
+      (sum.size ? ' · ' + fmtS(sum.size) : '') +
+      (sum.active ? ' · 下载中 ' + sum.active + ' 条 ' + sum.pct + '%' : '');
+  }
+
+  function dlToolCountText(id) {
+    const mine = dlAll(id);
+    return dlSummary(mine).active ? dlTracks(id).length + ' / ' + mine.length + ' 集' : mine.length + ' 集';
+  }
+
+  function dlTrackMetaHtml(t, it) {
+    const p = L.progressOf(t.id);
+    const dur = t.duration || (p && p.d) || 0;
+    const pct = p && dur ? Math.min(100, Math.round((p.p || 0) / dur * 100)) : 0;
+    return '<span>' + icon('clock') + (dur ? fmtT(dur) : '—') + '</span>' +
+      '<span>' + icon('folder') + fmtS(it.size || t.size) + '</span>' +
+      (pct > 0 && !(p && p.done) ? '<span class="dl-pct">已播 ' + pct + '%</span>' : '') +
+      '<span class="dl-state' + (it.state === 'error' ? ' bad' : '') + '" data-rel="' + t.rel + '">' + dlStateText(it) + '</span>';
+  }
+
+  /* 下载管理：占了多少 / 还剩多少 + 有下载内容的专辑列表（至少下一集才算） */
+  function viewDownloads() {
+    const albums = dlGroups();
+    const used = dlUsedSize(albums);
     const free = (FM.android && FM.android.freeSpace) ? FM.android.freeSpace() : 0;
 
     const wrap = U.el('div');
     wrap.innerHTML = '<div class="view-head"><div>' +
       '<div class="page-title">下载管理</div>' +
-      '<div class="page-sub">' + albums.length + ' 个专辑 · ' + count + ' 集' +
-        (running ? ' · 下载中 ' + running : '') + '</div></div>' +
+      '<div class="page-sub dl-sub">' + dlPageSubText(albums) + '</div></div>' +
       '<div class="head-actions"><button class="btn btn-ghost" data-act="open-downloads">' + icon('download') + '管理 / 删除</button></div></div>' +
       (albums.length ? '<div class="dl-sum">' +
-          '<b>已占用 ' + fmtS(used) + '</b>' +
+          '<b class="dl-used">已占用 ' + fmtS(used) + '</b>' +
           '<span>/ 可用 ' + (free > 0 ? fmtS(free) : '未知') + '</span>' +
         '</div>' +
         '<div class="dl-list">' + albums.map(dlAlbumRow).join('') + '</div>'
@@ -684,9 +858,6 @@
   /* 下载管理里的一行：封面 + 专辑名 + 大小/集数 + 更多 */
   function dlAlbumRow(x) {
     const a = x.album;
-    const s = x.sum;
-    const live = s.active ? '<span class="dl-live" data-album="' + a.id + '">下载中 ' + s.active + ' 集 · ' + s.pct + '%</span>'
-      : (s.bad ? '<span class="dl-live" data-album="' + a.id + '">有 ' + s.bad + ' 集失败</span>' : '');
     const art = a.cover
       ? '<img src="' + esc(a.cover) + '" alt="">'
       : '<span class="dl-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>';
@@ -694,12 +865,7 @@
       '<span class="dl-cover" style="' + U.coverVars(a.seed) + '">' + art + '</span>' +
       '<span class="dl-body">' +
         '<span class="dl-title" title="' + esc(a.title) + '">' + esc(a.title) + '</span>' +
-        '<span class="dl-meta">' +
-          '<span>' + icon('folder') + fmtS(s.size) + '</span>' +
-          '<span>' + icon('headphones') + s.done + ' 集' +
-            (s.done < a.count ? '（共 ' + a.count + '）' : '') + '</span>' +
-          live +
-        '</span>' +
+        '<span class="dl-meta" data-album="' + a.id + '">' + dlAlbumMetaHtml(x.sum, a) + '</span>' +
       '</span>' +
       '<button class="dl-more" data-act="dl-menu" data-id="' + a.id + '" title="更多">' + icon('more') + '</button>' +
     '</div>';
@@ -723,16 +889,14 @@
         '<span class="dl-cover lg" style="' + U.coverVars(a.seed) + '">' + coverArt(a) + '</span>' +
         '<div class="dl-hero-body">' +
           '<div class="dl-hero-title">' + esc(a.title) + '</div>' +
-          '<div class="dl-hero-sub">已下载 ' + done.length + ' 条 / 共 ' + a.count + ' 条' +
-            (sum.size ? ' · ' + fmtS(sum.size) : '') +
-            (sum.active ? ' · 下载中 ' + sum.active + ' 条 ' + sum.pct + '%' : '') + '</div>' +
+          '<div class="dl-hero-sub">' + dlHeroSubText(done.length, a.count, sum) + '</div>' +
         '</div>' +
         (missing > 0 ? '<button class="btn btn-primary dl-hero-btn" data-act="dl-more-page" data-id="' + a.id + '">下载更多</button>' : '') +
       '</div>' +
       '<div class="dl-tools">' +
         '<button class="dl-tool" data-act="dl-batch" data-id="' + a.id + '">' + icon('trash') + '批量删除</button>' +
         '<button class="dl-tool" data-act="play-dl" data-id="' + a.id + '">' + icon('play') + '播放全部</button>' +
-        '<span class="dl-tool-count">' + (sum.active ? done.length + ' / ' + mine.length + ' 集' : mine.length + ' 集') + '</span>' +
+        '<span class="dl-tool-count">' + dlToolCountText(a.id) + '</span>' +
       '</div>' +
       (last ? '<div class="dl-resume" data-act="row-play-dl" data-id="' + last.id + '">' + icon('play') + '继续播放：' + esc(last.title) + '</div>' : '') +
       (mine.length
@@ -764,8 +928,6 @@
   function dlRow(t) {
     const it = dlMap()[t.rel] || {};
     const p = L.progressOf(t.id);
-    const dur = t.duration || (p && p.d) || 0;
-    const pct = p && dur ? Math.min(100, Math.round((p.p || 0) / dur * 100)) : 0;
     const playing = P.current && P.current.id === t.id;
     /* 还没下完的不能点播：本地没文件，硬播会跳到别的集 */
     const ready = !it.state || it.state === 'done';
@@ -774,12 +936,7 @@
       '<span class="dl-idx">' + (t.order + 1) + '</span>' +
       '<div class="dl-tk">' +
         '<div class="dl-tk-title">' + esc(t.title) + (p && p.done ? '<span class="tk-flag">已听</span>' : '') + '</div>' +
-        '<div class="dl-tk-meta">' +
-          '<span>' + icon('clock') + (dur ? fmtT(dur) : '—') + '</span>' +
-          '<span>' + icon('folder') + fmtS(it.size || t.size) + '</span>' +
-          (pct > 0 && !(p && p.done) ? '<span class="dl-pct">已播 ' + pct + '%</span>' : '') +
-          '<span class="dl-state' + (it.state === 'error' ? ' bad' : '') + '" data-rel="' + t.rel + '">' + dlStateText(it) + '</span>' +
-        '</div>' +
+        '<div class="dl-tk-meta">' + dlTrackMetaHtml(t, it) + '</div>' +
       '</div>' +
       '<button class="dl-del" data-act="dl-remove" data-id="' + t.id + '" title="删除下载">' + icon('trash') + '</button>' +
     '</li>';
@@ -1398,6 +1555,8 @@
           P.playAlbum(id); break;
         }
         case 'open-dl-album': if (id) go('#/downloads/' + id); break;
+        case 'open-fav-tracks': go('#/fav/tracks'); break;
+        case 'play-fav-tracks': { const list = favTrackList(); if (list.length) P.setQueue(list, 0, { autoplay: true }); break; }
         case 'dl-menu': dlAlbumMenu(id, actEl); break;
         case 'play-dl': playDlTracks(id); break;
         case 'row-play-dl': {
@@ -1632,6 +1791,7 @@
     const items = [
       { label: '从这集开始播放', icon: 'play', onClick: () => P.playTrack(t) },
       { label: '加入队列', icon: 'list', onClick: () => { P.addToQueue([t]); toast('已加入播放队列'); } },
+      { label: t.fav ? '取消收藏这一集' : '收藏这一集', icon: 'heart', onClick: () => toggleTrackFav(id) },
       { sep: true },
       {
         label: p && p.done ? '标记为未听' : '标记为已听', icon: 'check', onClick: function () {
@@ -2106,7 +2266,7 @@
     refs.vTitle.textContent = t.title;
     refs.vSub.textContent = videoSub(a, t);
     if (refs.pbKind) refs.pbKind.hidden = P.kind !== 'video';
-    const fav = a && a.fav;
+    const fav = t && t.fav;
     refs.pbFav.classList.toggle('on', !!fav);
     refs.pbFav.innerHTML = icon(fav ? 'heart-fill' : 'heart');
     refs.shFav.classList.toggle('on', !!fav);
@@ -2319,10 +2479,30 @@
     }).catch(function () {}).then(function () { favPending.delete(albumId); });
   }
 
+  /* 播放条/全屏页的心：收藏的是「这一集」，不是专辑 */
+  const trackFavPending = new Set();
+  function toggleTrackFav(trackId) {
+    const t = L.track(trackId);
+    if (!t || trackFavPending.has(trackId)) return;
+    const next = !t.fav;
+    trackFavPending.add(trackId);
+    t.fav = next;
+    toast(next ? '已收藏这一集' : '已取消收藏');
+    renderAll();
+    if (P.current) paintTrack(P.current);
+    FM.fs.setFavTrack(trackId, next).then(function (ok) {
+      if (ok) return;
+      t.fav = !next;
+      toast('收藏失败，请稍后重试', 'warn');
+      renderAll();
+      if (P.current) paintTrack(P.current);
+    }).catch(function () {}).then(function () { trackFavPending.delete(trackId); });
+  }
+
   function toggleFavOfCurrent() {
     const t = P.current;
     if (!t) return;
-    toggleFavorite(t.albumId);
+    toggleTrackFav(t.id);
   }
 
   /* 档位显示：整数补一位小数，1 → 1.0x、1.25 → 1.25x */

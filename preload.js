@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('fmNative', {
   loadMeta: (libPath) => ipcRenderer.invoke('fm:loadMeta', libPath),
   favs: (libId) => ipcRenderer.invoke('fm:favs', libId),
   setFav: (libId, albumId, on) => ipcRenderer.invoke('fm:setFav', libId, albumId, on),
+  favTracks: (libId) => ipcRenderer.invoke('fm:favTracks', libId),
+  setFavTrack: (libId, trackId, on) => ipcRenderer.invoke('fm:setFavTrack', libId, trackId, on),
   /* 后台补完封面时通知一次，页面据此重读封面索引 */
   onCovers: (cb) => ipcRenderer.on('fm:covers', (e, info) => { try { cb(info); } catch (err) {} })
 });

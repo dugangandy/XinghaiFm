@@ -506,6 +506,17 @@ function bindIpc() {
     if (!id || !albumId) return false;
     return DB.setFav(getDb(), adminUid(), id, albumId, !!on);
   });
+  ipcMain.handle('fm:favTracks', function (e, libId) {
+    const cfg = getConfig();
+    const id = libId || cfg.active;
+    if (!id) return [];
+    return DB.listFavTracks(getDb(), adminUid(), id);
+  });
+  ipcMain.handle('fm:setFavTrack', function (e, libId, trackId, on) {
+    const id = libId || (activeLib() && activeLib().id);
+    if (!id || !trackId) return false;
+    return DB.setFavTrack(getDb(), adminUid(), id, trackId, !!on);
+  });
 
   /* 在文件管理器里定位某一集 */
   ipcMain.handle('fm:reveal', function (e, rel) {

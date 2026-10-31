@@ -25,6 +25,7 @@
   let serverMode = false;      // 由 tools/serve.js 的 config.json 库列表提供的服务器模式
   let serverVersion = '';      // 服务端 package.json 的版本号（浏览器直连时用来显示）
   let favSet = new Set();      // 当前用户 + 当前库的收藏专辑 id
+  let trackFavSet = new Set(); // 当前用户 + 当前库的收藏曲目 id
   let favLibId = '';           // favSet 属于哪个库（拉取失败时判断要不要清空）
 
   /* 桌面端连远程后端：本地 UI 不变，数据通路全部走远端 API。
@@ -316,6 +317,7 @@
     /* 恢复索引是在收藏之前渲染的：拿到的收藏要贴回去再刷一遍，否则首屏心是空的 */
     if (FM.lib && FM.lib.applyFavs && FM.lib.albums().length) {
       FM.lib.applyFavs(favSet);
+      if (FM.lib.applyTrackFavs) FM.lib.applyTrackFavs(trackFavSet);
       if (FM.ui && FM.ui.renderAll) FM.ui.renderAll({ quiet: true });
     }
     return { libs: libs.slice(), active: activeId, missing: !!(activeLib && activeLib.missing) };
@@ -432,6 +434,7 @@
     applyMode();
     await loadFavs(id);
     if (FM.lib && FM.lib.applyFavs) FM.lib.applyFavs(favSet);
+    if (FM.lib && FM.lib.applyTrackFavs) FM.lib.applyTrackFavs(trackFavSet);
     return activeLib;
   }
 
@@ -557,27 +560,36 @@
      桌面端走 IPC（本机 fm.db），服务端/远程走 /api/favs，网页本地库退回 localStorage。 */
   async function loadFavs(libId) {
     const id = libId || activeId;
-    if (!id) { favSet = new Set(); favLibId = ''; return favSet; }
+    if (!id) { favSet = new Set(); trackFavSet = new Set(); favLibId = ''; return favSet; }
     const next = new Set();
+    const nextTracks = new Set();
     try {
       if (DESKTOP_FS) {
         (await window.fmNative.favs(id) || []).forEach(x => next.add(String(x)));
+        /* 旧版 preload 没有 favTracks：别让曲目收藏把专辑收藏一起带崩 */
+        if (window.fmNative.favTracks) {
+          (await window.fmNative.favTracks(id) || []).forEach(x => nextTracks.add(String(x)));
+        }
       } else if (serverMode) {
         const r = await apiFetch('/api/favs?libId=' + encodeURIComponent(id), { cache: 'no-store' });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const d = await r.json();
         (d.ids || []).forEach(x => next.add(String(x)));
+        (d.trackIds || []).forEach(x => nextTracks.add(String(x)));
       } else {
         const v = FM.store.read('favs:' + id, []);
         (Array.isArray(v) ? v : []).forEach(x => next.add(String(x)));
+        const tv = FM.store.read('favTracks:' + id, []);
+        (Array.isArray(tv) ? tv : []).forEach(x => nextTracks.add(String(x)));
       }
     } catch (e) {
       console.warn('[favs] 读取失败', e);
       /* 拉失败不清空：弱网下别让收藏看起来“丢了”；但换库失败不能留着上一个库的 */
-      if (favLibId !== id) { favSet = new Set(); favLibId = ''; }
+      if (favLibId !== id) { favSet = new Set(); trackFavSet = new Set(); favLibId = ''; }
       return favSet;
     }
     favSet = next;
+    trackFavSet = nextTracks;
     favLibId = id;
     return favSet;
   }
@@ -606,6 +618,34 @@
     } catch (e) {
       if (next) favSet.delete(a); else favSet.add(a);
       console.warn('[favs] 写入失败', e);
+      return false;
+    }
+  }
+
+  async function setFavTrack(trackId, on) {
+    const id = activeId, t = String(trackId || '');
+    if (!id || !t) return false;
+    const next = !!on;
+    if (next) trackFavSet.add(t); else trackFavSet.delete(t);
+    try {
+      if (DESKTOP_FS) {
+        const ok = await window.fmNative.setFavTrack(id, t, next);
+        if (ok === false) throw new Error('写入失败');
+      } else if (serverMode) {
+        const r = await apiFetch('/api/favs', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ libId: id, trackId: t, fav: next })
+        });
+        if (!r.ok) throw new Error((await r.text()) || 'HTTP ' + r.status);
+      } else {
+        FM.store.write('favTracks:' + id, Array.from(trackFavSet));
+        FM.store.touch('favTracks:' + id);
+      }
+      return true;
+    } catch (e) {
+      if (next) trackFavSet.delete(t); else trackFavSet.add(t);
+      console.warn('[favs] 曲目收藏写入失败', e);
       return false;
     }
   }
@@ -795,7 +835,7 @@
 
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushProgress, refreshLibs,
-    loadFavs, setFav,
+    loadFavs, setFav, setFavTrack,
     scan, getFile, src, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,
     libs: () => libs.slice(),
@@ -808,6 +848,7 @@
     onLink,
     get server() { return serverMode; },
     get favIds() { return favSet; },
+    get favTrackIds() { return trackFavSet; },
     get version() { return serverVersion; },
     get mode() { return mode; },
     get rootName() { return activeLib ? activeLib.name : ''; },

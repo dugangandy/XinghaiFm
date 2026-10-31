@@ -722,7 +722,7 @@ const server = http.createServer(async function (req, res) {
       if (!lib) return send(res, 403, 'unknown lib');
       /* 升级后第一次读收藏：把 .fm-meta.json 里的旧收藏搬进库（每用户/库一次） */
       await DB.migrateLegacyFavs(db, uid, libId, lib.path);
-      return json(res, { libId: libId, ids: DB.listFavs(db, uid, libId) });
+      return json(res, { libId: libId, ids: DB.listFavs(db, uid, libId), trackIds: DB.listFavTracks(db, uid, libId) });
     }
     if (req.method !== 'POST') return send(res, 405, 'GET/POST only');
     /* 连续收藏专辑是正常操作，给比进度上报更宽的额度 */
@@ -733,9 +733,11 @@ const server = http.createServer(async function (req, res) {
     try { rec = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
     const libId = String((rec && rec.libId) || (userActiveLib(uid) || {}).id || '');
     const albumId = String((rec && rec.albumId) || '');
-    if (!libId || !albumId || albumId.length > 64) return send(res, 400, 'bad fav');
+    const trackId = String((rec && rec.trackId) || '');
+    if (!libId || (!albumId && !trackId) || albumId.length > 64 || trackId.length > 64) return send(res, 400, 'bad fav');
     if (!own(libId)) return send(res, 403, 'unknown lib');
-    DB.setFav(db, uid, libId, albumId, !!(rec && rec.fav));
+    if (trackId) DB.setFavTrack(db, uid, libId, trackId, !!(rec && rec.fav));
+    else DB.setFav(db, uid, libId, albumId, !!(rec && rec.fav));
     return json(res, { ok: true, fav: !!(rec && rec.fav) });
   }
   if (p === '/api/lib') {

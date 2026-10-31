@@ -175,6 +175,7 @@
     const durs = db.durations();
     const cats = ensureCats();
     const favs = FM.fs.favIds || new Set();
+    const trackFavs = FM.fs.favTrackIds || new Set();
     const nextAlbums = [];
     const nextTracks = [];
     const albumIds = new Set();
@@ -203,6 +204,7 @@
           id: tid,
           albumId: albumId,
           rel: f.rel,
+          fav: trackFavs.has(tid),
           name: f.name,
           title: U.stripExt(f.name),
           ext: f.ext,
@@ -360,6 +362,7 @@
         id: row[0], albumId: row[1], rel: row[2], name: row[3], ext: row[4],
         kind: FM.media.kindOf(row[4]),
         size: row[5], mtime: row[6], order: row[7], duration: row[8] || 0,
+        fav: !!(FM.fs.favTrackIds && FM.fs.favTrackIds.has(row[0])),
         title: U.stripExt(row[3])
       };
     });
@@ -451,6 +454,12 @@
     albums.forEach(function (a) { a.fav = set.has(a.id); });
   }
 
+  /* 曲目收藏单独一份，贴在每集上（播放条/收藏页用） */
+  function applyTrackFavs(ids) {
+    const set = ids instanceof Set ? ids : new Set(ids || []);
+    tracks.forEach(function (t) { t.fav = set.has(t.id); });
+  }
+
   function setMeta(albumId, patch) {
     ensureMetaKeys();
     const metas = db.albumMeta();
@@ -535,7 +544,7 @@
     search,
     stats,
     progressOf, setProgress, albumStat,
-    setMeta, recomputeAlbum, applyFavs, catCount,
+    setMeta, recomputeAlbum, applyFavs, applyTrackFavs, catCount,
     cats, addCat, updateCat, removeCat,
     get rootName() { return rootName; },
     get libId() { return libId; },

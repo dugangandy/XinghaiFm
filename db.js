@@ -61,6 +61,14 @@ function ensureSchema(db) {
     '  created_at INTEGER NOT NULL,',
     '  PRIMARY KEY (user_id, lib_id, album_id),',
     '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE',
+    ');',
+    'CREATE TABLE IF NOT EXISTS fav_tracks (',
+    '  user_id TEXT NOT NULL,',
+    '  lib_id TEXT NOT NULL,',
+    '  track_id TEXT NOT NULL,',
+    '  created_at INTEGER NOT NULL,',
+    '  PRIMARY KEY (user_id, lib_id, track_id),',
+    '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE',
     ');'
   ].join('\n'));
   /* 旧库补列：token_version（改密码后让该用户旧 token 立即失效） */
@@ -191,6 +199,27 @@ function setFav(db, uid, libId, albumId, on) {
   return true;
 }
 
+/* ── 曲目收藏（按用户 + 资源库 + 曲目 id） ── */
+function listFavTracks(db, uid, libId) {
+  return db.prepare('SELECT track_id FROM fav_tracks WHERE user_id = ? AND lib_id = ? ORDER BY created_at')
+    .all(String(uid || ''), String(libId || '')).map(function (r) { return r.track_id; });
+}
+function setFavTrack(db, uid, libId, trackId, on) {
+  const u = String(uid || ''), l = String(libId || ''), t = String(trackId || '');
+  if (!u || !l || !t) return false;
+  if (on) {
+    db.prepare('INSERT INTO fav_tracks(user_id, lib_id, track_id, created_at) VALUES(?,?,?,?) ON CONFLICT(user_id, lib_id, track_id) DO NOTHING')
+      .run(u, l, t, Date.now());
+  } else {
+    db.prepare('DELETE FROM fav_tracks WHERE user_id = ? AND lib_id = ? AND track_id = ?').run(u, l, t);
+  }
+  return true;
+}
+function clearFavTracks(db, uid, libId) {
+  if (!uid || !libId) return 0;
+  return db.prepare('DELETE FROM fav_tracks WHERE user_id = ? AND lib_id = ?').run(String(uid), String(libId)).changes || 0;
+}
+
 /* 旧版收藏存在库目录 .fm-meta.json 的 albumMeta[*].fav 里：每个用户/库只搬一次。
    文件还没生成时返回 0 且不打标记，下次调用再试。 */
 function favsMigrated(db, uid, libId) {
@@ -202,7 +231,9 @@ function markFavsMigrated(db, uid, libId) {
 /* 资源库被移除时顺手清掉它的收藏，避免残留孤儿行 */
 function clearFavs(db, uid, libId) {
   if (!uid || !libId) return 0;
-  return db.prepare('DELETE FROM favs WHERE user_id = ? AND lib_id = ?').run(String(uid), String(libId)).changes || 0;
+  const n = db.prepare('DELETE FROM favs WHERE user_id = ? AND lib_id = ?').run(String(uid), String(libId)).changes || 0;
+  clearFavTracks(db, uid, libId);
+  return n;
 }
 function migrateLegacyFavs(db, uid, libId, dir) {
   if (!uid || !libId || !dir) return 0;
@@ -282,5 +313,6 @@ module.exports = {
   addUser, setUserPassword, removeUser, touchLogin,
   listLibs, activeLib, replaceLibs, setActiveLib,
   listFavs, setFav, clearFavs, favsMigrated, markFavsMigrated, migrateLegacyFavs,
+  listFavTracks, setFavTrack, clearFavTracks,
   getRemote, setRemote, migrate
 };
