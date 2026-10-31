@@ -69,6 +69,79 @@
     try { NATIVE.setFullscreen(next); } catch (e) {}
   }
 
+  /* 曲目列表 → 壳里的下载队列。返回交给原生的条数；0 表示没提交（桌面/浏览器没这能力），
+     真正入队几条由原生判定（已下载/已在队列的会跳过），结果由原生的 toast 告诉用户 */
+  function download(list) {
+    const items = (list || []).filter(function (t) { return t && t.rel; }).map(function (t) {
+      const cut = t.rel.indexOf('/');
+      return {
+        libId: FM.lib.libId || '',
+        libName: FM.fs.rootName || '',
+        album: cut > 0 ? t.rel.slice(0, cut) : (FM.fs.rootName || '未分类单集'),
+        rel: t.rel,
+        title: t.title || t.name || '',
+        ext: (t.ext || '').toLowerCase(),
+        size: t.size || 0
+      };
+    });
+    if (!items.length) return 0;
+    try { NATIVE.downloadTracks(JSON.stringify(items)); } catch (e) { return 0; }
+    return items.length;
+  }
+
+  /* ── 已下载清单 ─────────────────────────────────────────
+   * 真实状态在壳里（Dl.snapshot），网页只持有一份 rel → 条目的字典：
+   * 「下载管理」页列专辑、曲目行打已下载标记都靠它。
+   */
+  let dlMap = Object.create(null);
+
+  function refreshDownloads() {
+    let raw = '';
+    try { raw = NATIVE.downloads() || ''; } catch (e) { return; }
+    let list = [];
+    try { list = JSON.parse(raw) || []; } catch (e) { return; }
+    const next = Object.create(null);
+    for (let i = 0; i < list.length; i++) {
+      const it = list[i];
+      if (it && it.rel) next[it.rel] = it;
+    }
+    dlMap = next;
+  }
+
+  /* 只有真正下完的才算「已下载」；排队中/下载中在 dlMap 里也有条目 */
+  function downloaded(rel) {
+    const e = rel && dlMap[rel];
+    return !!e && (e.state === 'done' || !e.state);
+  }
+
+  /* 手机剩余空间（字节）；拿不到就返回 0，界面按「未知」处理 */
+  function freeSpace() {
+    try { return Number(NATIVE.freeSpace()) || 0; } catch (e) { return 0; }
+  }
+
+  /* 删掉一个已下载曲目：文件和索引在壳里，删完壳会推 onChange */
+  function removeDownload(rel) {
+    if (!rel || typeof NATIVE.removeDownload !== 'function') return false;
+    try { NATIVE.removeDownload(rel); } catch (e) { return false; }
+    delete dlMap[rel];
+    return true;
+  }
+
+  /* 批量删：只有一次桥调用，壳里删完统一推一次 */
+  function removeDownloads(rels) {
+    const list = (rels || []).filter(Boolean);
+    if (!list.length || typeof NATIVE.removeDownloads !== 'function') return false;
+    try { NATIVE.removeDownloads(JSON.stringify(list)); } catch (e) { return false; }
+    for (let i = 0; i < list.length; i++) delete dlMap[list[i]];
+    return list.length;
+  }
+
+  /* 壳在下载状态变化时回调：拉一次新清单，再让界面自己刷 */
+  function onChange() {
+    refreshDownloads();
+    try { if (FM.ui && FM.ui.downloadsChanged) FM.ui.downloadsChanged(); } catch (e) {}
+  }
+
   function $(id) { return document.getElementById(id); }
 
   /* 返回键：从最上层的浮层往下收，返回 true 表示这次返回被网页消化了 */
@@ -114,6 +187,18 @@
 
   FM.android = {
     native: true,
+    canDownload: true,
+    download,
+    downloads: function () { return dlMap; },
+    downloaded,
+    freeSpace,
+    removeDownload,
+    removeDownloads,
+    /* 旧 APK 没这些桥方法（网页是热更新的，壳不是），界面上要说清楚 */
+    get canRemove() { return typeof NATIVE.removeDownload === 'function'; },
+    get canRemoveMany() { return typeof NATIVE.removeDownloads === 'function'; },
+    refreshDownloads,
+    onChange,
     syncMedia,
     mediaAction,
     back,
@@ -122,6 +207,7 @@
     onNativeVideo,
     get fullscreenOn() { return document.body.classList.contains('app-fs'); },
     openSettings: function () { try { NATIVE.openSettings(); } catch (e) {} },
+    openDownloads: function () { try { NATIVE.openDownloads(); } catch (e) {} },
     base: function () { try { return NATIVE.baseUrl(); } catch (e) { return ''; } },
     version: function () { try { return NATIVE.version(); } catch (e) { return ''; } }
   };
@@ -155,4 +241,6 @@
 
   /* 首帧之后补一次，让通知栏在没播放时也有正确的标题 */
   setTimeout(function () { syncMedia(true); }, 1200);
+  /* 已下载清单在首帧前拉一次，曲目列表第一眼就带标记 */
+  refreshDownloads();
 })(window.FM);

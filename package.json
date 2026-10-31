@@ -2,7 +2,7 @@
   "name": "xinghai-fm",
   "productName": "星海FM",
   "version": "1.0.17",
-  "description": "本地有声书播放器 · 离线、分类管理、倍速播放",
+  "description": "本地有声书播放器 · 分类管理、倍速播放",
   "main": "main.js",
   "author": "local",
   "license": "MIT",
@@ -19,7 +19,7 @@
   "build": {
     "appId": "local.xinghai.fm",
     "productName": "星海FM",
-    "copyright": "本地离线工具",
+    "copyright": "Copyright © 2026 星海FM",
     "directories": {
       "output": "dist",
       "buildResources": "build"

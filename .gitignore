@@ -23,6 +23,9 @@ android/app/build/
 android/local.properties
 *.apk
 
+# 本地调研笔记（不提交）
+doc/
+
 # 系统文件
 .DS_Store
 Thumbs.db

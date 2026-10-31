@@ -11,6 +11,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -81,7 +83,17 @@ object Dl {
     @Volatile private var port = 0
     @Volatile private var pathToken = ""
 
-    var onChange: (() -> Unit)? = null
+    /* 两路通知：
+       change   —— 条目集合/状态变了（入队、完成、失败、删除），列表要重建；
+       progress —— 只是字节数在动，每秒一次，刷新数字就够，别重建列表。
+       网页两路都订阅（它自己读快照），原生下载页只在 change 时 render。 */
+    private val watchers = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+    private val progressWatchers = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+    fun watch(fn: () -> Unit) { watchers.add(fn) }
+    fun unwatch(fn: () -> Unit) { watchers.remove(fn) }
+    fun watchProgress(fn: () -> Unit) { progressWatchers.add(fn) }
+    fun unwatchProgress(fn: () -> Unit) { progressWatchers.remove(fn) }
+
     var onError: ((String) -> Unit)? = null
 
     /* ── 初始化 / 索引 ── */
@@ -180,6 +192,65 @@ object Dl {
     }
 
     /* ── 查询 ── */
+    /* 移动网络判断：原生页面和网页发起的下载共用一套规则 */
+    fun isMetered(c: Context): Boolean = try {
+        val cm = c.getSystemService(ConnectivityManager::class.java)
+        val net = cm.activeNetwork ?: return true
+        val caps = cm.getNetworkCapabilities(net) ?: return true
+        !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) &&
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    } catch (e: Exception) { false }
+
+    /* 下载清单（完成 / 排队 / 在途 / 失败），给网页画「下载管理」和曲目上的已下载标记 */
+    fun snapshot(): JSONArray = synchronized(lock) {
+        val me = currentUid()
+        val arr = JSONArray()
+
+        /* 完成 + 排队 + 下载中 + 失败都给网页，队列要立刻可见、进度要能画；
+           已标取消的不给，否则删掉的条目会在下一次刷新里复活 */
+        fun put(it: Item, state: String) {
+            if (state == "cancelling") return
+            if (it.uid.isNotEmpty() && it.uid != me) return
+            val done = state == "done"
+            val loaded = if (done) it.size else (loaded[it.rel] ?: 0L)
+            val total = if (done) it.size else (totals[it.rel] ?: it.size)
+            arr.put(
+                JSONObject()
+                    .put("rel", it.rel)
+                    .put("libId", it.libId)
+                    .put("album", it.album)
+                    .put("title", it.title)
+                    .put("ext", it.ext)
+                    .put("size", it.size)
+                    .put("state", state)
+                    .put("loaded", loaded)
+                    .put("total", total)
+            )
+        }
+        for (it in items.values) put(it, "done")
+        /* 在途的跳过两类：已经点了删除的，等请求真正 abort 再消失；
+           刚写进索引、还没从 inflight 摘掉的，否则同一条会先报 done 再报 downloading */
+        for (it in inflight.values) {
+            if (cancelled.contains(it.rel)) continue
+            if (items.containsKey(keyOf(it.uid, it.rel))) continue
+            put(it, states[it.rel] ?: "downloading")
+        }
+        for (it in pending.values) put(it, "queued")
+        for (it in failed.values) put(it, "error")
+        arr
+    }
+
+    /* 体积文案：下载页、网页入队提示共用 */
+    fun fmtSize(v: Long): String {
+        if (v <= 0L) return "0 B"
+        val kb = v / 1024.0
+        if (kb < 1024) return String.format(java.util.Locale.ROOT, "%.0f KB", kb)
+        val mb = kb / 1024.0
+        return if (mb < 1024) String.format(java.util.Locale.ROOT, "%.1f MB", mb)
+        else String.format(java.util.Locale.ROOT, "%.2f GB", mb / 1024.0)
+    }
+
     fun entries(): List<Item> = synchronized(lock) {
         val me = currentUid()
         items.values.filter { it.uid.isEmpty() || it.uid == me }
@@ -335,7 +406,16 @@ object Dl {
     }
 
     /* ── 删除 ── */
-    fun remove(rel: String) {
+    fun remove(rel: String) = removeMany(listOf(rel))
+
+    /* 批量删：逐条收拾，最后只通知一次（网页批量删除用） */
+    fun removeMany(rels: List<String>) {
+        if (rels.isEmpty()) return
+        for (rel in rels) dropOne(rel)
+        notifyChange()
+    }
+
+    private fun dropOne(rel: String) {
         val me = currentUid()
         val k = keyOf(me, rel)
         val it = synchronized(lock) { items[k] }
@@ -344,8 +424,8 @@ object Dl {
         failed.remove(rel)
         calls[rel]?.cancel()
         inflight[rel]?.let { runCatching { partOf(it).delete() } }
-        /* 还在排队、连请求都没发的：标成 cancelling，等它被调度时直接跳过 */
-        if (it == null && pending.containsKey(rel)) states[rel] = "cancelling"
+        /* 还在排队、连请求都没发的：从队列摘掉并标取消；已提交给线程池的 run() 看到就跳过 */
+        if (it == null && pending.remove(rel) != null) states[rel] = "cancelling"
         if (it != null) {
             synchronized(lock) {
                 items.remove(k)
@@ -356,7 +436,6 @@ object Dl {
         }
         /* 在途任务还没进索引：只打取消标记，完成时自己删文件和 .part */
         if (it != null) states.remove(rel)
-        notifyChange()
     }
 
     fun removeAlbum(libId: String, album: String): Int {
@@ -377,9 +456,10 @@ object Dl {
         for ((k, v) in failed) {
             if (v.libId == libId && v.album == album && (v.uid.isEmpty() || v.uid == me2)) failed.remove(k)
         }
-        /* 排队中的同专辑条目：直接标取消，别等它开始 */
+        /* 排队中的同专辑条目：摘出队列 + 标取消，别等它开始 */
         for ((rel, item) in pending) {
             if (item.libId == libId && item.album == album && (item.uid.isEmpty() || item.uid == currentUid())) {
+                pending.remove(rel)
                 cancelled.add(rel)
                 states[rel] = "cancelling"
             }
@@ -409,7 +489,12 @@ object Dl {
     private val tick = object : Runnable {
         override fun run() {
             syncNotification()
-            if (activeCount() > 0) main.postDelayed(this, 1000) else tickOn = false
+            if (activeCount() > 0) {
+                notifyProgress()          /* 有下载在跑就每秒推一次进度 */
+                main.postDelayed(this, 1000)
+            } else {
+                tickOn = false
+            }
         }
     }
 
@@ -422,8 +507,21 @@ object Dl {
     private fun notifyChange() {
         runCatching { syncNotification() }
         if (activeCount() > 0) scheduleTick()
-        val cb = onChange ?: return
-        Handler(Looper.getMainLooper()).post { runCatching { cb() } }
+        notifyWatchers()
+    }
+
+    private fun notifyWatchers() {
+        if (watchers.isEmpty()) return
+        Handler(Looper.getMainLooper()).post {
+            for (fn in watchers) runCatching { fn() }
+        }
+    }
+
+    private fun notifyProgress() {
+        if (progressWatchers.isEmpty()) return
+        Handler(Looper.getMainLooper()).post {
+            for (fn in progressWatchers) runCatching { fn() }
+        }
     }
 
     /* ── 本机播放地址 ── */

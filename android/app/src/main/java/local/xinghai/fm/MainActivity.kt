@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.StatFs
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -36,6 +37,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONArray
 import org.json.JSONObject
 
 class MainActivity : Activity() {
@@ -56,16 +58,21 @@ class MainActivity : Activity() {
     private var offline: View? = null
     private var customView: View? = null
     private var customCallback: WebChromeClient.CustomViewCallback? = null
-    private var dlBtn: View? = null
     private val ui = Handler(Looper.getMainLooper())
-
-    /* 网页弹窗/抽屉打开时把悬浮下载按钮藏起来，别压在上面 */
-    private val dlPoll = object : Runnable {
-        override fun run() {
-            syncDlBtn()
-            ui.postDelayed(this, 700)
+    /* 下载状态变化 / 进度 → 让网页刷新「下载管理」和曲目上的已下载标记（500ms 合帧，
+       同一批变化只排一次，别让一次批量完成排出一串 evaluateJavascript） */
+    private var pushQueued = false
+    private val pushDlState = Runnable {
+        pushQueued = false
+        web?.evaluateJavascript("window.FM && FM.android && FM.android.onChange()", null)
+    }
+    private val onDlChanged: () -> Unit = {
+        if (!pushQueued) {
+            pushQueued = true
+            ui.postDelayed(pushDlState, 500)
         }
     }
+
     private var loadFailed = false
     private var lastBack = 0L
     private var authRetried = false
@@ -79,6 +86,8 @@ class MainActivity : Activity() {
         root.setBackgroundColor(BG)
         setContentView(root)
         askNotificationPermission()
+        Dl.watch(onDlChanged)          /* 条目/状态变化 */
+        Dl.watchProgress(onDlChanged)  /* 每秒的字节进度 */
         if (serverBase().isEmpty()) showSetup() else mountWeb()
     }
 
@@ -229,38 +238,7 @@ class MainActivity : Activity() {
 
         root.addView(w, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        /* 下载入口：网页不参与，壳里给一个小悬浮按钮 */
-        val b = android.widget.ImageButton(this).apply {
-            setImageResource(R.drawable.ic_download)
-            setBackgroundResource(R.drawable.bg_circle_btn)
-            setColorFilter(Color.WHITE)
-            contentDescription = "下载"
-            setOnClickListener { openDownloads() }
-        }
-        val lp = FrameLayout.LayoutParams(dp(44), dp(44), Gravity.END or Gravity.BOTTOM)
-        lp.setMargins(0, 0, dp(14), dp(96))
-        root.addView(b, lp)
-        dlBtn = b
-        ui.removeCallbacks(dlPoll)
-        ui.postDelayed(dlPoll, 700)
-
         load()
-    }
-
-    private fun syncDlBtn() {
-        val w = web ?: return
-        val b = dlBtn ?: return
-        if (customView != null || appFullscreen) { b.visibility = View.GONE; return }
-        runCatching { w.evaluateJavascript(
-            "(function(){try{" +
-                "var m=document.getElementById('modalRoot');if(m&&m.childElementCount)return 1;" +
-                "var s=document.getElementById('sheet');if(s&&s.classList.contains('open'))return 1;" +
-                "var q=document.getElementById('queuePanel');if(q&&q.classList.contains('open'))return 1;" +
-                "var d=document.getElementById('sidebar');if(d&&d.classList.contains('open'))return 1;" +
-                "return 0;}catch(e){return 0;}})()"
-        ) { v ->
-            if (customView == null && !appFullscreen) b.visibility = if (v == "1") View.GONE else View.VISIBLE
-        } }
     }
 
     private fun openDownloads() {
@@ -353,7 +331,6 @@ class MainActivity : Activity() {
         customCallback = callback
         root.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         web?.visibility = View.GONE
-        dlBtn?.visibility = View.GONE
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         immersive(true)
     }
@@ -386,7 +363,6 @@ class MainActivity : Activity() {
         customView = null
         root.removeView(v)
         web?.visibility = View.VISIBLE
-        dlBtn?.visibility = if (appFullscreen) View.GONE else View.VISIBLE
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         immersive(false)
         customCallback?.onCustomViewHidden()
@@ -400,7 +376,6 @@ class MainActivity : Activity() {
         runOnUiThread {
             if (appFullscreen == on) return@runOnUiThread
             appFullscreen = on
-            dlBtn?.visibility = if (on) View.GONE else View.VISIBLE
             if (on) {
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -507,7 +482,9 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         if (current === this) current = null
         /* 真正退出（返回两下 / 划掉任务）就停服务；只是按 Home 不会走到这里 */
-        ui.removeCallbacks(dlPoll)
+        Dl.unwatch(onDlChanged)
+        Dl.unwatchProgress(onDlChanged)
+        ui.removeCallbacks(pushDlState)
         if (isFinishing) PlaybackService.stop(this)
         super.onDestroy()
     }
@@ -561,8 +538,75 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun setFullscreen(on: Boolean) = this@MainActivity.setFullscreen(on)
 
+        /* 网页点「下载」：传 [{libId,libName,album,rel,title,ext,size}]，交给下载队列 */
+        @JavascriptInterface
+        fun downloadTracks(json: String) {
+            val arr = runCatching { JSONArray(json) }.getOrNull() ?: return
+            val batch = ArrayList<Dl.Item>()
+            for (k in 0 until arr.length()) {
+                val o = arr.optJSONObject(k) ?: continue
+                val rel = o.optString("rel")
+                if (rel.isEmpty()) continue
+                batch.add(
+                    Dl.Item(
+                        libId = o.optString("libId"),
+                        libName = o.optString("libName"),
+                        album = o.optString("album"),
+                        rel = rel,
+                        title = o.optString("title"),
+                        ext = o.optString("ext"),
+                        size = o.optLong("size")
+                    )
+                )
+            }
+            if (batch.isEmpty()) return
+            /* 空间检查、流量确认、入队、提示都在 DownloadQueue，和原生下载页同一套流程 */
+            runOnUiThread { DownloadQueue.enqueue(this@MainActivity, batch) }
+        }
+
         @JavascriptInterface
         fun openSettings() = showServerDialog()
+
+        /* 侧栏「下载管理」里的「管理」按钮：打开原生下载页（删除/重试在那儿） */
+        @JavascriptInterface
+        fun openDownloads() = runOnUiThread { this@MainActivity.openDownloads() }
+
+        /* 网页删掉已下载曲目（单个 / 批量）：文件、索引、在途请求都由 Dl 收拾 */
+        @JavascriptInterface
+        fun removeDownload(rel: String) {
+            if (rel.isEmpty()) return
+            runOnUiThread {
+                Dl.init(this@MainActivity)
+                Dl.remove(rel)
+            }
+        }
+
+        @JavascriptInterface
+        fun removeDownloads(relsJson: String) {
+            val arr = runCatching { JSONArray(relsJson) }.getOrNull() ?: return
+            val rels = ArrayList<String>(arr.length())
+            for (k in 0 until arr.length()) {
+                val r = arr.optString(k)
+                if (r.isNotEmpty()) rels.add(r)
+            }
+            if (rels.isEmpty()) return
+            runOnUiThread {
+                Dl.init(this@MainActivity)
+                Dl.removeMany(rels)
+            }
+        }
+
+        /* 手机可用空间（字节），下载管理页显示「已占用 / 可用」 */
+        @JavascriptInterface
+        fun freeSpace(): Long =
+            runCatching { StatFs(filesDir.absolutePath).availableBytes }.getOrDefault(0L)
+
+        /* 已下载清单：[{rel,libId,album,title,ext,size}]，网页据此画下载管理页和已下载标记 */
+        @JavascriptInterface
+        fun downloads(): String = runCatching {
+            Dl.init(this@MainActivity)
+            Dl.snapshot().toString()
+        }.getOrDefault("[]")
 
         @JavascriptInterface
         fun baseUrl(): String = serverBase()

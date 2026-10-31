@@ -9,12 +9,9 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.StatFs
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
@@ -47,6 +44,21 @@ class DownloadsActivity : Activity() {
     private var refreshQueued = false
     private val coll: Collator = Collator.getInstance(Locale.CHINA)
 
+    /* 批量下载时回调很密：350ms 合帧，别每完成一集就重建整表 */
+    private val onDlChange: () -> Unit = {
+        runOnUiThread {
+            if (!refreshQueued) {
+                refreshQueued = true
+                ui.postDelayed({
+                    refreshQueued = false
+                    render()
+                    ui.removeCallbacks(ticker)
+                    if (Dl.activeCount() > 0) ui.postDelayed(ticker, 400)
+                }, 350)
+            }
+        }
+    }
+
     private val ticker = object : Runnable {
         override fun run() {
             paintFooter()
@@ -61,27 +73,14 @@ class DownloadsActivity : Activity() {
         super.onCreate(savedInstanceState)
         Dl.init(this)
         buildUi()
-        Dl.onChange = {
-            runOnUiThread {
-                /* 批量下载时回调很密：350ms 合帧，别每完成一集就重建整表 */
-                if (!refreshQueued) {
-                    refreshQueued = true
-                    ui.postDelayed({
-                        refreshQueued = false
-                        render()
-                        ui.removeCallbacks(ticker)
-                        if (Dl.activeCount() > 0) ui.postDelayed(ticker, 400)
-                    }, 350)
-                }
-            }
-        }
+        Dl.watch(onDlChange)
         Dl.onError = { msg -> toast(msg) }
         render()
         loadLibrary()
     }
 
     override fun onDestroy() {
-        Dl.onChange = null
+        Dl.unwatch(onDlChange)
         Dl.onError = null
         ui.removeCallbacksAndMessages(null)
         super.onDestroy()
@@ -184,7 +183,7 @@ class DownloadsActivity : Activity() {
         subtitle?.text = if (total == 0) {
             if (libraryLoading) "正在读取资源库…" else if (libraryError.isNotEmpty()) libraryError else "资源库：" + libName
         } else {
-            "已下载 " + total + " 集 · " + fmtSize(size) + " · 资源库：" + libName
+            "已下载 " + total + " 集 · " + Dl.fmtSize(size) + " · 资源库：" + libName
         }
     }
 
@@ -212,8 +211,8 @@ class DownloadsActivity : Activity() {
             ellipsize = TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         row.addView(actionText("重试") {
-            val n = Dl.enqueue(baseUrl(), listOf(item))
-            toast(if (n > 0) "已重新加入队列" else "已经在下载队列里")
+            /* 重试也走同一套流程：空间不够/移动网络会重新问一次 */
+            DownloadQueue.enqueue(this, listOf(item)) { n -> if (n <= 0) toast("已经在下载队列里") }
         })
         row.addView(actionText("移除") { Dl.dismissFailure(item.rel) })
         return row
@@ -234,7 +233,7 @@ class DownloadsActivity : Activity() {
             ellipsize = TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         row.addView(TextView(this).apply {
-            text = tracks.size.toString() + " 集 · " + fmtSize(tracks.sumOf { it.size })
+            text = tracks.size.toString() + " 集 · " + Dl.fmtSize(tracks.sumOf { it.size })
             textSize = 10.5f
             setTextColor(0xFF7A869E.toInt())
             setPadding(0, 0, dp(10), 0)
@@ -267,7 +266,7 @@ class DownloadsActivity : Activity() {
             ellipsize = TextUtils.TruncateAt.END
         })
         info.addView(TextView(this).apply {
-            text = fmtSize(item.size) + " · " + if (isVideo(item.ext)) "视频" else "音频"
+            text = Dl.fmtSize(item.size) + " · " + if (isVideo(item.ext)) "视频" else "音频"
             textSize = 10f
             setTextColor(0xFF6C7A93.toInt())
             setPadding(0, dp(2), 0, 0)
@@ -295,7 +294,7 @@ class DownloadsActivity : Activity() {
         f.visibility = View.VISIBLE
         val (loaded, total) = Dl.activeProgress()
         val pct = if (total > 0L) (loaded * 100 / total).toInt() else 0
-        f.text = "下载中 " + n + " 个 · " + pct + "%（" + fmtSize(loaded) + " / " + fmtSize(total) + "）"
+        f.text = "下载中 " + n + " 个 · " + pct + "%（" + Dl.fmtSize(loaded) + " / " + Dl.fmtSize(total) + "）"
     }
 
     /* ── 选择要下载的内容 ── */
@@ -333,7 +332,7 @@ class DownloadsActivity : Activity() {
 
     private fun pickTracks(album: Album) {
         if (album.tracks.isEmpty()) { toast("这张专辑没有可下载的音频"); return }
-        val names = album.tracks.map { it.title + "  ·  " + fmtSize(it.size) }.toTypedArray()
+        val names = album.tracks.map { it.title + "  ·  " + Dl.fmtSize(it.size) }.toTypedArray()
         val checked = BooleanArray(album.tracks.size) { !Dl.isDownloaded(album.tracks[it].rel) }
         val doneCount = album.tracks.count { Dl.isDownloaded(it.rel) }
         val dlgTitle = if (doneCount > 0) album.name + "（已下载 " + doneCount + "/" + album.tracks.size + "）" else album.name
@@ -348,46 +347,12 @@ class DownloadsActivity : Activity() {
             .show()
     }
 
+    /* 空间、流量确认、入队、提示都在 DownloadQueue 里，这里只管转条目 + 刷新界面 */
     private fun startDownload(album: Album, picked: List<Track>) {
-        if (isMetered()) {
-            AlertDialog.Builder(this)
-                .setTitle("当前是移动网络")
-                .setMessage("下载 " + picked.size + " 集会消耗流量，继续？")
-                .setPositiveButton("继续") { _, _ -> doDownload(album, picked) }
-                .setNegativeButton("取消", null)
-                .show()
-            return
+        val batch = picked.map { Dl.Item(libId, libName, album.name, it.rel, it.title, it.ext, it.size) }
+        DownloadQueue.enqueue(this, batch) { n ->
+            if (n > 0) ui.postDelayed({ render(); ui.removeCallbacks(ticker); ui.postDelayed(ticker, 300) }, 300)
         }
-        doDownload(album, picked)
-    }
-
-    private fun isMetered(): Boolean {
-        return try {
-            val cm = getSystemService(ConnectivityManager::class.java)
-            val net = cm.activeNetwork ?: return true
-            val caps = cm.getNetworkCapabilities(net) ?: return true
-            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) &&
-                !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
-                !caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
-        } catch (e: Exception) { false }
-    }
-
-    private fun doDownload(album: Album, picked: List<Track>) {
-        val base = baseUrl()
-        if (base.isEmpty()) { toast("还没有配置服务器地址"); return }
-        val batch = picked.map {
-            Dl.Item(libId, libName, album.name, it.rel, it.title, it.ext, it.size)
-        }
-        val need = batch.sumOf { it.size }
-        val free = runCatching { StatFs(filesDir.absolutePath).availableBytes }.getOrDefault(Long.MAX_VALUE)
-        if (need > 0L && need > free) {
-            toast("手机空间不足：还需 " + fmtSize(need) + "，可用 " + fmtSize(free))
-            return
-        }
-        val n = Dl.enqueue(base, batch)
-        if (n <= 0) { toast("这些内容已经在队列里或已下载"); return }
-        toast("已加入下载队列：" + n + " 集")
-        ui.postDelayed({ render(); ui.removeCallbacks(ticker); ui.postDelayed(ticker, 300) }, 300)
     }
 
     /* ── 播放 ── */
@@ -486,15 +451,6 @@ class DownloadsActivity : Activity() {
 
     private fun isVideo(ext: String): Boolean =
         ext.lowercase(Locale.ROOT) in setOf("mp4", "m4v", "mov", "webm", "ogv")
-
-    private fun fmtSize(v: Long): String {
-        if (v <= 0) return "0 B"
-        val kb = v / 1024.0
-        if (kb < 1024) return String.format(Locale.ROOT, "%.0f KB", kb)
-        val mb = kb / 1024.0
-        if (mb < 1024) return String.format(Locale.ROOT, "%.1f MB", mb)
-        return String.format(Locale.ROOT, "%.2f GB", mb / 1024.0)
-    }
 
     private fun confirm(title: String, msg: String, onYes: () -> Unit) {
         AlertDialog.Builder(this)

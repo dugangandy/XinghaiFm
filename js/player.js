@@ -40,8 +40,17 @@
   let loadToken = 0;
   let saveAt = 0;
   let remoteSaveAt = 0;   // 上次把进度推给远程服务端的时间
+  let mediaTrackId = null; // media 里实际装着的集；换集过渡期置空，避免把新集进度写成 0
+  let savedSig = null;    // 上次落盘的内容指纹，同一位置不重复写
+  let pausedAt = 0;       // 上次暂停的时刻，用来判断恢复时要不要回退
+  let pausedTrackId = null;
   let sleepTimer = null;
   let sleepEnd = 0;
+  let sleepMode = 0;        // 0 关闭 / 'time' 定时 / 'chapter' 本集播完
+  let sleepTotal = 0;       // 定时总长（毫秒）
+  let sleepLeft = 0;
+  let fadeOn = false;       // 当前是否处于淡出（音量被临时压低）
+  const SLEEP_FADE = 10000;       // 最后 10 秒淡出
   let artCache = new Map();
   let nativeVideo = false;    // 壳内视频交给原生播放器
   let nativePlaying = false;
@@ -52,6 +61,10 @@
   let volume = st.volume == null ? 1 : st.volume;
   let loop = st.loop || 'all';
   let muted = false;
+  /* 暂停多久之后恢复才回退：10 秒内基本是误触或短暂中断，退回去反而烦 */
+  const AUTO_REWIND_AFTER = 10000;
+  let autoRewind = st.autoRewind == null ? 10 : (Number(st.autoRewind) || 0);
+  let sleepAuto = st.sleepAuto || { on: false, from: '22:00', to: '07:00', minutes: 30 };
 
   function persistState(patch) {
     const s = FM.db.state();
@@ -139,6 +152,9 @@
   async function load(track, opts) {
     const o = opts || {};
     const my = ++loadToken;
+    if (cur && cur.id !== track.id) saveProgress(true);   // 换集前先把旧集落盘
+    mediaTrackId = null;                                   // 过渡期的 pause/emptied 一律不算
+    pausedAt = 0; pausedTrackId = null;                    // 换集不触发自动回退
     cur = track;
     /* 壳内视频：整条队列交给原生播放器，网页不碰 <video> */
     if (track.kind === 'video' && FM.android) {
@@ -199,6 +215,7 @@
       if (start && start > 0) {
         el.currentTime = dur ? Math.min(start, Math.max(0, dur - 1)) : start;
       }
+      mediaTrackId = track.id;   // 位置已就位，从这里开始才允许落盘
       ev.emit('time', el.currentTime, dur);
       if (o.autoplay) {
         armRecover(el, my);
@@ -223,6 +240,8 @@
   /* ── 停止并清空（切换资源库时用） ── */
   function stop() {
     if (cur) saveProgress(true);
+    mediaTrackId = null;
+    pausedAt = 0; pausedTrackId = null;
     eachEl(stopEl);
     queue = [];
     index = -1;
@@ -256,6 +275,8 @@
     if (!media.src || !isFinite(media.duration)) return;
     media.currentTime = U.clamp(t, 0, media.duration || 0);
     ev.emit('time', media.currentTime, media.duration);
+    saveProgress(true, false);   // 拖动后立刻落盘；远程仍按 10 秒节流，别按一下推一次
+    pausedAt = 0; pausedTrackId = null;   // 用户自己选的位置，恢复时别再回退
   }
 
   function seekRatio(r) {
@@ -312,20 +333,48 @@
     }
   }
 
-  function saveProgress(force) {
-    if (!cur || !media.src) return;
+  /* 落盘：播放中每 4 秒一次，切集 / 暂停 / 拖动 / 进后台 / 退出时立即写。
+     push=false 只写本地、远程仍走 10 秒节流（拖动用）。 */
+  function saveProgress(force, push) {
+    if (!cur || !media.src || mediaTrackId !== cur.id) return;
     const now = Date.now();
     if (!force && now - saveAt < 4000) return;
-    saveAt = now;
     const d = isFinite(media.duration) ? media.duration : (cur.duration || 0);
     const p = media.currentTime || 0;
     const done = d > 0 && p / d > 0.965;
+    /* 同一位置不重复写：next() 先落一次，load() 换集前还会再落一次 */
+    const sig = cur.id + '|' + Math.round(p * 10) + '|' + Math.round(d) + '|' + (done ? 1 : 0);
+    if (sig === savedSig) return;
+    savedSig = sig;
+    saveAt = now;
     FM.lib.setProgress(cur.id, p, d, done);
-    /* 远程访问时把进度回传给服务端，10 秒一次；暂停/切集/关页面时 force 立即推 */
-    if (FM.fs.server && (force || now - remoteSaveAt > 10000)) {
+    const pushNow = push == null ? !!force : push;
+    if (FM.fs.server && (pushNow || now - remoteSaveAt > 10000)) {
       remoteSaveAt = now;
       FM.fs.pushProgress({ id: cur.id, p: p, d: d, t: now, done: done });
     }
+  }
+
+  /* 自动回退：暂停超过 10 秒再继续时，退回设置的秒数，接上被打断的那句话 */
+  function maybeAutoRewind() {
+    if (!autoRewind || !pausedAt || !cur || pausedTrackId !== cur.id) return;
+    const gap = Date.now() - pausedAt;
+    pausedAt = 0; pausedTrackId = null;
+    if (gap < AUTO_REWIND_AFTER) return;
+    const t = media.currentTime || 0;
+    const to = Math.max(0, t - autoRewind);
+    if (t - to < 0.5) return;
+    media.currentTime = to;
+    ev.emit('time', to, media.duration || 0);
+    ev.emit('rewind', t - to);
+    saveProgress(true, false);
+  }
+
+  function setAutoRewind(sec) {
+    autoRewind = Math.max(0, Math.round(Number(sec) || 0));
+    persistState({ autoRewind });
+    ev.emit('rewindset', autoRewind);
+    return autoRewind;
   }
 
   function pickNext(auto) {
@@ -429,19 +478,111 @@
   }
 
   /* ── 定时关闭 ── */
-  function setSleep(minutes) {
+  function stopSleepClock() {
     if (sleepTimer) { clearInterval(sleepTimer); sleepTimer = null; }
-    if (!minutes) { sleepEnd = 0; ev.emit('sleep', 0); return; }
-    sleepEnd = Date.now() + minutes * 60000;
-    sleepTimer = setInterval(function () {
-      if (Date.now() >= sleepEnd) {
-        clearInterval(sleepTimer); sleepTimer = null; sleepEnd = 0;
-        pause(); ev.emit('sleep', 0); ev.emit('sleepend');
-      } else {
-        ev.emit('sleep', sleepEnd - Date.now());
-      }
-    }, 1000);
-    ev.emit('sleep', sleepEnd - Date.now());
+  }
+
+  /* 淡出只动元素音量，不改用户的音量设置；恢复时按 volume 填回去 */
+  function applyFade(ratio) {
+    const r = Math.max(0, Math.min(1, ratio));
+    fadeOn = r < 1;
+    eachEl(function (el) { el.volume = volume * r; });
+  }
+
+  function restoreVolume() {
+    if (!fadeOn) return;
+    fadeOn = false;
+    eachEl(function (el) { el.volume = volume; });
+  }
+
+  function sleepTick() {
+    if (sleepMode !== 'time') return;
+    sleepLeft = Math.max(0, sleepEnd - Date.now());
+    applyFade(FM.sleep.fadeRatio(sleepLeft, SLEEP_FADE));
+    if (sleepLeft <= 0) {
+      stopSleepClock();
+      restoreVolume();
+      sleepMode = 0; sleepEnd = 0; sleepLeft = 0;
+      pause();
+      ev.emit('sleep', 0, 0);
+      ev.emit('sleepend');
+      return;
+    }
+    ev.emit('sleep', sleepLeft, 'time');
+  }
+
+  function setSleep(minutes) {
+    stopSleepClock();
+    restoreVolume();
+    const m = Number(minutes) || 0;
+    if (!m) {
+      sleepMode = 0; sleepEnd = 0; sleepTotal = 0; sleepLeft = 0;
+      ev.emit('sleep', 0, 0);
+      return 0;
+    }
+    sleepMode = 'time';
+    sleepTotal = m * 60000;
+    sleepLeft = sleepTotal;
+    sleepEnd = Date.now() + sleepTotal;
+    sleepTimer = setInterval(sleepTick, 500);
+    ev.emit('sleep', sleepLeft, sleepMode);
+    return m;
+  }
+
+  /* 本集播完暂停：不设时间，靠 ended 兜住 */
+  function setSleepChapter() {
+    stopSleepClock();
+    restoreVolume();
+    sleepMode = 'chapter';
+    sleepEnd = 0; sleepTotal = 0; sleepLeft = 0;
+    ev.emit('sleep', 0, sleepMode);
+    return 'chapter';
+  }
+
+  function pauseSleepClock() {
+    if (sleepMode === 'time' && sleepTimer) {
+      sleepLeft = Math.max(0, sleepEnd - Date.now());
+      stopSleepClock();
+    }
+  }
+
+  function resumeSleepClock() {
+    if (sleepMode === 'time' && !sleepTimer && sleepLeft > 0) {
+      sleepEnd = Date.now() + sleepLeft;
+      sleepTimer = setInterval(sleepTick, 500);
+    }
+  }
+
+  function endSleep() {
+    stopSleepClock();
+    restoreVolume();
+    sleepMode = 0; sleepEnd = 0; sleepTotal = 0; sleepLeft = 0;
+    ev.emit('sleep', 0, 0);
+    ev.emit('sleepend');
+  }
+
+  /* 每晚在设定时间段内开始播放时，自动挂上定时 */
+  function maybeAutoSleep() {
+    const cfg = sleepAuto;
+    if (!cfg || !cfg.on || sleepMode) return;
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    if (!FM.sleep.inRange(nowMin, FM.sleep.parseHM(cfg.from), FM.sleep.parseHM(cfg.to))) return;
+    setSleep(cfg.minutes || 30);
+    ev.emit('sleepauto', true);
+  }
+
+  function setAutoSleep(on, from, to, minutes) {
+    sleepAuto = {
+      on: !!on,
+      from: from || sleepAuto.from || '22:00',
+      to: to || sleepAuto.to || '07:00',
+      minutes: minutes || sleepAuto.minutes || 30
+    };
+    persistState({ sleepAuto: sleepAuto });
+    ev.emit('sleepauto', sleepAuto.on);
+    if (sleepAuto.on && !media.paused) maybeAutoSleep();
+    return sleepAuto;
   }
 
   /* ── 媒体事件：audio 与 video 各绑一套，只认当前在用的那个 ── */
@@ -449,22 +590,35 @@
   ELS.forEach(function (el) {
     el.addEventListener('timeupdate', function () {
       if (el !== media) return;
-      ev.emit('time', el.currentTime, isFinite(el.duration) ? el.duration : (cur ? cur.duration : 0));
+      const d = isFinite(el.duration) ? el.duration : (cur ? cur.duration : 0);
+      ev.emit('time', el.currentTime, d);
+      /* 本集播完暂停：最后 10 秒跟着进度淡出 */
+      if (sleepMode === 'chapter' && d > 0) {
+        applyFade(FM.sleep.fadeRatio((d - el.currentTime) * 1000, SLEEP_FADE));
+      }
       if (!el.paused) saveProgress(false);
     });
     el.addEventListener('play', function () {
       if (el !== media) return;
+      restoreVolume();
+      resumeSleepClock();
+      maybeAutoSleep();
+      maybeAutoRewind();
       ev.emit('state', true);
     });
     el.addEventListener('pause', function () {
       if (el !== media) return;
+      restoreVolume();
+      pauseSleepClock();
       ev.emit('state', false);
+      pausedAt = Date.now(); pausedTrackId = cur ? cur.id : null;
       saveProgress(true);
     });
     el.addEventListener('ended', function () {
       if (el !== media) return;
       saveProgress(true);
       if (cur) FM.lib.setProgress(cur.id, el.duration || cur.duration || 0, el.duration || cur.duration || 0, true);
+      if (sleepMode === 'chapter') { endSleep(); return; }
       next(true);
     });
     el.addEventListener('error', function () {
@@ -477,6 +631,10 @@
   });
   window.addEventListener('pagehide', function () { saveProgress(true); });
   window.addEventListener('beforeunload', function () { saveProgress(true); });
+  /* 安卓壳切后台 / 锁屏时 pagehide 不一定触发，visibilitychange 更可靠 */
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') saveProgress(true);
+  });
 
   function restoreLast() {
     const s = FM.db.state();
@@ -562,7 +720,8 @@
     on: ev.on,
     play, pause, toggle, stop, seek, seekRatio, jumpBy,
     next, prev, setQueue, playAlbum, playTrack, addToQueue,
-    setRate, cycleRate, setVolume, toggleMute, cycleLoop, setSleep, togglePip,
+    setRate, cycleRate, setVolume, toggleMute, cycleLoop, setSleep, setSleepChapter, setAutoSleep, togglePip,
+    setAutoRewind,
     restoreLast, saveProgress, onNative,
     artworkFor,
     get current() { return cur; },
@@ -578,6 +737,10 @@
     get loopLabel() { return LOOP_LABEL[loop]; },
     get loopIcon() { return LOOP_ICON[loop]; },
     get sleepEnd() { return sleepEnd; },
+    get sleepMode() { return sleepMode; },
+    get sleepLeft() { return sleepLeft; },
+    get autoSleep() { return sleepAuto; },
+    get autoRewind() { return autoRewind; },
     get media() { return media; },
     RATES, LOOP_LABEL, LOOP_ICON
   };

@@ -140,6 +140,8 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   /* 触屏没有 hover：卡片上不显示播放按钮（点卡片进详情页再播放），
      用 display:none 而不是 opacity:0，否则看不见但会吃掉中间的点击 */
   .card-play{display:none}
+  /* 曲目行的「更多」同理：触屏没有 hover，常显，否则看不见却又吃点击 */
+  .tk-more{opacity:1}
   .cat-item .cat-edit{opacity:.7}
   /* 触屏没有 hover，竖向音量弹层用不上（原来横向条在触屏上也是隐藏的） */
   .vol-pop{display:none}

@@ -102,6 +102,138 @@
   }
 
   /* ── 通用 UI ── */
+  /* ── 下载（只有 APK 有原生下载队列，桌面/浏览器里菜单项和按钮都不出现） ── */
+  function canDownload() { return !!(FM.android && FM.android.canDownload); }
+
+  function downloadTracks(list) {
+    if (!canDownload()) return;
+    if (!list || !list.length) { toast('没有可下载的内容', 'warn'); return; }
+    if (!FM.android.download(list)) toast('没排上队，稍后再试', 'warn');
+  }
+
+  /* rel → 已下载条目，只有 APK 有；桌面/浏览器拿到空表 */
+  function dlMap() {
+    return (FM.android && FM.android.downloads) ? FM.android.downloads() : {};
+  }
+
+  function dlCount() { return Object.keys(dlMap()).length; }
+
+  /* 某专辑里「已经下完」的曲目（播放/删除只认这些） */
+  function dlTracks(albumId) {
+    const map = dlMap();
+    return L.albumTracks(albumId).filter(function (t) {
+      const e = map[t.rel];
+      return !!e && (e.state === 'done' || !e.state);
+    });
+  }
+
+  /* 某专辑里所有有条目的曲目：完成 + 排队 + 下载中 + 失败 */
+  function dlAll(albumId) {
+    const map = dlMap();
+    return L.albumTracks(albumId).filter(function (t) { return !!map[t.rel]; });
+  }
+
+  function dlPct(e) {
+    if (!e) return 0;
+    const total = e.total || e.size || 0;
+    if (!total) return 0;
+    return Math.max(0, Math.min(100, Math.floor((e.loaded || 0) * 100 / total)));
+  }
+
+  /* 行尾的状态文案：下载中 42% / 排队中 / 下载失败 / 空（已完成） */
+  function dlStateText(e) {
+    if (!e || e.state === 'done' || !e.state) return '';
+    if (e.state === 'error') return '下载失败';
+    if (e.state === 'queued') return '排队中';
+    return '下载中 ' + dlPct(e) + '%';
+  }
+
+  /* 一组条目的汇总：完成多少、还有几个在跑 */
+  function dlSummary(list) {
+    const map = dlMap();
+    let done = 0, doneSize = 0, active = 0, loaded = 0, total = 0, bad = 0;
+    list.forEach(function (t) {
+      const e = map[t.rel];
+      if (!e) return;
+      if (e.state === 'done' || !e.state) { done++; doneSize += e.size || t.size || 0; return; }
+      if (e.state === 'error') { bad++; return; }
+      active++;
+      loaded += e.loaded || 0;
+      total += e.total || e.size || t.size || 0;
+    });
+    return { done: done, size: doneSize, active: active, bad: bad, pct: total > 0 ? Math.floor(loaded * 100 / total) : 0 };
+  }
+
+  /* 播放队列只放已下载的曲目 */
+  function playDlTracks(albumId, trackId) {
+    const list = dlTracks(albumId);
+    if (!list.length) { toast('这张专辑还没有下载内容', 'warn'); return; }
+    let i = 0;
+    if (trackId) i = Math.max(0, list.findIndex(function (t) { return t.id === trackId; }));
+    P.setQueue(list, i, { autoplay: true });
+  }
+
+  /* 曲名前的已下载图标 */
+  function dlFlag(t) {
+    if (!t || !FM.android || !FM.android.downloaded || !FM.android.downloaded(t.rel)) return '';
+    return '<span class="tk-dl" title="已下载">' + icon('download') + '</span>';
+  }
+
+  /* 壳推来「下载有变化」：下载页整页重画，其它页面只补标记，别打断滚动 */
+  /* 条目集合 / 状态变了才整页重画；只是进度在动就原地改数字，别把列表抖没 */
+  let dlSig = null;
+  function dlSignature() {
+    const map = dlMap();
+    return Object.keys(map).sort().map(function (rel) {
+      const e = map[rel];
+      return rel + ':' + (e.state || 'done');
+    }).join('|');
+  }
+
+  function downloadsChanged() {
+    const sig = dlSignature();
+    const changed = sig !== dlSig;
+    dlSig = sig;
+    if (state.view === 'downloads' || state.view.indexOf('dl') === 0) {
+      if (changed) renderMain();
+      else patchDlProgress();
+    } else {
+      if (changed) syncDownloadFlags();
+      if (changed) renderNav();
+      return;
+    }
+    if (changed) renderNav();
+  }
+
+  /* 原地刷新进度文案：行上的「下载中 42%」、专辑行上的「下载中 3 集 · 41%」 */
+  function patchDlProgress() {
+    const map = dlMap();
+    U.$$('.dl-state', refs.view).forEach(function (el) {
+      const e = map[el.dataset.rel];
+      el.textContent = dlStateText(e);
+      el.classList.toggle('bad', !!(e && e.state === 'error'));
+    });
+    U.$$('.dl-live', refs.view).forEach(function (el) {
+      const albumId = el.dataset.album;
+      const s = dlSummary(dlAll(albumId));
+      el.textContent = s.active ? '下载中 ' + s.active + ' 集 · ' + s.pct + '%' : (s.bad ? '有 ' + s.bad + ' 集失败' : '');
+    });
+  }
+
+  function syncDownloadFlags() {
+    const map = dlMap();
+    U.$$('.track[data-id]', refs.view).forEach(function (li) {
+      const t = L.track(li.dataset.id);
+      const main = li.querySelector('.tk-main');
+      if (!main) return;
+      const host = main.querySelector('.tk-title-row') || main;
+      const cur = host.querySelector('.tk-dl');
+      const on = !!(t && map[t.rel]);
+      if (on && !cur) host.insertAdjacentHTML('afterbegin', dlFlag(t));
+      else if (!on && cur) cur.remove();
+    });
+  }
+
   function toast(msg, type) {
     const node = U.el('div', { class: 'toast' + (type ? ' ' + type : '') },
       [U.el('span', { html: icon(type === 'warn' ? 'moon' : 'check') }), U.el('span', { text: msg })]);
@@ -236,8 +368,10 @@
       { key: 'recent', hash: '#/recent', label: '最近播放', icon: 'headphones', count: recent },
       { key: 'fav', hash: '#/fav', label: '我的收藏', icon: 'heart', count: favCount }
     ];
+    /* 下载管理只存在于 APK：和「我的收藏」一样是个网页视图 */
+    if (canDownload()) items.push({ key: 'downloads', hash: '#/downloads', label: '下载管理', icon: 'download', count: dlCount() });
     refs.nav.innerHTML = items.map(function (it) {
-      const on = state.view === it.key && !state.q;
+      const on = (state.view === it.key || (it.key === 'downloads' && state.view.indexOf('dl') === 0 /* dlAlbum / dlRemove */)) && !state.q;
       return '<button class="nav-item' + (on ? ' active' : '') + '" data-hash="' + it.hash + '">' +
         icon(it.icon) + '<span>' + it.label + '</span>' +
         (it.count ? '<span class="count">' + it.count + '</span>' : '') + '</button>';
@@ -322,7 +456,15 @@
     if (!seg.length) { state.view = 'home'; }
     else if (seg[0] === 'album') { state.view = 'album'; state.albumId = seg[1]; }
     else if (seg[0] === 'cat') { state.view = 'cat'; state.cat = seg[1]; }
+    else if (seg[0] === 'downloads' && seg[2] === 'more') { state.view = 'dlMore'; state.albumId = seg[1]; }
+    else if (seg[0] === 'downloads' && seg[2] === 'remove') { state.view = 'dlRemove'; state.albumId = seg[1]; }
+    else if (seg[0] === 'downloads' && seg[1]) { state.view = 'dlAlbum'; state.albumId = seg[1]; }
     else { state.view = seg[0]; }
+    if (state.view === 'dlRemove') state.dlSel = {};
+    if (state.view === 'dlMore') state.dlMoreSel = {};
+    if (state.view.indexOf('dl') === 0 || state.view === 'downloads') {
+      if (FM.android && FM.android.refreshDownloads) FM.android.refreshDownloads();
+    }
     state.detailQ = '';
     state.page = 0;
     renderMain();
@@ -341,6 +483,10 @@
     else if (state.view === 'album') node = viewAlbum(state.albumId);
     else if (state.view === 'cat') node = viewCat(state.cat);
     else if (state.view === 'fav') node = viewGridPage('我的收藏', '收藏的专辑会出现在这里', L.allAlbums({ fav: true, showHidden: state.showHidden }));
+    else if (state.view === 'downloads') node = viewDownloads();
+    else if (state.view === 'dlAlbum') node = viewDlAlbum(state.albumId);
+    else if (state.view === 'dlRemove') node = viewDlRemove(state.albumId);
+    else if (state.view === 'dlMore') node = viewDlMore(state.albumId);
     else if (state.view === 'continue') node = viewContinue();
     else if (state.view === 'recent') node = viewRecent();
     else node = viewHome();
@@ -475,6 +621,288 @@
     return wrap;
   }
 
+  /* 下载管理：占了多少 / 还剩多少 + 有下载内容的专辑列表（至少下一集才算） */
+  function viewDownloads() {
+    /* 有下载记录的专辑都进来：正在下的也算，别等下完才出现 */
+    const albums = L.allAlbums({ showHidden: state.showHidden }).map(function (a) {
+      const tracks = dlAll(a.id);
+      return { album: a, tracks: tracks, sum: dlSummary(tracks) };
+    }).filter(function (x) { return x.tracks.length > 0; });
+
+    let used = 0, count = 0, running = 0;
+    albums.forEach(function (x) { used += x.sum.size; count += x.sum.done; running += x.sum.active; });
+    const free = (FM.android && FM.android.freeSpace) ? FM.android.freeSpace() : 0;
+
+    const wrap = U.el('div');
+    wrap.innerHTML = '<div class="view-head"><div>' +
+      '<div class="page-title">下载管理</div>' +
+      '<div class="page-sub">' + albums.length + ' 个专辑 · ' + count + ' 集' +
+        (running ? ' · 下载中 ' + running : '') + '</div></div>' +
+      '<div class="head-actions"><button class="btn btn-ghost" data-act="open-downloads">' + icon('download') + '管理 / 删除</button></div></div>' +
+      (albums.length ? '<div class="dl-sum">' +
+          '<b>已占用 ' + fmtS(used) + '</b>' +
+          '<span>/ 可用 ' + (free > 0 ? fmtS(free) : '未知') + '</span>' +
+        '</div>' +
+        '<div class="dl-list">' + albums.map(dlAlbumRow).join('') + '</div>'
+        : '<div class="empty"><div class="empty-art">' + icon('download') + '</div><h3>还没有下载</h3>' +
+          '<p>在专辑菜单点「下载全部」，或单集菜单点「下载」，下完的内容会出现在这里。</p></div>');
+    return wrap;
+  }
+
+  /* 下载管理的「更多」只给两件事：播放、删掉这张的下载 */
+  function dlAlbumMenu(id, anchor) {
+    const a = L.album(id);
+    if (!a) return;
+    /* 排队中和在途的也算：删了要连下载一起停掉，不能只删已完成的那几个 */
+    const mine = dlAll(id);
+    const doneCount = dlTracks(id).length;
+    openMenu(anchor, [
+      { label: '播放全部', icon: 'play', onClick: function () { go('#/downloads/' + id); playDlTracks(id); } },
+      { sep: true },
+      {
+        label: '删除', icon: 'trash', danger: true, onClick: function () {
+          if (!mine.length) { toast('这张专辑没有下载内容', 'warn'); return; }
+          confirmModal({
+            title: '删除这张专辑的下载？',
+            message: '「' + a.title + '」的 ' + mine.length + ' 集下载会停掉' +
+              (doneCount ? '，已下的 ' + doneCount + ' 集文件从手机里删掉' : '') + '。',
+            note: '想再听可以重新下载，播放记录不受影响。',
+            danger: true, okText: '删除'
+          }).then(function (ok) {
+            if (!ok) return;
+            if (!(FM.android && FM.android.canRemoveMany)) { toast('App 版本太旧，更新 APK 后才能删除', 'warn'); return; }
+            if (!FM.android.removeDownloads(mine.map(function (t) { return t.rel; }))) { toast('删除失败，重试一次', 'warn'); return; }
+            toast('已删除 ' + mine.length + ' 集');
+            downloadsChanged();
+          });
+        }
+      }
+    ]);
+  }
+
+  /* 下载管理里的一行：封面 + 专辑名 + 大小/集数 + 更多 */
+  function dlAlbumRow(x) {
+    const a = x.album;
+    const s = x.sum;
+    const live = s.active ? '<span class="dl-live" data-album="' + a.id + '">下载中 ' + s.active + ' 集 · ' + s.pct + '%</span>'
+      : (s.bad ? '<span class="dl-live" data-album="' + a.id + '">有 ' + s.bad + ' 集失败</span>' : '');
+    const art = a.cover
+      ? '<img src="' + esc(a.cover) + '" alt="">'
+      : '<span class="dl-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>';
+    return '<div class="dl-item" data-act="open-dl-album" data-id="' + a.id + '">' +
+      '<span class="dl-cover" style="' + U.coverVars(a.seed) + '">' + art + '</span>' +
+      '<span class="dl-body">' +
+        '<span class="dl-title" title="' + esc(a.title) + '">' + esc(a.title) + '</span>' +
+        '<span class="dl-meta">' +
+          '<span>' + icon('folder') + fmtS(s.size) + '</span>' +
+          '<span>' + icon('headphones') + s.done + ' 集' +
+            (s.done < a.count ? '（共 ' + a.count + '）' : '') + '</span>' +
+          live +
+        '</span>' +
+      '</span>' +
+      '<button class="dl-more" data-act="dl-menu" data-id="' + a.id + '" title="更多">' + icon('more') + '</button>' +
+    '</div>';
+  }
+
+  /* 下载详情：只列这张专辑里下过的曲目 */
+  function viewDlAlbum(id) {
+    const a = L.album(id);
+    if (!a) return viewGridPage('专辑不存在', '可能已被移除，请重新扫描资源库', L.albums());
+    /* 排队和正在下的也列出来，用户能看到队列在动 */
+    const mine = dlAll(id);
+    const done = dlTracks(id);
+    const sum = dlSummary(mine);
+    const missing = Math.max(0, a.count - mine.length);
+    const last = lastPlayed(done);
+    const wrap = U.el('div');
+    wrap.innerHTML =
+      '<div class="view-head" style="padding:10px 2px 0"><button class="link-btn" data-act="back">← 返回</button>' +
+        '<div class="head-actions"><button class="btn btn-ghost" data-act="open-downloads">' + icon('download') + '下载任务</button></div></div>' +
+      '<div class="dl-hero">' +
+        '<span class="dl-cover lg" style="' + U.coverVars(a.seed) + '">' + coverArt(a) + '</span>' +
+        '<div class="dl-hero-body">' +
+          '<div class="dl-hero-title">' + esc(a.title) + '</div>' +
+          '<div class="dl-hero-sub">已下载 ' + done.length + ' 条 / 共 ' + a.count + ' 条' +
+            (sum.size ? ' · ' + fmtS(sum.size) : '') +
+            (sum.active ? ' · 下载中 ' + sum.active + ' 条 ' + sum.pct + '%' : '') + '</div>' +
+        '</div>' +
+        (missing > 0 ? '<button class="btn btn-primary dl-hero-btn" data-act="dl-more-page" data-id="' + a.id + '">下载更多</button>' : '') +
+      '</div>' +
+      '<div class="dl-tools">' +
+        '<button class="dl-tool" data-act="dl-batch" data-id="' + a.id + '">' + icon('trash') + '批量删除</button>' +
+        '<button class="dl-tool" data-act="play-dl" data-id="' + a.id + '">' + icon('play') + '播放全部</button>' +
+        '<span class="dl-tool-count">' + (sum.active ? done.length + ' / ' + mine.length + ' 集' : mine.length + ' 集') + '</span>' +
+      '</div>' +
+      (last ? '<div class="dl-resume" data-act="row-play-dl" data-id="' + last.id + '">' + icon('play') + '继续播放：' + esc(last.title) + '</div>' : '') +
+      (mine.length
+        ? '<div class="dl-tracks">' + mine.map(dlRow).join('') + '</div>'
+        : '<div class="empty"><div class="empty-art">' + icon('download') + '</div><h3>这一集都没下</h3>' +
+          '<p>点上面「下载更多」把整张下下来。</p></div>');
+    return wrap;
+  }
+
+  /* 封面：有图用图，没图用首字 */
+  function coverArt(a) {
+    return a.cover
+      ? '<img src="' + esc(a.cover) + '" alt="">'
+      : '<span class="dl-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>';
+  }
+
+  /* 最近在听、还没听完的那一集 */
+  function lastPlayed(list) {
+    let pick = null, at = 0;
+    list.forEach(function (t) {
+      const p = L.progressOf(t.id);
+      if (!p || p.done || !p.t) return;
+      if (p.t > at) { at = p.t; pick = t; }
+    });
+    return pick;
+  }
+
+  /* 下载详情的曲目行：序号 + 标题 + 时长/大小/进度，右侧删除 */
+  function dlRow(t) {
+    const it = dlMap()[t.rel] || {};
+    const p = L.progressOf(t.id);
+    const dur = t.duration || (p && p.d) || 0;
+    const pct = p && dur ? Math.min(100, Math.round((p.p || 0) / dur * 100)) : 0;
+    const playing = P.current && P.current.id === t.id;
+    /* 还没下完的不能点播：本地没文件，硬播会跳到别的集 */
+    const ready = !it.state || it.state === 'done';
+    return '<li class="track dl-track' + (playing ? ' playing' : '') + '" data-id="' + t.id +
+      '" data-act="' + (ready ? 'row-play-dl' : 'dl-wait') + '">' +
+      '<span class="dl-idx">' + (t.order + 1) + '</span>' +
+      '<div class="dl-tk">' +
+        '<div class="dl-tk-title">' + esc(t.title) + (p && p.done ? '<span class="tk-flag">已听</span>' : '') + '</div>' +
+        '<div class="dl-tk-meta">' +
+          '<span>' + icon('clock') + (dur ? fmtT(dur) : '—') + '</span>' +
+          '<span>' + icon('folder') + fmtS(it.size || t.size) + '</span>' +
+          (pct > 0 && !(p && p.done) ? '<span class="dl-pct">已播 ' + pct + '%</span>' : '') +
+          '<span class="dl-state' + (it.state === 'error' ? ' bad' : '') + '" data-rel="' + t.rel + '">' + dlStateText(it) + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<button class="dl-del" data-act="dl-remove" data-id="' + t.id + '" title="删除下载">' + icon('trash') + '</button>' +
+    '</li>';
+  }
+
+  /* 批量下载页：按 20 集分组，组可一键下，也可勾选后底部一次下 */
+  function viewDlMore(id) {
+    const a = L.album(id);
+    if (!a) return viewGridPage('专辑不存在', '可能已被移除，请重新扫描资源库', L.albums());
+    const map = dlMap();
+    const pend = L.albumTracks(id).filter(function (t) { return !map[t.rel]; });
+    const sel = state.dlMoreSel || {};
+    const picked = pend.filter(function (t) { return !!sel[t.id]; });
+    const need = picked.reduce(function (n, t) { return n + (t.size || 0); }, 0);
+    const free = (FM.android && FM.android.freeSpace) ? FM.android.freeSpace() : 0;
+    const allOn = pend.length > 0 && picked.length === pend.length;
+    const tight = need > 0 && free > 0 && need > free;
+
+    /* 20 集一组，组头带总大小和一键下载 */
+    const groups = [];
+    for (let i = 0; i < pend.length; i += 20) groups.push(pend.slice(i, i + 20));
+
+    const head = pend.length
+      ? '<div class="dl-filter">' +
+          '<span>未下载 ' + pend.length + ' 集</span>' +
+          '<button class="dl-chip' + (allOn ? ' on' : '') + '" data-act="dl-more-all">' + (allOn ? '取消全选' : '全选') + '</button>' +
+        '</div>' +
+        groups.map(dlGroup).join('')
+      : '<div class="empty"><div class="empty-art">' + icon('download') + '</div><h3>已经全下完了</h3>' +
+        '<p>这张专辑没有待下载的集。</p></div>';
+
+    const wrap = U.el('div');
+    wrap.innerHTML =
+      '<div class="dl-page-head"><button class="link-btn" data-act="back">← 返回</button>' +
+        '<span class="dl-page-title">批量下载</span><span class="dl-page-spare"></span></div>' +
+      (tight ? '<div class="dl-warn">手机空间可能不够，建议少选几集。</div>' : '') +
+      head +
+      (pend.length
+        ? '<div class="dl-bar dl-bar-col">' +
+            '<div class="dl-bar-row">' +
+              '<button class="dl-bar-btn" data-act="dl-mine">我的下载</button>' +
+              '<button class="dl-bar-btn primary" data-act="dl-more-go" data-id="' + a.id + '"' + (picked.length ? '' : ' disabled') + '>选集下载' +
+                (picked.length ? '（' + picked.length + '）' : '') + '</button>' +
+            '</div>' +
+            '<div class="dl-bar-note">预计占用 ' + fmtS(need) + ' 空间 / 剩余 ' + (free > 0 ? fmtS(free) : '未知') + ' 可用</div>' +
+          '</div>'
+        : '');
+    return wrap;
+  }
+
+  /* 一组（20 集）：组头 + 曲目行 */
+  function dlGroup(list) {
+    const size = list.reduce(function (n, t) { return n + (t.size || 0); }, 0);
+    const ids = list.map(function (t) { return t.id; }).join(',');
+    const sel = state.dlMoreSel || {};
+    const label = '第 ' + (list[0].order + 1) + ' 集 - 第 ' + (list[list.length - 1].order + 1) + ' 集';
+    return '<div class="dl-group">' +
+      '<div class="dl-group-head">' +
+        '<span class="dl-group-name">' + label + '</span>' +
+        '<span class="dl-group-size">' + icon('folder') + fmtS(size) + '</span>' +
+        '<button class="dl-group-go" data-act="dl-more-group" data-ids="' + ids + '" title="下载这一组">' + icon('download') + '</button>' +
+      '</div>' +
+      list.map(function (t) { return dlSelRow(t, !!sel[t.id], 'dl-more-toggle'); }).join('') +
+    '</div>';
+  }
+
+
+  /* 批量删除页：勾选 → 底部删除 */
+  function viewDlRemove(id) {
+    const a = L.album(id);
+    if (!a) return viewGridPage('专辑不存在', '可能已被移除，请重新扫描资源库', L.albums());
+    const map = dlMap();
+    const mine = L.albumTracks(id).filter(function (t) { return !!map[t.rel]; });
+    const sel = state.dlSel || {};
+    const size = mine.reduce(function (n, t) {
+      const it = map[t.rel];
+      return n + ((it && it.size) || t.size || 0);
+    }, 0);
+    const free = (FM.android && FM.android.freeSpace) ? FM.android.freeSpace() : 0;
+    const picked = mine.filter(function (t) { return !!sel[t.id]; });
+    const doneList = mine.filter(function (t) { const p = L.progressOf(t.id); return !!(p && p.done); });
+    const allOn = mine.length > 0 && picked.length === mine.length;
+    const doneOn = doneList.length > 0 && doneList.every(function (t) { return !!sel[t.id]; });
+    const wrap = U.el('div');
+    wrap.innerHTML =
+      '<div class="dl-page-head"><button class="link-btn" data-act="back">← 返回</button>' +
+        '<span class="dl-page-title">批量删除</span><span class="dl-page-spare"></span></div>' +
+      '<div class="dl-sum"><b>已占用 ' + fmtS(size) + '</b><span>/ 可用 ' + (free > 0 ? fmtS(free) : '未知') + '</span></div>' +
+      '<div class="dl-sel-head">' +
+        '<button class="dl-ck-item" data-act="dl-sel-all">' + ck(allOn) + '全选</button>' +
+        '<button class="dl-ck-item" data-act="dl-sel-done">' + ck(doneOn) + '选择已听完</button>' +
+      '</div>' +
+      '<div class="dl-tracks">' + mine.map(function (t) { return dlSelRow(t, !!sel[t.id]); }).join('') + '</div>' +
+      '<div class="dl-bar">' +
+        '<button class="dl-bar-btn" data-act="back">取消</button>' +
+        '<button class="dl-bar-btn danger" data-act="dl-del-selected" data-id="' + a.id + '"' + (picked.length ? '' : ' disabled') + '>删除' +
+          (picked.length ? '（' + picked.length + '）' : '') + '</button>' +
+      '</div>';
+    return wrap;
+  }
+
+  function ck(on) { return '<span class="dl-ck' + (on ? ' on' : '') + '">' + (on ? icon('check') : '') + '</span>'; }
+
+  function dlSelRow(t, on, act) {
+    const it = dlMap()[t.rel] || {};
+    const p = L.progressOf(t.id);
+    const dur = t.duration || (p && p.d) || 0;
+    const pct = p && dur ? Math.min(100, Math.round((p.p || 0) / dur * 100)) : 0;
+    const playing = P.current && P.current.id === t.id;
+    return '<li class="track dl-track dl-sel' + (playing ? ' playing' : '') + (on ? ' on' : '') + '" data-id="' + t.id + '" data-act="' + (act || 'dl-toggle') + '">' +
+      ck(on) +
+      '<span class="dl-idx">' + (t.order + 1) + '</span>' +
+      '<div class="dl-tk">' +
+        '<div class="dl-tk-title">' + esc(t.title) + '</div>' +
+        '<div class="dl-tk-meta">' +
+          '<span>' + icon('clock') + (dur ? fmtT(dur) : '—') + '</span>' +
+          '<span>' + icon('folder') + fmtS(it.size || t.size) + '</span>' +
+          (pct > 0 ? '<span class="dl-pct">已播 ' + pct + '%</span>' : '') +
+          '<span class="dl-state' + (it.state === 'error' ? ' bad' : '') + '" data-rel="' + t.rel + '">' + dlStateText(it) + '</span>' +
+        '</div>' +
+      '</div>' +
+    '</li>';
+  }
+
   function viewContinue() {
     const list = continueList(60);
     const wrap = U.el('div');
@@ -541,7 +969,7 @@
             '<span class="dot"></span><span>已听 ' + st.pct + '%</span>' +
             (done ? '<span class="dot"></span><span style="color:#7ef7d0">已听完</span>' : '') + '</div>' +
           '<div class="hero-actions">' +
-            '<button class="btn btn-primary" data-act="play-album" data-id="' + a.id + '">' + icon('play') + (st.started ? '继续播放' : '播放全部') + '</button>' +
+            '<button class="btn btn-primary" data-act="album-play" data-id="' + a.id + '">' + icon(albumPlayLabel(a).icon) + albumPlayLabel(a).text + '</button>' +
             '<button class="btn" data-act="queue-album" data-id="' + a.id + '">' + icon('list') + '加入队列</button>' +
             '<button class="btn' + (a.fav ? ' danger' : '') + '" data-act="fav" data-id="' + a.id + '">' + icon(a.fav ? 'heart-fill' : 'heart') + (a.fav ? '已收藏' : '收藏') + '</button>' +
             assignBtn +
@@ -611,7 +1039,7 @@
     return '<li class="track' + (playing ? ' playing' : '') + '" data-id="' + t.id + '" data-album="' + t.albumId + '">' +
       '<span class="tk-idx">' + (t.order + 1) + '</span>' +
       '<span class="tk-eq"><i></i><i></i><i></i></span>' +
-      '<div class="tk-main"><span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span>' + vid + flag + '</div>' +
+      '<div class="tk-main">' + dlFlag(t) + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span>' + vid + flag + '</div>' +
       prog +
       '<button class="tk-play" data-act="row-play" data-id="' + t.id + '" title="' + (playing && P.playing ? '暂停' : '播放这一集') + '">' +
         icon(playing && P.playing ? 'pause' : 'play') + '</button>' +
@@ -631,7 +1059,7 @@
       '<span class="tk-idx">' + (t.order + 1) + '</span>' +
       '<span class="tk-eq"><i></i><i></i><i></i></span>' +
       '<div class="tk-main" style="flex-direction:column;align-items:flex-start;gap:3px">' +
-        '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span>' +
+        '<span class="tk-title-row">' + dlFlag(t) + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span></span>' +
         '<span style="font-size:10.5px;color:var(--dim-2)">' + esc(sub) + '</span>' +
       '</div>' +
       (pct ? '<span class="tk-prog">' + pct + '%</span>' : '') +
@@ -696,6 +1124,47 @@
   }
 
   /* ── 列表工具 ── */
+  /* 专辑的续播点：这张专辑里最近一次没听完的那集；没有就从头开始 */
+  function resumeTrackOf(albumId) {
+    const all = FM.db.progress();
+    let best = null, bestAt = 0;
+    L.albumTracks(albumId).forEach(function (t) {
+      const p = all[t.id];
+      if (!p || p.done) return;
+      if (!p.p || p.p < 10) return;
+      if (p.d && p.p >= p.d - 12) return;
+      const at = p.t || 0;
+      if (at > bestAt) { bestAt = at; best = t; }
+    });
+    return best;
+  }
+
+  function playAlbumResume(albumId) {
+    const list = L.albumTracks(albumId);
+    if (!list.length) return;
+    const t = resumeTrackOf(albumId);
+    const i = t ? Math.max(0, list.findIndex(function (x) { return x.id === t.id; })) : 0;
+    P.setQueue(list, i, { autoplay: true });
+  }
+
+  /* 详情页主按钮：这张专辑正在放就显示暂停，否则按有没有听过显示继续播放 / 播放全部 */
+  function albumPlayLabel(a) {
+    /* 原生视频播放器有自己的控件，网页这边不给“暂停”态，避免点了没反应 */
+    const here = P.current && P.current.albumId === a.id && !P.nativeVideo;
+    const playing = here && P.playing;
+    const started = L.albumStat(a).started > 0;
+    return { icon: playing ? 'pause' : 'play', text: playing ? '暂停播放' : (here || started ? '继续播放' : '播放全部') };
+  }
+
+  function syncAlbumPlayBtn() {
+    const btn = document.querySelector('#view [data-act="album-play"]');
+    if (!btn) return;
+    const a = L.album(btn.dataset.id);
+    if (!a) return;
+    const l = albumPlayLabel(a);
+    btn.innerHTML = icon(l.icon) + l.text;
+  }
+
   function continueList(limit) {
     const all = FM.db.progress();
     const out = [];
@@ -748,10 +1217,10 @@
       actions = '<button class="btn btn-primary" data-act="retry" style="height:44px;padding:0 26px">' + icon('refresh') + '重试连接</button>' +
         '<button class="btn" data-act="app-settings" style="height:44px;padding:0 20px">' + icon('edit') + '服务器地址</button>';
     } else {
-      text = '选择一个存放有声书的文件夹，星海 FM 会自动扫描并整理成专辑。<br>音频不会上传、不会联网，关掉网络也能照常收听。';
+      text = '选择一个存放有声书的文件夹，星海 FM 会自动扫描并整理成专辑。';
       steps = '<span class="step"><b>1</b>选择文件夹</span>' +
         '<span class="step"><b>2</b>自动扫描</span>' +
-        '<span class="step"><b>3</b>分类、倍速、离线播放</span>';
+        '<span class="step"><b>3</b>分类、倍速、播放</span>';
       actions = '<button class="btn btn-primary" data-act="scan" style="height:44px;padding:0 26px">' + icon('folder') + '添加资源库</button>';
     }
     v.innerHTML = '<div class="welcome">' +
@@ -915,13 +1384,127 @@
       const act = actEl.dataset.act;
       const id = actEl.dataset.id;
       switch (act) {
-        case 'play-album': P.playAlbum(id); break;
+        case 'album-play': {
+          const a = L.album(id);
+          if (!a) break;
+          if (P.current && P.current.albumId === id && !P.nativeVideo) P.toggle();
+          else playAlbumResume(id);
+          break;
+        }
+        case 'play-album': {
+          /* 下载管理里点卡片播放：进下载详情页，队列只放已下载的 */
+          if (state.view === 'downloads' || state.view === 'dlAlbum') { go('#/downloads/' + id); playDlTracks(id); break; }
+          P.playAlbum(id); break;
+        }
+        case 'open-dl-album': if (id) go('#/downloads/' + id); break;
+        case 'dl-menu': dlAlbumMenu(id, actEl); break;
+        case 'play-dl': playDlTracks(id); break;
+        case 'row-play-dl': {
+          const t = L.track(id);
+          if (!t) break;
+          if (P.current && P.current.id === id && P.media.src) P.toggle();
+          else playDlTracks(t.albumId, id);
+          break;
+        }
+        case 'dl-wait': toast('这集还在下载，下完才能播', 'warn'); break;
+        case 'dl-batch': if (id) { state.dlSel = {}; go('#/downloads/' + id + '/remove'); } break;
+        case 'dl-more-page': if (id) { state.dlMoreSel = {}; go('#/downloads/' + id + '/more'); } break;
+        case 'dl-mine': go('#/downloads'); break;
+        case 'dl-more-group': {
+          const list = (actEl.dataset.ids || '').split(',').map(function (x) { return L.track(x); })
+            .filter(function (t) { return t && !dlMap()[t.rel]; });
+          if (!list.length) { toast('这一组已经下过了', 'warn'); break; }
+          if (!(FM.android && FM.android.download && FM.android.download(list))) { toast('没排上队，稍后再试', 'warn'); break; }
+          break;
+        }
+        case 'dl-more-toggle': {
+          if (!state.dlMoreSel) state.dlMoreSel = {};
+          if (state.dlMoreSel[id]) delete state.dlMoreSel[id]; else state.dlMoreSel[id] = true;
+          renderMain();
+          break;
+        }
+        case 'dl-more-all': {
+          const sel = state.dlMoreSel || (state.dlMoreSel = {});
+          const pend = L.albumTracks(state.albumId).filter(function (t) { return !dlMap()[t.rel]; });
+          const all = pend.length > 0 && pend.every(function (t) { return !!sel[t.id]; });
+          pend.forEach(function (t) { if (all) delete sel[t.id]; else sel[t.id] = true; });
+          renderMain();
+          break;
+        }
+        case 'dl-more-go': {
+          const sel = state.dlMoreSel || {};
+          const picked = L.albumTracks(id).filter(function (t) { return !!sel[t.id] && !dlMap()[t.rel]; });
+          if (!picked.length) break;
+          if (!(FM.android && FM.android.download && FM.android.download(picked))) { toast('没排上队，稍后再试', 'warn'); break; }
+          /* 入队结果（含移动网络确认）由原生 toast，这里只负责回列表 */
+          state.dlMoreSel = {};
+          go('#/downloads/' + id);
+          break;
+        }
+        case 'dl-toggle': {
+          if (!state.dlSel) state.dlSel = {};
+          if (state.dlSel[id]) delete state.dlSel[id]; else state.dlSel[id] = true;
+          renderMain();
+          break;
+        }
+        case 'dl-sel-all':
+        case 'dl-sel-done': {
+          const sel = state.dlSel || (state.dlSel = {});
+          const pool = dlAll(state.albumId);
+          const keep = act === 'dl-sel-done'
+            ? pool.filter(function (t) { const p = L.progressOf(t.id); return !!(p && p.done); })
+            : pool;
+          const all = keep.length > 0 && keep.every(function (t) { return !!sel[t.id]; });
+          keep.forEach(function (t) { if (all) delete sel[t.id]; else sel[t.id] = true; });
+          renderMain();
+          break;
+        }
+        case 'dl-del-selected': {
+          const sel = state.dlSel || {};
+          const rels = dlAll(state.albumId).filter(function (t) { return !!sel[t.id]; }).map(function (t) { return t.rel; });
+          if (!rels.length) break;
+          confirmModal({
+            title: '删除 ' + rels.length + ' 集下载？',
+            message: '这些文件会从手机里删掉。',
+            note: '想再听可以重新下载，播放记录不受影响。',
+            danger: true, okText: '删除'
+          }).then(function (ok) {
+            if (!ok) return;
+            if (!(FM.android && FM.android.canRemoveMany)) { toast('App 版本太旧，更新 APK 后才能批量删除', 'warn'); return; }
+            if (!FM.android.removeDownloads(rels)) { toast('删除失败，重试一次', 'warn'); return; }
+            state.dlSel = {};
+            toast('已删除 ' + rels.length + ' 集');
+            go('#/downloads/' + id);
+          });
+          break;
+        }
+        case 'dl-remove': {
+          const t = L.track(id);
+          if (!t) break;
+          confirmModal({
+            title: '删除下载？',
+            message: '「' + t.title + '」会从手机里删掉。',
+            note: '想再听可以重新下载，播放记录不受影响。',
+            danger: true, okText: '删除'
+          }).then(function (ok) {
+            if (!ok) return;
+            if (!(FM.android && FM.android.canRemove)) { toast('App 版本太旧，更新 APK 后才能删除', 'warn'); return; }
+            if (!FM.android.removeDownload(t.rel)) {
+              toast('删除失败，去「管理 / 删除」里试试', 'warn');
+              return;
+            }
+            toast('已删除下载');
+            downloadsChanged();
+          });
+          break;
+        }
         case 'queue-album': { const list = L.albumTracks(id); P.addToQueue(list); toast('已加入播放队列（' + list.length + ' 集）'); break; }
         case 'fav': toggleFavorite(id); break;
         case 'assign': if (!assignBlocked()) assignModal(id); break;
         case 'more-album': albumMenu(id, actEl); break;
         case 'more-track': trackMenu(id, actEl); break;
         case 'edit-cat': if (!assignBlocked()) editCat(id); break;
+        case 'open-downloads': if (FM.android) FM.android.openDownloads(); break;
         case 'back': history.back(); break;
         case 'resume': { const t = L.track(id); if (t) P.playTrack(t); break; }
         case 'open-album': if (id) go('#/album/' + id); break;
@@ -955,7 +1538,7 @@
       return;
     }
     const card = e.target.closest('.card');
-    if (card) { go('#/album/' + card.dataset.id); return; }
+    if (card) { go((state.view === 'downloads' ? '#/downloads/' : '#/album/') + card.dataset.id); return; }
     const tr = e.target.closest('.track');
     if (tr) {
       const t = L.track(tr.dataset.id);
@@ -1004,7 +1587,7 @@
   function albumMenu(id, anchor) {
     const a = L.album(id);
     if (!a) return;
-    openMenu(anchor, [
+    const items = [
       { label: '播放全部', icon: 'play', onClick: () => P.playAlbum(id) },
       { label: '加入队列', icon: 'list', onClick: () => { P.addToQueue(L.albumTracks(id)); toast('已加入播放队列'); } },
       { sep: true },
@@ -1014,10 +1597,14 @@
       { label: '重命名…', icon: 'edit', onClick: () => { if (!readonlyBlocked()) renameAlbum(id); } },
       { sep: true },
       { label: a.hidden ? '取消隐藏' : '隐藏专辑', icon: 'close', danger: !a.hidden, onClick: () => { if (readonlyBlocked()) return; const next = !a.hidden; L.setMeta(id, { hidden: next }); toast(next ? '已隐藏，可在首页底部找回' : '已取消隐藏'); renderAll(); } }
-    ].concat(window.fmNative && window.fmNative.isDesktop ? [
-      { sep: true },
-      { label: '在文件夹中显示', icon: 'folder', onClick: () => { const t = L.albumTracks(id)[0]; nativeReveal(t && t.rel); } }
-    ] : []));
+    ];
+    /* 紧跟在「加入队列」后面 */
+    if (canDownload()) items.splice(2, 0, { label: '下载全部', icon: 'download', onClick: () => downloadTracks(L.albumTracks(id)) });
+    if (window.fmNative && window.fmNative.isDesktop) {
+      items.push({ sep: true },
+        { label: '在文件夹中显示', icon: 'folder', onClick: () => { const t = L.albumTracks(id)[0]; nativeReveal(t && t.rel); } });
+    }
+    openMenu(anchor, items);
   }
 
   function nativeReveal(rel) {
@@ -1041,6 +1628,7 @@
         }
       }
     ];
+    if (canDownload()) items.splice(2, 0, { label: '下载', icon: 'download', onClick: () => downloadTracks([t]) });
     if (window.fmNative && window.fmNative.isDesktop) {
       items.push({ sep: true });
       items.push({ label: '在文件夹中显示', icon: 'folder', onClick: () => nativeReveal(t.rel) });
@@ -1431,17 +2019,19 @@
     refs.shLoop.innerHTML = icon(P.loopIcon) + '<span>' + P.loopLabel + '</span>';
   }
 
-  function paintSleep(ms) {
+  function paintSleep(left, mode) {
     const label = refs.shSleep.querySelector('span');
-    if (!ms) { refs.shSleep.classList.remove('on'); if (label) label.textContent = '定时关闭'; return; }
+    if (!mode) { refs.shSleep.classList.remove('on'); if (label) label.textContent = '定时关闭'; return; }
     refs.shSleep.classList.add('on');
-    const min = Math.ceil(ms / 60000);
+    if (mode === 'chapter') { if (label) label.textContent = '本集播完暂停'; return; }
+    const min = Math.max(1, Math.ceil((left || 0) / 60000));
     if (label) label.textContent = min + ' 分钟后关闭';
   }
 
   function bindPlayer() {
     P.on('track', function (t, opt) {
       paintTrack(t);
+      syncAlbumPlayBtn();
       /* 用户主动点开视频集才展开播放页；启动恢复上次进度不弹。
          视频直接看画面：不自动弹选集列表，若之前开着（从音频队列过来）则关掉。 */
       if (t.kind === 'video' && !(opt && opt.restored)) {
@@ -1451,7 +2041,7 @@
       }
     });
     P.on('kind', applyKind);
-    P.on('state', paintState);
+    P.on('state', function (playing) { paintState(playing); syncAlbumPlayBtn(); });
     P.on('time', paintTime);
     P.on('rate', paintRate);
     P.on('volume', paintVolume);
@@ -1459,9 +2049,11 @@
     P.on('sleep', paintSleep);
     P.on('error', function (e) { toast(e.message || '播放失败', 'warn'); });
     P.on('sleepend', function () { toast('定时关闭已生效'); });
+    P.on('rewind', function (sec) { toast('已回退 ' + Math.round(sec) + ' 秒'); });
     P.on('queue', function () { if (queueOpen) renderQueue(); });
     /* 切资源库时播放器被清空：播放条收起、播放页关掉 */
     P.on('stop', function () {
+      syncAlbumPlayBtn();
       if (refs.sheet.classList.contains('open')) closeSheet();
       setCinema(false);
       refs.playerbar.hidden = true;
@@ -1486,18 +2078,18 @@
     refs.btnVol.addEventListener('click', function () { P.toggleMute(); });
     refs.btnLoop.addEventListener('click', function () { P.cycleLoop(); toast('播放模式：' + P.loopLabel); });
 
-    /* 播放条左侧整块（封面+标题+副标题）点击进专辑详情；收藏键除外 */
+    /* 播放条左侧整块（封面+标题+副标题）点击展开播放详情页；收藏键除外 */
     const pbLeft = refs.playerbar.querySelector('.pb-left');
     if (pbLeft) {
       pbLeft.addEventListener('click', function (e) {
         if (e.target.closest('#pbFav')) return;
-        const t = P.current;
-        if (t && t.albumId) go('#/album/' + t.albumId);
+        if (P.current) openSheet();
       });
     }
 
     refs.pbFav.addEventListener('click', toggleFavOfCurrent);
     refs.shFav.addEventListener('click', toggleFavOfCurrent);
+    refs.shLoop.addEventListener('click', function () { P.cycleLoop(); toast('播放模式：' + P.loopLabel); });
 
     refs.btnExpand.addEventListener('click', openSheet);
     refs.btnCollapse.addEventListener('click', closeSheet);
@@ -1560,15 +2152,32 @@
 
   function sleepMenu(anchor) {
     const opts = [15, 30, 45, 60, 90];
-    openMenu(anchor, opts.map(function (m) {
+    const auto = P.autoSleep || {};
+    const items = opts.map(function (m) {
       return {
         label: m + ' 分钟后暂停', icon: 'moon',
         onClick: function () { P.setSleep(m); toast('将在 ' + m + ' 分钟后暂停'); }
       };
-    }).concat([
-      { sep: true },
-      { label: '关闭定时', icon: 'close', onClick: function () { P.setSleep(0); toast('已关闭定时'); } }
-    ]));
+    });
+    items.push({ sep: true });
+    items.push({
+      label: '本集播完暂停', icon: 'moon',
+      cls: P.sleepMode === 'chapter' ? 'active' : '',
+      right: P.sleepMode === 'chapter' ? 'check' : '',
+      onClick: function () { P.setSleepChapter(); toast('本集播完后暂停'); }
+    });
+    items.push({
+      label: (auto.on ? '关闭' : '开启') + '每晚 ' + (auto.from || '22:00') + '–' + (auto.to || '07:00') + ' 自动定时',
+      icon: 'clock',
+      onClick: function () {
+        const on = !auto.on;
+        P.setAutoSleep(on);
+        toast(on ? '夜间时段播放时自动定时 30 分钟' : '已关闭自动定时');
+      }
+    });
+    items.push({ sep: true });
+    items.push({ label: '关闭定时', icon: 'close', onClick: function () { P.setSleep(0); toast('已关闭定时'); } });
+    openMenu(anchor, items);
   }
 
   function openSheet() {
@@ -2305,7 +2914,7 @@
   }
 
   FM.ui = {
-    init, renderAll, paintTrack, syncMode,
+    init, renderAll, paintTrack, syncMode, downloadsChanged,
     autoRescan, runScan, enterLib, switchLib, addLibFlow,
     openLibMenu, openLibDrawer, renderStat, renderWelcome, renderBrokenLib,
     toast, openSheet, closeSheet,
