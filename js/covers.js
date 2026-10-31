@@ -155,14 +155,50 @@
   }
 
   /* ── 手动编辑封面：搜索候选 / 保存 / 删除，都在用户点「保存」后才落盘 ── */
+
+  /* 站内搜索很宽松：后端若是旧版（原样返回前几条），客户端再按关键词兜一层 */
+  function keyOf(s) {
+    const m = String(s || '').toLowerCase().match(/[\p{L}\p{N}]+/gu);
+    return m ? m.join('') : '';
+  }
+  function grams(s) {
+    const set = new Set();
+    for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
+    if (s.length === 1) set.add(s);
+    return set;
+  }
+  function titleScore(kw, title) {
+    const a = keyOf(kw), b = keyOf(title);
+    if (!a || !b) return 0;
+    if (b.indexOf(a) >= 0) return 0.95;
+    /* 关键词里某个词（>=2 字、非纯数字）整段出现在标题里，也算匹配 */
+    const tokens = String(kw || '').split(/[\s：:，,、·\-_/]+/)
+      .map(keyOf).filter(function (t) { return t.length >= 2 && /[^\d]/.test(t); });
+    for (let i = 0; i < tokens.length; i++) if (b.indexOf(tokens[i]) >= 0) return 0.85;
+    const A = grams(a), B = grams(b);
+    if (!A.size || !B.size) return 0;
+    let hit = 0;
+    A.forEach(function (x) { if (B.has(x)) hit++; });
+    return (2 * hit) / (A.size + B.size);
+  }
+  function filterCandidates(list, kw) {
+    if (!list || !list.length) return [];
+    /* 新版后端已经带 score 并筛过，直接用；旧版没 score，客户端自己筛 */
+    if (list.some(function (c) { return typeof c.score === 'number'; })) return list.slice(0, 4);
+    const scored = list.map(function (c) { return { c: c, s: titleScore(kw, c.title) }; })
+      .filter(function (x) { return x.s >= 0.5; });
+    scored.sort(function (x, y) { return y.s - x.s; });
+    return scored.slice(0, 4).map(function (x) { return x.c; });
+  }
+
   async function search(title) {
     try {
       if (FM.fs.native && window.fmNative && window.fmNative.searchCover) {
-        return (await window.fmNative.searchCover(title)) || [];
+        return filterCandidates((await window.fmNative.searchCover(title)) || [], title);
       }
       if (FM.fs.server) {
         const r = await FM.fs.apiFetch('/api/covers/search?q=' + encodeURIComponent(title || ''));
-        return r && r.ok ? (await r.json()) : [];
+        return filterCandidates(r && r.ok ? (await r.json()) : [], title);
       }
     } catch (e) { console.warn('[covers] 搜索失败', e); }
     return [];

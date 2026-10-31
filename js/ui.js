@@ -1591,6 +1591,7 @@
        无权限的项直接不加入菜单（而非显示后点击才提示）。 */
     const canAssign = FM.fs.native && !FM.fs.server;   // 归类…
     const canModify = !FM.fs.server;                    // 置顶 / 重命名 / 隐藏
+    const canEditCover = FM.fs.native || FM.fs.server;  // 编辑封面（本地库 / 自有服务端都可写 .fm-covers/）
     const items = [
       { label: '播放全部', icon: 'play', onClick: () => P.playAlbum(id) },
       { label: '加入队列', icon: 'list', onClick: () => { P.addToQueue(L.albumTracks(id)); toast('已加入播放队列'); } }
@@ -1601,6 +1602,7 @@
     if (canModify) items.push({ label: a.pinned ? '取消置顶' : '置顶专辑', icon: 'up', onClick: () => { if (readonlyBlocked()) return; L.setMeta(id, { pinned: !a.pinned }); renderAll(); } });
     if (canAssign) items.push({ label: '归类…', icon: 'folder', onClick: () => { if (!assignBlocked()) assignModal(id); } });
     if (canModify) items.push({ label: '重命名…', icon: 'edit', onClick: () => { if (!readonlyBlocked()) renameAlbum(id); } });
+    if (canEditCover) items.push({ label: '编辑封面…', icon: 'image', onClick: () => coverEditModal(id) });
     items.push({ sep: true });
     if (canModify) items.push({ label: a.hidden ? '取消隐藏' : '隐藏专辑', icon: 'close', danger: !a.hidden, onClick: () => { if (readonlyBlocked()) return; const next = !a.hidden; L.setMeta(id, { hidden: next }); toast(next ? '已隐藏，可在首页底部找回' : '已取消隐藏'); renderAll(); } });
     if (window.fmNative && window.fmNative.isDesktop) {
@@ -1645,6 +1647,147 @@
       items.push({ label: '在文件夹中显示', icon: 'folder', onClick: () => nativeReveal(t.rel) });
     }
     openMenu(anchor, items);
+  }
+
+  /* ── 编辑封面：上传 / 自动获取 / 删除，点「保存」才写进 .fm-covers/ ── */
+  function coverEditModal(id) {
+    const a = L.album(id);
+    if (!a) return;
+    if (!(FM.fs.native || FM.fs.server)) { toast('本地文件夹模式不支持改封面', 'warn'); return; }
+
+    let pending = null;      // { kind:'upload', dataUrl } 或 { kind:'xmly', url, albumId, title }
+    let deleteMode = false;
+    let delBtn = null, saveBtn = null;
+
+    const preview = U.el('img', { class: 'cover-img', style: { width: '116px', height: '116px', objectFit: 'cover', borderRadius: '12px', display: a.cover ? 'block' : 'none' } });
+    if (a.cover) preview.src = a.cover;
+    const previewBox = U.el('div', { style: { width: '116px', height: '116px', flex: 'none', borderRadius: '12px', overflow: 'hidden', background: 'rgba(255,255,255,.06)' } }, [preview]);
+    const candsBox = U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } });
+    const hint = U.el('p', { style: { fontSize: '11px', color: 'var(--dim-2)', margin: '10px 0 0' }, text: '点「保存」才会写入资源库的 .fm-covers/，不会自动生效。' });
+
+    const fileInput = U.el('input', { type: 'file', accept: 'image/*', style: { display: 'none' } });
+    fileInput.addEventListener('change', function () {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = function () {
+        pending = { kind: 'upload', dataUrl: String(reader.result) };
+        deleteMode = false;
+        preview.src = pending.dataUrl;
+        preview.style.display = 'block';
+        updateActions();
+      };
+      reader.readAsDataURL(f);
+    });
+
+    const uploadBtn = U.el('button', { class: 'btn btn-ghost', text: '上传本地图片', onclick: function () { fileInput.click(); } });
+    /* 关键词输入框：默认专辑名，可改成更准的搜索词 */
+    const kwInput = U.el('input', { class: 'input', type: 'text', placeholder: '搜索关键词（默认专辑名）', value: a.title || '' });
+    const autoBtn = U.el('button', { class: 'btn btn-ghost', text: '自动获取' });
+    async function searchCover() {
+      autoBtn.disabled = true;
+      autoBtn.textContent = '搜索中…';
+      const kw = (kwInput.value || '').trim() || a.title;
+      let list = [];
+      try { list = await FM.covers.search(kw); } catch (e) {}
+      autoBtn.disabled = false;
+      autoBtn.textContent = '自动获取';
+      renderCands(list || []);
+      if (!list || !list.length) toast('没搜到匹配的候选封面，换个关键词试试', 'warn');
+    }
+    autoBtn.addEventListener('click', searchCover);
+    kwInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); searchCover(); }
+    });
+
+    function renderCands(list) {
+      candsBox.innerHTML = '';
+      list.forEach(function (c) {
+        /* 缩略图下面带标题，一眼能看出这张图对应哪张专辑 */
+        const cell = U.el('div', { style: { width: '64px', cursor: 'pointer' } }, [
+          U.el('div', { style: { width: '64px', height: '64px', borderRadius: '8px', overflow: 'hidden' } }, [
+            U.el('img', { src: c.url, alt: '', title: c.title, style: { width: '100%', height: '100%', objectFit: 'cover' } })
+          ]),
+          U.el('div', {
+            title: c.title,
+            style: { marginTop: '3px', fontSize: '9px', lineHeight: '1.2', color: 'var(--dim-2)', maxWidth: '64px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+            text: c.title || ''
+          })
+        ]);
+        cell.title = c.title || '';
+        cell.addEventListener('click', function () {
+          pending = { kind: 'xmly', url: c.url, albumId: c.id, title: c.title };
+          deleteMode = false;
+          preview.src = c.url;
+          preview.style.display = 'block';
+          updateActions();
+        });
+        candsBox.appendChild(cell);
+      });
+    }
+
+    const body = U.el('div', { class: 'cover-edit' }, [
+      U.el('div', { style: { display: 'flex', gap: '12px', alignItems: 'flex-start' } }, [
+        previewBox,
+        U.el('div', { style: { flex: '1', display: 'flex', flexDirection: 'column', gap: '10px' } }, [
+          kwInput,
+          U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [uploadBtn, autoBtn]),
+          candsBox
+        ])
+      ]),
+      hint
+    ]);
+
+    function updateActions() {
+      if (!delBtn) return;
+      delBtn.textContent = deleteMode ? '取消删除' : '删除封面';
+      delBtn.classList.toggle('danger', deleteMode);
+      saveBtn.disabled = !pending && !deleteMode;
+    }
+
+    async function doSave() {
+      const res = await FM.covers.save(a, pending);
+      if (res && res.ok) { toast('封面已保存'); renderAll(); if (P.current) paintTrack(P.current); }
+      else toast('保存失败：' + (res && res.reason ? res.reason : '未知原因'), 'warn');
+    }
+    async function doDelete() {
+      const res = await FM.covers.remove(a);
+      if (res && res.ok) { toast('封面已删除'); renderAll(); if (P.current) paintTrack(P.current); }
+      else toast('删除失败：' + (res && res.reason ? res.reason : '未知原因'), 'warn');
+    }
+
+    const m = openModal({
+      title: '编辑封面',
+      body: body,
+      actions: [
+        {
+          label: '删除封面', cls: 'btn-ghost', onClick: function () {
+            deleteMode = !deleteMode;
+            if (deleteMode) {
+              pending = null;
+              preview.src = a.cover || '';
+              preview.style.display = a.cover ? 'block' : 'none';
+            }
+            updateActions();
+            return false;
+          }
+        },
+        { label: '取消', cls: 'btn-ghost' },
+        {
+          label: '保存', cls: 'btn-primary', onClick: function () {
+            if (deleteMode) { doDelete(); return; }
+            if (pending) { doSave(); return; }
+            toast('先选一张封面，或点「删除封面」', 'warn');
+            return false;
+          }
+        }
+      ],
+      onClose: function () { fileInput.value = ''; }
+    });
+
+    const btns = m.box.querySelectorAll('.modal-foot button');
+    delBtn = btns[0]; saveBtn = btns[2];
+    updateActions();
   }
 
   function renameAlbum(id) {

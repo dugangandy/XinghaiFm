@@ -761,9 +761,7 @@ const server = http.createServer(async function (req, res) {
       const data = await scanFolder(root);
       const a = userActiveLib(uid);
       data.libId = a ? a.id : null;
-      /* 新专辑的封面在后台补，接口先返回；页面轮询 /api/covers 拿结果 */
-      data.coversPending = await covers.pendingOf(root);
-      if (data.coversPending) covers.auto(root);
+      /* 封面不再扫描时自动拉取：交给用户在网页「编辑封面」里手动上传/抓取/删除 */
       return json(res, data);
     } catch (e) { return send(res, 500, e.message); }
   }
@@ -782,6 +780,40 @@ const server = http.createServer(async function (req, res) {
       return send(res, 200, buf, { 'content-type': MIME[path.extname(file).toLowerCase()] || 'image/jpeg', 'cache-control': 'max-age=86400' });
     } catch (e) { return send(res, 404, 'not found'); }
   }
+  /* 手动编辑封面：搜索候选 / 保存 / 删除（前端编辑封面弹窗调用，点保存才落到磁盘） */
+  if (p === '/api/covers/search') {
+    const root = userActiveRoot(uid);
+    if (!root) return send(res, 404, 'server mode off');
+    try { return json(res, await covers.searchCandidates(u.searchParams.get('q') || '', 4)); }
+    catch (e) { return json(res, []); }
+  }
+  if (p === '/api/cover' && req.method === 'POST') {
+    const root = userActiveRoot(uid);
+    if (!root) return send(res, 404, 'server mode off');
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let payload;
+    try { payload = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    if (!payload || !payload.dirName) return send(res, 400, 'missing dirName');
+    try {
+      const entry = await covers.saveCoverForDir(root, payload.dirName, payload.payload || {});
+      return json(res, { ok: true, entry: entry });
+    } catch (e) { return send(res, 500, e.message); }
+  }
+  if (p === '/api/cover' && (req.method === 'DELETE' || (req.method === 'POST' && /delete/.test(p)))) {
+    const root = userActiveRoot(uid);
+    if (!root) return send(res, 404, 'server mode off');
+    let dir = u.searchParams.get('dir') || '';
+    if (!dir && req.method === 'POST') {
+      let b2 = '';
+      for await (const chunk of req) b2 += chunk;
+      try { dir = (JSON.parse(b2) || {}).dirName || ''; } catch (e) {}
+    }
+    if (!dir) return send(res, 400, 'missing dir');
+    await covers.removeCover(root, dir);
+    return json(res, { ok: true });
+  }
+
   if (p.indexOf('/api/media/') === 0) {
     const root = userActiveRoot(uid);
     if (!root) return send(res, 404, 'server mode off');

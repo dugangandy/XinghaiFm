@@ -130,7 +130,6 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .sheet-top{grid-area:top}
   .sheet-stage{grid-area:stage;margin:0;flex:none}
   .sheet-cover{width:min(46vh,230px)}
-  .sheet-disc{width:min(46vh,230px)}
   .sheet-meta{grid-area:meta;text-align:left}
   .sheet-scrub-row{grid-area:scrub}
   .sheet-controls{grid-area:controls;justify-content:flex-start}

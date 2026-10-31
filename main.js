@@ -413,17 +413,34 @@ function bindIpc() {
     const lib = activeLib();
     if (!lib) throw new Error('尚未选择资源库');
     if (!fs.existsSync(lib.path)) throw new Error('资源库目录不存在：' + lib.name);
-    const res = await scanFolder(lib.path);
-    res.libId = lib.id;
-    /* 有新专辑就在后台去喜马拉雅补封面，扫完先返回，界面不用等 */
-    res.coversPending = await covers.pendingOf(lib.path);
-    if (res.coversPending) {
-      covers.auto(lib.path).then(function (r) {
-        if (!r || !r.ok) return;
-        if (win && !win.isDestroyed()) win.webContents.send('fm:covers', { libId: lib.id, added: r.ok });
-      });
-    }
-    return res;
+    /* 封面不再扫描时自动拉取：交给用户在网页里手动编辑（上传/抓取/删除）。
+       扫描结果里不再带 coversPending，界面不会去轮询不存在的后台抓取。 */
+    return await scanFolder(lib.path);
+  });
+
+  /* ── 网页手动编辑封面：搜索候选 / 保存 / 删除，三者都走 .fm-covers/ ── */
+  ipcMain.handle('fm:searchCover', async function (e, title) {
+    const lib = activeLib();
+    if (!lib) return [];
+    try { return await covers.searchCandidates(title, 4); } catch (err) { return []; }
+  });
+  ipcMain.handle('fm:saveCover', async function (e, dirName, payload) {
+    const lib = activeLib();
+    if (!lib || !dirName) return null;
+    try {
+      const entry = await covers.saveCoverForDir(lib.path, dirName, payload || {});
+      if (win && !win.isDestroyed()) win.webContents.send('fm:covers', { libId: lib.id, added: 1 });
+      return entry;
+    } catch (err) { console.warn('[cover] 保存失败', err.message); return null; }
+  });
+  ipcMain.handle('fm:deleteCover', async function (e, dirName) {
+    const lib = activeLib();
+    if (!lib || !dirName) return false;
+    try {
+      await covers.removeCover(lib.path, dirName);
+      if (win && !win.isDestroyed()) win.webContents.send('fm:covers', { libId: lib.id, added: 0 });
+      return true;
+    } catch (err) { return false; }
   });
 
   ipcMain.handle('fm:covers', function () {

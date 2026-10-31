@@ -475,10 +475,14 @@ async function searchCandidates(title, maxN) {
   for (const q of queriesOf(title || '')) {
     cands = cands.concat(await searchXm(q));
     cands = Array.from(new Map(cands.map(c => [c.id, c])).values());
-    if (cands.length >= 12) break;
+    if (cands.length >= 20) break;
     await sleep(500);
   }
   cands = cands.filter(c => c.cover);
+  /* 站内搜索很宽松：不做相似度过滤的话，搜「全链路压测」也会返回「毛选」之类的热门专辑 */
+  cands.forEach(c => { c.score = scoreOf(title || '', c.title); });
+  cands = cands.filter(c => c.score >= MIN_SCORE);
+  cands.sort((a, b) => b.score - a.score || (b.playCount || 0) - (a.playCount || 0));
   const seen = new Set();
   const out = [];
   for (const c of cands) {
@@ -486,7 +490,7 @@ async function searchCandidates(title, maxN) {
     seen.add(c.id);
     const clean = c.cover.replace(/!.*$/, '');
     const url = /xmcdn\.com/.test(clean) ? clean + '!op_type=3&columns=600&rows=600' : clean;
-    out.push({ id: c.id, title: c.title, url: url });
+    out.push({ id: c.id, title: c.title, url: url, score: +c.score.toFixed(3) });
     if (out.length >= n) break;
   }
   return out;
