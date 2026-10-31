@@ -30,9 +30,9 @@ object DownloadQueue {
         Dl.init(act)
         if (!Dl.isMetered(act)) { push(act, batch, base, onQueued); return }
         AlertDialog.Builder(act)
-            .setTitle("当前是移动网络")
-            .setMessage("下载 " + batch.size + " 集会消耗流量，继续？")
-            .setPositiveButton("继续") { _, _ -> push(act, batch, base, onQueued) }
+            .setTitle("当前连接的是数据网络")
+            .setMessage("下载 " + batch.size + " 集会消耗流量，确认下载吗？")
+            .setPositiveButton("继续下载") { _, _ -> push(act, batch, base, onQueued) }
             .setNegativeButton("取消", null)
             .show()
     }

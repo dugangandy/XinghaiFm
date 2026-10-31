@@ -197,7 +197,11 @@ class LoginActivity : Activity() {
             }
         } catch (e: Exception) {
             retryToken = token
-            ui.post { setBusy(false); loginBtn.text = "重试连接"; err("连不上服务器，点『重试连接』") }
+            /* 有登录态却连不上：直接进主页（会显示离线页），再见「已下载」进原生播放，
+               已下载音频/视频走 127.0.0.1 本机文件，没有网络也能播 */
+            ui.post {
+                onLoginOk(base, token, prefs().getString("uid", "").orEmpty(), prefs().getString("username", "").orEmpty())
+            }
         }
         }.start()
     }

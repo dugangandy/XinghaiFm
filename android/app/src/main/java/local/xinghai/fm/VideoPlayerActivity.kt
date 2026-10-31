@@ -830,6 +830,12 @@ class VideoPlayerActivity : Activity() {
 
     private fun mediaUrl(rel: String): String {
         if (rel.startsWith("http://") || rel.startsWith("https://")) return rel
+        /* 已下载的曲目优先走本机文件（127.0.0.1 小服务），不直连服务器、不耗流量 */
+        val local = runCatching {
+            Dl.init(this)
+            if (Dl.isDownloaded(rel)) Dl.localUrl(rel) else ""
+        }.getOrDefault("")
+        if (local.isNotEmpty()) return local
         val enc = rel.split("/").joinToString("/") { Uri.encode(it) }
         return base + "/api/media/" + enc
     }

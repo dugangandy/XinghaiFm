@@ -759,6 +759,11 @@
   }
 
   async function src(rel) {
+    /* 安卓壳：已下载的曲目优先播本机 127.0.0.1 文件，不直连服务器、不耗流量 */
+    if (APP && FM.android && FM.android.downloaded && FM.android.downloaded(rel)) {
+      const local = FM.android.localUrl ? FM.android.localUrl(rel) : '';
+      if (local) return { url: local, revoke: null };
+    }
     if (mode === 'server') return { url: await signedUrl('/api/media/' + rel.split('/').map(encodeURIComponent).join('/')), revoke: null };
     if (mode === 'desktop') return { url: mediaUrl(rel), revoke: null };
     const file = await getFile(rel);

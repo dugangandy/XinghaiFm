@@ -12,12 +12,14 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
+import android.widget.Toast
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -66,6 +68,13 @@ object Dl {
     private val inflight = ConcurrentHashMap<String, Item>()    // rel -> 正在下载的条目（还没进索引）
     private val pending = ConcurrentHashMap<String, Item>()     // rel -> 排队中还没开始的条目
     private val failed = ConcurrentHashMap<String, Item>()      // rel -> 下载失败的条目（可重试）
+    private val wifiPaused = ConcurrentHashMap<String, Item>()   // rel -> 断 WIFI 暂停、等 WIFI 回来再续的条目
+    private val pausedByWifi = java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())  // rel -> 正因断网中止，catch 里别再当失败
+    private val startedOnWifi = ConcurrentHashMap<String, Boolean>()   // rel -> 入队时是否在 WIFI 上
+
+    @Volatile private var netRegistered = false
+    @Volatile private var onWifi = false
+    private var netCallback: ConnectivityManager.NetworkCallback? = null
 
     private var appCtx: Context? = null
     private var indexReady = false
@@ -106,6 +115,7 @@ object Dl {
             }
         }
         if (port == 0) startServer()
+        registerNetwork()
     }
 
     private fun root(): File = File(appCtx!!.filesDir, DIR)
@@ -201,6 +211,86 @@ object Dl {
             !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
             !caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
     } catch (e: Exception) { false }
+
+    /* 当前是否处在“可以随便下”的网络：WIFI / 以太网 / 任何非计费网络；
+       断网（activeNetwork 为空）算不能下，会触发暂停 */
+    private fun isOnWifi(cm: ConnectivityManager): Boolean = try {
+        val n = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(n) ?: return false
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    } catch (e: Exception) { false }
+
+    /* 监听默认网络：WIFI/非计费 ↔ 移动数据/断网 来回切换时，自动暂停 / 续传下载 */
+    private fun registerNetwork() {
+        val c = appCtx ?: return
+        if (netRegistered) return
+        netRegistered = true
+        try {
+            val cm = c.getSystemService(ConnectivityManager::class.java)
+            onWifi = isOnWifi(cm)
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) = refreshNetwork()
+                override fun onLost(network: Network) = refreshNetwork()
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = refreshNetwork()
+            }
+            cm.registerDefaultNetworkCallback(cb)
+            netCallback = cb
+        } catch (e: Exception) {
+            netRegistered = false
+        }
+    }
+
+    private fun refreshNetwork() {
+        val c = appCtx ?: return
+        val cm = c.getSystemService(ConnectivityManager::class.java)
+        val now = isOnWifi(cm)
+        val was = onWifi
+        onWifi = now
+        if (was == now) return
+        if (was && !now) pauseForWifi()      // WIFI 断了 → 暂停
+        else if (!was && now) resumeForWifi() // WIFI 回来了 → 续传
+    }
+
+    /* 断 WIFI：只掐在 WIFI 上发起的下载（数据网络上用户确认过的下载不动），
+       .part 留着，等 WIFI 回来从断点续传 */
+    private fun pauseForWifi() {
+        val active = ArrayList<Item>()
+        for (it in inflight.values) if (startedOnWifi[it.rel] == true && states[it.rel] == "downloading") active.add(it)
+        for (it in pending.values) if (startedOnWifi[it.rel] == true) active.add(it)
+        if (active.isEmpty()) return
+        for (it in active) {
+            wifiPaused[it.rel] = it
+            pausedByWifi.add(it.rel)
+            pending.remove(it.rel)
+            states.remove(it.rel)          // 立刻摘掉，WIFI 若马上回来 enqueue 不会因为还在 downloading 被跳过
+            calls[it.rel]?.cancel()
+        }
+        notice("WIFI 已断开，下载暂停（" + active.size + " 个），恢复后自动继续")
+        notifyChange()
+    }
+
+    /* WIFI 回来：把暂停的条目按原 base 重新入队，run() 会从 .part 续传 */
+    private fun resumeForWifi() {
+        if (wifiPaused.isEmpty()) return
+        val base = baseOf()
+        if (base.isEmpty()) return
+        val batch = ArrayList<Item>(wifiPaused.values)
+        wifiPaused.clear()
+        for (it in batch) pausedByWifi.remove(it.rel)
+        val n = enqueue(base, batch)
+        if (n > 0) notice("WIFI 已恢复，继续下载 " + n + " 个")
+    }
+
+    private fun baseOf(): String = try {
+        (appCtx?.getSharedPreferences("fm", Context.MODE_PRIVATE)?.getString("base", "") ?: "").trim().trimEnd('/')
+    } catch (e: Exception) { "" }
+
+    private fun notice(msg: String) {
+        val c = appCtx ?: return
+        Handler(Looper.getMainLooper()).post { runCatching { Toast.makeText(c, msg, Toast.LENGTH_SHORT).show() } }
+    }
 
     /* 下载清单（完成 / 排队 / 在途 / 失败），给网页画「下载管理」和曲目上的已下载标记 */
     fun snapshot(): JSONArray = synchronized(lock) {
@@ -300,9 +390,13 @@ object Dl {
             val st = states[item.rel]
             if (st == "downloading" || st == "queued" || st == "cancelling") continue
             cancelled.remove(item.rel)
+            /* 之前断网暂停的，现在重新起跑：从待续队列摘掉，别等 WIFI 回来又加一遍 */
+            wifiPaused.remove(item.rel)
+            pausedByWifi.remove(item.rel)
             states[rec.rel] = "queued"
             pending[rec.rel] = rec
             failed.remove(rec.rel)
+            startedOnWifi[rec.rel] = onWifi
             workers.execute { run(base, rec) }
             queued++
         }
@@ -315,6 +409,8 @@ object Dl {
         pending.remove(it.rel)
         /* 排队期间就被取消：连请求都别发 */
         if (cancelled.remove(it.rel)) { states.remove(it.rel); notifyChange(); return }
+        /* 排队期间 WIFI 断了被暂停：别开跑，等 resume 重新入队 */
+        if (pausedByWifi.contains(it.rel)) { states.remove(it.rel); notifyChange(); return }
         states[it.rel] = "downloading"
         loaded[it.rel] = 0L
         totals[it.rel] = it.size.coerceAtLeast(1L)
@@ -381,6 +477,9 @@ object Dl {
             if (cancelled.remove(it.rel)) {
                 tmp.delete()                       // 用户主动取消：不留半截
                 states.remove(it.rel)
+            } else if (pausedByWifi.contains(it.rel)) {
+                /* WIFI 断开导致的中止：.part 留着，状态交给 pauseForWifi，别报错 */
+                states.remove(it.rel)
             } else {
                 /* 网络类失败保留 .part，重试可以续传；4xx 说明鉴权/文件本身有问题，别留 */
                 if (msg.contains("HTTP 4")) tmp.delete()
@@ -401,6 +500,8 @@ object Dl {
             pending.remove(it.rel)
             loaded.remove(it.rel)
             totals.remove(it.rel)
+            /* 真正结束（完成/失败/用户取消）就清掉断网标记；还在 wifiPaused 里的留着等续传 */
+            if (!wifiPaused.containsKey(it.rel)) { pausedByWifi.remove(it.rel); startedOnWifi.remove(it.rel) }
             notifyChange()
         }
     }
@@ -420,6 +521,10 @@ object Dl {
         val k = keyOf(me, rel)
         val it = synchronized(lock) { items[k] }
         if (it != null && it.uid.isNotEmpty() && it.uid != me) return
+        /* 断网暂停中的条目：从待续队列摘掉，.part 也删了，免得 WIFI 回来自动又下起来 */
+        wifiPaused.remove(rel)?.let { p -> runCatching { partOf(p).delete() } }
+        pausedByWifi.remove(rel)
+        startedOnWifi.remove(rel)
         cancelled.add(rel)
         failed.remove(rel)
         calls[rel]?.cancel()
@@ -471,11 +576,24 @@ object Dl {
                 calls[rel]?.cancel()
             }
         }
+        /* 断网暂停中的同专辑条目也一并清掉 */
+        val pausedGone = ArrayList<Item>()
+        for ((rel, item) in wifiPaused) {
+            if (item.libId == libId && item.album == album && (item.uid.isEmpty() || item.uid == currentUid())) {
+                pausedGone.add(item)
+                pausedByWifi.remove(rel)
+                startedOnWifi.remove(rel)
+            }
+        }
+        for (p in pausedGone) {
+            wifiPaused.remove(p.rel)
+            runCatching { partOf(p).delete() }
+        }
         for (x in gone) {
             runCatching { fileFor(x).delete() }
             runCatching { partOf(x).delete() }
         }
-        if (gone.isNotEmpty()) notifyChange()
+        if (gone.isNotEmpty() || pausedGone.isNotEmpty()) notifyChange()
         return gone.size
     }
 

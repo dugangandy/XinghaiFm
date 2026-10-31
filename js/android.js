@@ -191,6 +191,8 @@
     download,
     downloads: function () { return dlMap; },
     downloaded,
+    /* 已下载曲目的本机播放地址；旧 APK 没这个桥方法就返回空，播放回退到服务器 */
+    localUrl: function (rel) { try { return NATIVE.localUrl(rel) || ''; } catch (e) { return ''; } },
     freeSpace,
     removeDownload,
     removeDownloads,

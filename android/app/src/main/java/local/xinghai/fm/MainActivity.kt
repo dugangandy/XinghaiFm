@@ -197,6 +197,8 @@ class MainActivity : Activity() {
             displayZoomControls = false
             allowFileAccess = false
             allowContentAccess = false
+            /* 页面可能是 https（公网隧道），已下载曲目走 http://127.0.0.1 本机文件，需放行混合内容 */
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
         }
         CookieManager.getInstance().setAcceptCookie(true)
@@ -307,7 +309,7 @@ class MainActivity : Activity() {
             setOnClickListener { showServerDialog() }
         })
         row.addView(Button(this).apply {
-            text = "已下载"
+            text = "离线播放已下载"
             setOnClickListener { openDownloads() }
         })
         box.addView(row)
@@ -607,6 +609,12 @@ class MainActivity : Activity() {
             Dl.init(this@MainActivity)
             Dl.snapshot().toString()
         }.getOrDefault("[]")
+
+        /* 已下载曲目的本机播放地址（127.0.0.1 小服务，带 Range）；没下载或没起服务返回空 */
+        @JavascriptInterface
+        fun localUrl(rel: String): String = runCatching {
+            if (rel.isEmpty()) "" else { Dl.init(this@MainActivity); Dl.localUrl(rel) }
+        }.getOrDefault("")
 
         @JavascriptInterface
         fun baseUrl(): String = serverBase()
