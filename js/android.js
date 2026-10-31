@@ -21,7 +21,7 @@
     const a = albumOf(t);
     const q = p.queue || [];
     try {
-      NATIVE.setTrack(t ? t.title : '', a ? a.title : '');
+      NATIVE.setTrack(t ? t.title : '', a ? a.title : '', a && a.cover ? a.cover : '');
       NATIVE.setNav(p.index > 0, p.index >= 0 && q.length > 0 && p.index < q.length - 1);
       NATIVE.setPlaying(p.nativeVideo ? false : !!p.playing);
     } catch (e) {

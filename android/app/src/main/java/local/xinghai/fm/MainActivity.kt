@@ -505,8 +505,8 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
-        fun setTrack(title: String?, sub: String?) {
-            runOnUiThread { PlaybackService.current?.updateTrack(title ?: "", sub ?: "") }
+        fun setTrack(title: String?, sub: String?, cover: String?) {
+            runOnUiThread { PlaybackService.current?.updateTrack(title ?: "", sub ?: "", cover ?: "") }
         }
 
         @JavascriptInterface
