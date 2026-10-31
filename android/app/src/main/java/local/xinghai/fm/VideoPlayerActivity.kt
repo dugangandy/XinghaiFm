@@ -71,6 +71,8 @@ class VideoPlayerActivity : Activity() {
     private lateinit var playPauseBtn: ImageButton
     private lateinit var speedBtn: TextView
     private lateinit var episodeBtn: TextView
+    private lateinit var episodeIcon: ImageButton    // 窄屏（竖屏）代替文字版「选集」
+    private lateinit var fullscreenBtn: ImageButton
     private lateinit var curView: TextView
     private lateinit var durView: TextView
     private lateinit var seek: VideoSeekBar
@@ -85,6 +87,7 @@ class VideoPlayerActivity : Activity() {
 
     private var rate = 1f
     private var audioOnly = false
+    private var isFullscreen = false      // 竖屏看片；点「全屏」才切横屏
     private val RATES = floatArrayOf(0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
     private val FAST = 2f
 
@@ -98,6 +101,7 @@ class VideoPlayerActivity : Activity() {
     private var controlsShown = true
     private var locked = false
     private var sheet: View? = null
+    private var sheetBottom = false       // 当前面板是从底部弹出来的（竖屏），关闭时往下收
     private var scaleMode = 1                 // 0 满屏 1 原比例 2 4:3 3 16:9 4 21:9
     private var loopOne = false            // 单集循环
     private var bgAudio = false            // 锁屏/切后台后继续播放声音
@@ -138,7 +142,9 @@ class VideoPlayerActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         audioOnly = intent?.getBooleanExtra("audio", false) == true
-        requestedOrientation = if (audioOnly) ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        /* 视频先竖屏看，点「全屏」才横过来；纯音频跟系统走 */
+        requestedOrientation = if (audioOnly) ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         base = (getSharedPreferences("fm", MODE_PRIVATE).getString("base", "") ?: "").trim().trimEnd('/')
         am = getSystemService(AudioManager::class.java)
         slop = ViewConfiguration.get(this).scaledTouchSlop
@@ -153,7 +159,6 @@ class VideoPlayerActivity : Activity() {
             .build()
         buildUi()
         if (audioOnly) videoFrame.visibility = View.GONE
-        if (!audioOnly) goImmersive()
         if (tracks.isEmpty()) { toast("没有可播放的视频"); finish(); return }
         playIndex(index, startFrom(intent), autoplay)
     }
@@ -240,35 +245,36 @@ class VideoPlayerActivity : Activity() {
         /* 底部 */
         val bottom = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(2), dp(14), dp(12))
+            setPadding(dp(12), dp(2), dp(12), dp(12))
         }
 
-        /* 行 A：播放/下一集 + 当前时间 + 进度条 + 总时长 */
-        val rowA = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        /* 底栏就一行：播放/下一集 + 当前时间 + 进度条 + 总时长 + 倍速/选集/全屏 */
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         playPauseBtn = iconBtn(R.drawable.ic_pause, 40) { togglePlay() }
         val next = iconBtn(R.drawable.ic_next, 40) { goNext() }
         curView = timeText()
         seek = VideoSeekBar(this)
         seek.onSeek = { ratio -> player?.let { if (it.duration > 0) it.seekTo((ratio * it.duration).toLong()) } ; showControls() }
         durView = timeText()
-        rowA.addView(playPauseBtn)
-        rowA.addView(next)
-        rowA.addView(curView)
-        rowA.addView(seek, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10); marginEnd = dp(10) })
-        rowA.addView(durView)
-        bottom.addView(rowA)
-
-        /* 行 B：右侧「选集」（倍速、画面等设置统一收到右上角三点里） */
-        val rowB = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(0, dp(2), 0, 0)
-        }
-        speedBtn = textBtn("倍速") { showSpeedPanel() }
+        speedBtn = textBtn(fmtRate(rate) + "×") { showSpeedPanel() }
         episodeBtn = textBtn("选集") { showEpisodeDrawer() }
-        rowB.addView(speedBtn)
-        rowB.addView(episodeBtn)
-        bottom.addView(rowB)
+        episodeIcon = iconBtn(R.drawable.ic_list, 40) { showEpisodeDrawer() }.apply {
+            contentDescription = "选集"
+            visibility = View.GONE
+        }
+        fullscreenBtn = iconBtn(R.drawable.ic_fullscreen, 40) { toggleFullscreen() }.apply {
+            contentDescription = "全屏"
+        }
+        row.addView(playPauseBtn)
+        row.addView(next)
+        row.addView(curView)
+        row.addView(seek, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10); marginEnd = dp(10) })
+        row.addView(durView)
+        row.addView(speedBtn)
+        row.addView(episodeBtn)
+        row.addView(episodeIcon)
+        if (!audioOnly) row.addView(fullscreenBtn)
+        bottom.addView(row)
 
         frame.addView(bottom, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
 
@@ -309,7 +315,34 @@ class VideoPlayerActivity : Activity() {
         controls = frame
         bindGestures(gestureLayer)
         setContentView(root)
+        layoutControlRows()
         setControls(true, false)
+    }
+
+    /* 底栏只有一行，按钮和进度条并排：竖屏挤，字号/内边距/图标收小一档，横屏放回正常尺寸 */
+    private fun layoutControlRows() {
+        if (audioOnly) return
+        val compact = !isFullscreen
+        listOf(speedBtn, episodeBtn).forEach { b ->
+            b.textSize = if (compact) 12f else 13f
+            b.setPadding(dp(if (compact) 6 else 12), dp(7), dp(if (compact) 6 else 12), dp(7))
+        }
+        /* 竖屏窄，选集也用图标；横屏恢复文字，认起来更清楚 */
+        episodeBtn.visibility = if (compact) View.GONE else View.VISIBLE
+        episodeIcon.visibility = if (compact) View.VISIBLE else View.GONE
+        listOf(fullscreenBtn, episodeIcon).forEach { b ->
+            /* 34dp 的按钮里留 3dp 内边距，图标本身还能画到 ~24dp，不至于缩成小点 */
+            b.setPadding(dp(if (compact) 5 else 8), dp(if (compact) 5 else 8), dp(if (compact) 5 else 8), dp(if (compact) 5 else 8))
+            (b.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+                lp.width = dp(if (compact) 34 else 40)
+                lp.height = dp(if (compact) 34 else 40)
+                b.requestLayout()             // 直接改 LayoutParams 不会自动重排
+            }
+        }
+        (seek.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            lp.marginStart = dp(if (compact) 6 else 10)
+            lp.marginEnd = dp(if (compact) 6 else 10)
+        }
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -345,6 +378,58 @@ class VideoPlayerActivity : Activity() {
     private fun closeSheet() {
         sheet?.let { (it.parent as? ViewGroup)?.removeView(it) }
         sheet = null
+        sheetBottom = false
+    }
+
+    /* 面板按方向换形态：竖屏从底部弹（主流播放器做法），横屏仍从右侧抽屉滑出。
+       heightPx > 0 用固定高度，否则按内容贴合 —— 倍速/设置贴合，选集给 0.6 屏高。 */
+    private fun openPanel(heightPx: Int, fill: LinearLayout.() -> Unit) {
+        if (isFullscreen) openRightPanel(fill) else openBottomSheet(heightPx, fill)
+    }
+
+    private fun openBottomSheet(heightPx: Int, fill: LinearLayout.() -> Unit) {
+        closeSheet()
+        val dim = FrameLayout(this).apply {
+            setBackgroundColor(0x66000000.toInt())
+            isClickable = true
+            setOnClickListener { closeSheetAnimated() }
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_sheet_bottom)
+            setPadding(dp(16), dp(4), dp(16), dp(16))
+            isClickable = true
+            alpha = 0f                    // 量出高度前先别露，免得从 0 位置闪一下
+        }
+        panel.addView(View(this).apply {
+            setBackgroundResource(R.drawable.bg_handle)
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(4)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = dp(7)
+            }
+        })
+        panel.fill()
+        val lp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        if (heightPx > 0) lp.height = heightPx
+        dim.addView(panel, lp)
+        rootLayout.addView(dim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        sheet = dim
+        sheetBottom = true
+        panel.post {
+            if (sheet !== dim) return@post
+            panel.translationY = panel.height.toFloat()
+            panel.alpha = 1f
+            panel.animate().translationY(0f).setDuration(220).start()
+        }
+    }
+
+    /* 底部弹窗的小标题：和右侧抽屉里的段落标题同一套字号 */
+    private fun sheetTitle(text: String): TextView = TextView(this).apply {
+        this.text = text
+        setTextColor(0xFFFFFFFF.toInt())
+        textSize = 15f
+        setPadding(dp(2), dp(14), 0, dp(10))
     }
 
     /* ── 右侧设置面板（倍速 / 画面尺寸共用）：占屏宽 30%，从右滑出 ── */
@@ -368,6 +453,7 @@ class VideoPlayerActivity : Activity() {
         dim.addView(panel, FrameLayout.LayoutParams(panelW, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
         rootLayout.addView(dim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         sheet = dim
+        sheetBottom = false
         panel.translationX = panelW.toFloat()
         panel.animate().translationX(0f).setDuration(200).start()
     }
@@ -388,9 +474,9 @@ class VideoPlayerActivity : Activity() {
         if (selected) v.setBackgroundResource(R.drawable.bg_chip) else v.background = null
     }
 
-    /* 右上角三点：播放设置 */
+    /* 右上角三点：播放设置（竖屏底部弹窗，横屏右侧抽屉） */
     private fun showSettingsPanel() {
-        openRightPanel {
+        openPanel(0) {
             addView(scaleRow())
             addView(divider())
             addView(loopRow())
@@ -401,14 +487,17 @@ class VideoPlayerActivity : Activity() {
         }
     }
 
-    /* 一行设置：标题在左，选项在右；放不下时单行左右滑动，不换行 */
+    /* 一行设置：标题在左，选项在右；放不下时单行左右滑动，不换行
+     * visible 用来按当前状态藏掉没意义的选项（比如竖屏下的「满屏」） */
     private fun chipGridRow(label: String, names: Array<String>,
-                            selectedOf: () -> Int, onPick: (Int) -> Unit): LinearLayout {
-        val chips = ArrayList<TextView>()
+                            selectedOf: () -> Int, visible: (Int) -> Boolean = { true },
+                            onPick: (Int) -> Unit): LinearLayout {
+        val chips = ArrayList<Pair<Int, TextView>>()
         val opts = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         names.forEachIndexed { i, name ->
+            if (!visible(i)) return@forEachIndexed
             val v = chipView(name)
-            chips.add(v)
+            chips.add(i to v)
             opts.addView(v, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
         }
         val scroller = HorizontalScrollView(this).apply {
@@ -433,17 +522,26 @@ class VideoPlayerActivity : Activity() {
 
         val paint = {
             val sel = selectedOf()
-            chips.forEachIndexed { i, v -> styleChip(v, i == sel) }
-            scroller.post { chips.getOrNull(sel)?.let { c -> scroller.smoothScrollTo(Math.max(0, c.left - dp(8)), 0) } }
+            chips.forEach { (i, v) -> styleChip(v, i == sel) }
+            scroller.post {
+                chips.firstOrNull { it.first == sel }?.let { scroller.smoothScrollTo(Math.max(0, it.second.left - dp(8)), 0) }
+            }
         }
-        chips.forEachIndexed { i, v -> v.setOnClickListener { onPick(i); paint() } }
+        chips.forEach { (i, v) -> v.setOnClickListener { onPick(i); paint() } }
         paint()
         return row
     }
 
+    /* 当前真正生效的画面尺寸：竖屏下「满屏」退化成原比例 */
+    private fun effectiveScale(): Int = if (!isFullscreen && scaleMode == 0) 1 else scaleMode
+
+    /* 竖屏不给「满屏」：铺不满还会把人像片拉变形；高亮跟着实际生效的比例走
+     * （竖屏下即便存的是满屏，实际也是原比例），点已选中的那一项只提示不动存储 */
     private fun scaleRow(): LinearLayout =
-        chipGridRow("画面尺寸", SCALE_NAMES, { scaleMode }) { i ->
-            applyScale(i)
+        chipGridRow("画面尺寸", SCALE_NAMES,
+            { effectiveScale() },
+            { i -> isFullscreen || i != 0 }) { i ->
+            if (i != effectiveScale()) applyScale(i)
             showHud("画面 " + SCALE_NAMES[i]); hideHudSoon()
         }
 
@@ -510,8 +608,26 @@ class VideoPlayerActivity : Activity() {
         }
     }
 
-    /* 倍速：右侧面板，方块磁贴样式（沿用现有 6 档） */
+    /* 倍速：方块磁贴样式（沿用现有 6 档），竖屏从底部弹、横屏从右侧滑 */
     private fun showSpeedPanel() {
+        val grid = speedTiles()
+        openPanel(0) {
+            if (isFullscreen) {
+                addView(TextView(this@VideoPlayerActivity).apply {
+                    text = "倍速"
+                    setTextColor(0xB3FFFFFF.toInt())
+                    textSize = 13f
+                    setPadding(dp(2), dp(14), 0, dp(10))
+                })
+            } else {
+                addView(sheetTitle("倍速"))
+            }
+            addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    /* 倍速磁贴：两个面板形态共用一份，别写两套 */
+    private fun speedTiles(): LinearLayout {
         var cur = 0
         for (k in RATES.indices) if (abs(RATES[k] - rate) < 0.001f) { cur = k; break }
         val tiles = ArrayList<TextView>()
@@ -544,16 +660,7 @@ class VideoPlayerActivity : Activity() {
             }
         }
         paint()
-
-        openRightPanel {
-            addView(TextView(this@VideoPlayerActivity).apply {
-                text = "倍速"
-                setTextColor(0xB3FFFFFF.toInt())
-                textSize = 13f
-                setPadding(dp(2), dp(14), 0, dp(10))
-            })
-            addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        }
+        return grid
     }
 
     private fun styleTile(v: TextView, selected: Boolean) {
@@ -566,10 +673,11 @@ class VideoPlayerActivity : Activity() {
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)))
     }
 
-    /* 画面尺寸：满屏拉伸；原比例按片源；固定比例把画面拉伸进该比例的框里 */
+    /* 画面尺寸：满屏拉伸；原比例按片源；固定比例把画面拉伸进该比例的框里
+     * 「满屏」只在横屏全屏下算数：竖屏拉伸会把人像片拉成一整屏变形，按原比例留黑边 */
     private fun applyScale(i: Int, save: Boolean = true) {
         scaleMode = i.coerceIn(0, SCALE_NAMES.size - 1)
-        videoFrame.stretch = scaleMode == 0
+        videoFrame.stretch = scaleMode == 0 && isFullscreen
         videoFrame.fixedRatio = when (scaleMode) {
             2 -> 4f / 3f
             3 -> 16f / 9f
@@ -578,8 +686,16 @@ class VideoPlayerActivity : Activity() {
         if (save) getSharedPreferences("fm", MODE_PRIVATE).edit().putInt("videoScale", scaleMode).apply()
     }
 
-    /* 选集：从右侧滑出，宽度与设置面板一致（屏宽 30%） */
+    /* 选集：竖屏从底部弹（0.6 屏高，主流播放器的手感），横屏仍从右侧抽屉滑出 */
     private fun showEpisodeDrawer() {
+        if (!isFullscreen) {
+            val h = (resources.displayMetrics.heightPixels * 0.6f).toInt()
+            openBottomSheet(h) {
+                addView(sheetTitle("选集  (" + tracks.size + ")"))
+                addView(episodeList(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            }
+            return
+        }
         closeSheet()
         val dim = FrameLayout(this).apply {
             setBackgroundColor(0x66000000.toInt())
@@ -598,6 +714,16 @@ class VideoPlayerActivity : Activity() {
             setTextColor(0xFFFFFFFF.toInt()); textSize = 15f
             setPadding(dp(8), dp(2), dp(8), dp(12))
         })
+        panel.addView(episodeList(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        dim.addView(panel, FrameLayout.LayoutParams(panelW, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
+        rootLayout.addView(dim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        sheet = dim
+        panel.translationX = panelW.toFloat()
+        panel.animate().translationX(0f).setDuration(220).start()
+    }
+
+    /* 选集列表：底部弹窗和右侧抽屉共用一份，别写两套 */
+    private fun episodeList(): ScrollView {
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         tracks.forEachIndexed { i, t ->
             list.addView(TextView(this).apply {
@@ -610,12 +736,7 @@ class VideoPlayerActivity : Activity() {
                 setOnClickListener { playIndex(i, 0, true); closeSheetAnimated() }
             })
         }
-        panel.addView(ScrollView(this).apply { addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        dim.addView(panel, FrameLayout.LayoutParams(panelW, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
-        rootLayout.addView(dim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        sheet = dim
-        panel.translationX = panelW.toFloat()
-        panel.animate().translationX(0f).setDuration(220).start()
+        return ScrollView(this).apply { addView(list) }
     }
 
     private fun closeSheetAnimated() {
@@ -624,12 +745,14 @@ class VideoPlayerActivity : Activity() {
         val panel = (d as? ViewGroup)?.getChildAt(0)
         val parent = d.parent as? ViewGroup
         if (panel != null && parent != null) {
-            panel.animate().translationX(panel.width.toFloat()).setDuration(180)
-                .withEndAction { parent.removeView(d) }.start()
+            val anim = panel.animate().setDuration(180)
+            if (sheetBottom) anim.translationY(panel.height.toFloat()) else anim.translationX(panel.width.toFloat())
+            anim.withEndAction { parent.removeView(d) }.start()
             d.animate().alpha(0f).setDuration(180).start()
         } else {
             parent?.removeView(d)
         }
+        sheetBottom = false
     }
 
     /* ── 手势 ── */
@@ -804,6 +927,7 @@ class VideoPlayerActivity : Activity() {
     private fun setRate(r: Float) {
         rate = r
         player?.setPlaybackSpeed(r)
+        if (::speedBtn.isInitialized) speedBtn.text = fmtRate(r) + "×"
         getSharedPreferences("fm", MODE_PRIVATE).edit().putFloat("videoRate", r).apply()
     }
 
@@ -890,7 +1014,7 @@ class VideoPlayerActivity : Activity() {
     private fun setControls(show: Boolean, animate: Boolean) {
         controlsShown = show
         controls.animate().cancel()
-        lockBtn.visibility = if (show || locked) View.VISIBLE else View.GONE
+        lockBtn.visibility = if (isFullscreen && (show || locked)) View.VISIBLE else View.GONE
         if (!animate) {
             controls.alpha = if (show) 1f else 0f
             controls.visibility = if (show) View.VISIBLE else View.GONE
@@ -917,6 +1041,34 @@ class VideoPlayerActivity : Activity() {
         if (controlsShown) setControls(false, true) else showControls()
     }
 
+    /* ── 全屏：竖屏看片，点按钮才横过来 ── */
+    private fun toggleFullscreen() = setFullscreen(!isFullscreen)
+
+    private fun setFullscreen(on: Boolean) {
+        if (audioOnly || isFullscreen == on) return
+        isFullscreen = on
+        requestedOrientation = if (on) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        if (on) goImmersive() else exitImmersive()
+        applyScale(scaleMode, false)        /* 满屏只在横屏生效，转屏后重算画面尺寸 */
+        layoutControlRows()                 /* 竖屏收小一档、横屏正常尺寸 */
+        fullscreenBtn.setImageResource(if (on) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
+        fullscreenBtn.contentDescription = if (on) "退出全屏" else "全屏"
+        /* 锁定是横屏看片时才有的操作，回竖屏顺手解开 */
+        if (!on && locked) {
+            locked = false
+            lockBtn.setImageResource(R.drawable.ic_unlock)
+        }
+        lockBtn.visibility = if (on) View.VISIBLE else View.GONE
+        showControls()
+    }
+
+    /* 退出沉浸式：系统栏放回来，内容也不再铺到状态栏底下 */
+    private fun exitImmersive() {
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+    }
+
     /* ── 生命周期 ── */
     private fun goImmersive() {
         @Suppress("DEPRECATION")
@@ -932,7 +1084,7 @@ class VideoPlayerActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && !audioOnly) goImmersive()
+        if (hasFocus && !audioOnly && isFullscreen) goImmersive()
     }
 
     override fun onStart() {
@@ -957,6 +1109,9 @@ class VideoPlayerActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        /* 面板开着先收面板；横屏全屏再退回竖屏；最后才关播放器 */
+        if (sheet != null) { closeSheetAnimated(); return }
+        if (isFullscreen) { setFullscreen(false); return }
         finishWithClosed()
     }
 
