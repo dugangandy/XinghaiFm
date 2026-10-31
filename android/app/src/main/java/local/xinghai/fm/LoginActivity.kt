@@ -172,11 +172,11 @@ class LoginActivity : Activity() {
                         }
                         401 -> ui.post { setBusy(false); err("用户名或密码不正确") }
                         429 -> ui.post { setBusy(false); err(text.ifBlank { "尝试过多，请稍后再试" }) }
-                        else -> ui.post { setBusy(false); err("登录失败（" + r.code + "）") }
+                        else -> ui.post { setBusy(false); err(Msg.NET_FAIL) }
                     }
                 }
             } catch (e: Exception) {
-                ui.post { setBusy(false); err("连不上服务器，请检查地址或网络") }
+                ui.post { setBusy(false); err(Msg.NET_FAIL) }
             }
         }.start()
     }

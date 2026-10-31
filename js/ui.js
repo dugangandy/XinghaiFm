@@ -2082,7 +2082,8 @@
     P.on('volume', paintVolume);
     P.on('loop', paintLoop);
     P.on('sleep', paintSleep);
-    P.on('error', function (e) { toast(e.message || '播放失败', 'warn'); });
+    /* 播放失败大多是断网/文件取不到：统一文案，别把原生报错抛给用户 */
+    P.on('error', function () { toast(U.NET_FAIL, 'warn'); });
     P.on('sleepend', function () { toast('定时关闭已生效'); });
     P.on('rewind', function (sec) { toast('已回退 ' + Math.round(sec) + ' 秒'); });
     P.on('queue', function () { if (queueOpen) renderQueue(); });
@@ -2431,7 +2432,7 @@
         await window.fmNative.setRemote({ base: b, token: data.token || '' });
         location.reload();
       } catch (e) {
-        err.textContent = '连不上：' + (e.message || e);
+        err.textContent = (e && e.message === '用户名或密码不正确') ? e.message : U.NET_FAIL;
       }
     }
   }
@@ -2915,7 +2916,7 @@
       await runScan({ silent: true, libId });
     } catch (e) {
       console.warn('[scan] 自动扫描失败', e);
-      if (!silent) toast('自动同步失败：' + (e.message || ''), 'warn');
+      if (!silent) toast(U.NET_FAIL, 'warn');
     }
   }
 

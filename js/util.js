@@ -4,6 +4,9 @@ window.FM = window.FM || {};
   'use strict';
   const U = FM.util = {};
 
+  /* 断网/连不上服务器时统一给用户看这一句，别把浏览器/原生/后台的原始错误抛出来 */
+  U.NET_FAIL = '服务器连接失败，请检查网络。';
+
   U.$ = (sel, root) => (root || document).querySelector(sel);
   U.$$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 

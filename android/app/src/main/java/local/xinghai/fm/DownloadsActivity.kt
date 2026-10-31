@@ -438,7 +438,7 @@ class DownloadsActivity : Activity() {
                 cacheUid = uid
                 cacheAt = System.currentTimeMillis()
                 libraryLoading = false
-                if (out.isEmpty()) libraryError = if (Dl.lastStatus == 401) "登录已过期，请重新登录" else "读不到资源库，检查电脑端服务和网络"
+                if (out.isEmpty()) libraryError = if (Dl.lastStatus == 401) "登录已过期，请重新登录" else Msg.NET_FAIL
                 addBtn?.alpha = if (out.isEmpty()) 0.5f else 1f
                 render()
             }

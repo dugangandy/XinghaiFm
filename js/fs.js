@@ -118,9 +118,9 @@
       else if (r.status === 401) { notifyRemoteAuth(); setLink('auth'); }
       else if (r.status >= 500) goOffline();
       return r;
-    }, function (err) {
+    }, function () {
       goOffline();
-      throw err;
+      throw new Error(U.NET_FAIL);
     });
   }
 
@@ -131,7 +131,7 @@
     const now = Math.floor(Date.now() / 1000);
     if (!ticketCache || ticketCache.exp - now < 60) {
       const r = await apiFetch('/api/ticket', { cache: 'no-store' });
-      if (!r.ok) throw new Error('远程票据获取失败（' + r.status + '）');
+      if (!r.ok) throw new Error(U.NET_FAIL);
       ticketCache = await r.json();
     }
     if (!ticketCache.t) return API_BASE + path;
@@ -267,7 +267,7 @@
       const srv = await detectServer();
       if (REMOTE && !srv) {
         /* 配了远端却连不上：明说，别让人以为书丢了（未授权时上面的提示已经说过一次） */
-        if (!authWarned && FM.ui && FM.ui.toast) FM.ui.toast('连不上远程服务器，请检查地址或网络', 'warn');
+        if (!authWarned && FM.ui && FM.ui.toast) FM.ui.toast(U.NET_FAIL, 'warn');
         goOffline();      // 进重试循环，服务器回来会自动恢复
       }
       if (srv) {
@@ -717,7 +717,7 @@
     /* 服务器模式：目录在跑服务的那台机器上，问它要列表 */
     if (mode === 'server') {
       const res = await apiFetch('/api/scan', { cache: 'no-store' });
-      if (!res.ok) throw new Error('服务器扫描失败：HTTP ' + res.status);
+      if (!res.ok) throw new Error(U.NET_FAIL);
       const data = await res.json();
       if (onProgress) onProgress({ phase: 'size', done: data.files.length, total: data.files.length });
       /* root 用服务端回的真实路径：albumMeta 的键是「<路径>|<专辑id>」，和桌面端要对得上 */

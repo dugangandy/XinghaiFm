@@ -280,7 +280,7 @@ class MainActivity : Activity() {
             setPadding(dp(28), dp(28), dp(28), dp(28))
         }
         box.addView(TextView(this).apply {
-            text = "连不上电脑上的服务"
+            text = Msg.NET_FAIL
             textSize = 17f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER_HORIZONTAL

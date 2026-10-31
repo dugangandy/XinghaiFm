@@ -783,7 +783,10 @@ class VideoPlayerActivity : Activity() {
             }
             override fun onPlayerError(error: PlaybackException) {
                 Log.w("VideoPlayer", "error: " + error.errorCodeName + " " + (error.message ?: ""))
-                toast("播放失败：" + error.errorCodeName)
+                /* 断网/连不上服务器统一文案；其它错误也不暴露原生 code */
+                val net = error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+                toast(if (net) Msg.NET_FAIL else "播放失败，请稍后重试")
             }
         })
         p.setWakeMode(if (bgAudio) C.WAKE_MODE_NETWORK else C.WAKE_MODE_NONE)

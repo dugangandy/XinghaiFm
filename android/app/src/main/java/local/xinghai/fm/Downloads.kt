@@ -490,9 +490,11 @@ object Dl {
                     msg.contains("401") -> "登录已过期，请重新登录"
                     msg.contains("empty") -> "服务端返回空文件"
                     msg.contains("size") -> "文件不完整，已保留断点，可重试"
-                    else -> "网络或服务异常"
+                    else -> ""
                 }
-                Handler(Looper.getMainLooper()).post { runCatching { onError?.invoke("「" + title + "」下载失败：" + why) } }
+                /* 其余基本都是断网/连不上：统一文案，别暴露原生或后台错误 */
+                val text = if (why.isEmpty()) Msg.NET_FAIL else "「" + title + "」下载失败：" + why
+                Handler(Looper.getMainLooper()).post { runCatching { onError?.invoke(text) } }
             }
         } finally {
             calls.remove(it.rel)
