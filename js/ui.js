@@ -198,10 +198,14 @@
     dlSig = sig;
     if (inDlView()) {
       if (changed) {
-        /* 条目真变了才重建；重建时保住滚动位置，别让正在看的那一段跳回顶部 */
+        /* 条目真变了才重建；内外两层滚动位置都要保住，别让正在看的那一段跳回顶部 */
         const top = refs.view.scrollTop;
+        const sc = refs.view.querySelector('.dl-scroll');
+        const inner = sc ? sc.scrollTop : 0;
         renderMain({ quiet: true });
         refs.view.scrollTop = top;
+        const sc2 = refs.view.querySelector('.dl-scroll');
+        if (sc2) sc2.scrollTop = inner;
         renderNav();
       } else {
         patchDlProgress();
@@ -521,13 +525,24 @@
     if (inDlView()) dlSig = dlKeysSignature();
   }
 
+  /* 批量页列表在 .dl-scroll 里自己滚：重画后把内外两处 scrollTop 都还原，避免勾选一下跳回顶部 */
+  function renderMainKeepScroll() {
+    const sc = refs.view.querySelector('.dl-scroll');
+    const inner = sc ? sc.scrollTop : 0;
+    const outer = refs.view.scrollTop;
+    renderMain({ quiet: true });   // 勾选不该让整页再播一遍入场动画
+    refs.view.scrollTop = outer;
+    const sc2 = refs.view.querySelector('.dl-scroll');
+    if (sc2) sc2.scrollTop = inner;
+  }
+
   function renderMain(opts) {
     const quiet = !!(opts && opts.quiet);
     const v = refs.view;
     v.innerHTML = '';
     /* 批量下载/删除页：让页面铺满（没有播放条时不留底部空档） */
+    if (!L.albums().length) { v.classList.remove('dl-view'); renderWelcome(); return; }
     v.classList.toggle('dl-view', state.view === 'dlMore' || state.view === 'dlRemove');
-    if (!L.albums().length) { renderWelcome(); return; }
     let node;
     if (state.q) node = viewSearch(state.q);
     else if (state.view === 'album') node = viewAlbum(state.albumId);
@@ -663,6 +678,16 @@
     try { return window.matchMedia('(max-width:979.98px)').matches; } catch (e) { return false; }
   }
 
+  /* 收藏页布局随宽度切换：跨过断点时重画一次（窗口拉宽回桌面卡片） */
+  let favNarrow = isNarrow();
+  window.addEventListener('resize', U.debounce(function () {
+    const now = isNarrow();
+    if (now === favNarrow) return;
+    favNarrow = now;
+    if (!refs || !refs.view) return;
+    if (state.view === 'fav') renderMain({ quiet: true });
+  }, 200));
+
   /* 收藏的曲目：按收藏时间倒序（Set 保持写入顺序，最后一条最新） */
   function favTrackList() {
     const ids = FM.fs.favTrackIds ? Array.from(FM.fs.favTrackIds) : [];
@@ -731,7 +756,7 @@
       '<div class="head-actions">' + (tracks.length ? '<button class="btn btn-ghost" data-act="play-fav-tracks">' + icon('play') + '播放全部</button>' : '') + '</div></div>' +
       '<div class="view-head"><div><div class="page-title">我收藏的声音</div>' +
       '<div class="page-sub">' + tracks.length + ' 条</div></div></div>' +
-      (tracks.length ? '<div class="track-list">' + tracks.map(flatTrack).join('') + '</div>'
+      (tracks.length ? '<div class="track-list">' + tracks.map(function (t) { return flatTrack(t, { noIdx: true }); }).join('') + '</div>'
         : '<div class="empty"><div class="empty-art">' + icon('heart') + '</div><h3>还没有收藏的声音</h3><p>在播放页点心形，收藏的内容会出现在这里。</p></div>');
     return wrap;
   }
@@ -1218,7 +1243,7 @@
     '</li>';
   }
 
-  function flatTrack(t) {
+  function flatTrack(t, opts) {
     const a = L.album(t.albumId);
     const p = L.progressOf(t.id);
     const dur = t.duration || (p && p.d) || 0;
@@ -1226,7 +1251,7 @@
     const pct = p && dur ? Math.min(100, Math.round((p.p || 0) / dur * 100)) : 0;
     const sub = (t.kind === 'video' ? '视频 · ' : '') + (a ? a.title : '') + (p && p.t ? ' · ' + U.fmtAgo(p.t) : '');
     return '<li class="track' + (playing ? ' playing' : '') + '" data-id="' + t.id + '" data-album="' + t.albumId + '">' +
-      '<span class="tk-idx">' + (t.order + 1) + '</span>' +
+      ((opts && opts.noIdx) ? '' : '<span class="tk-idx">' + (t.order + 1) + '</span>') +
       '<span class="tk-eq"><i></i><i></i><i></i></span>' +
       '<div class="tk-main" style="flex-direction:column;align-items:flex-start;gap:3px">' +
         '<span class="tk-title-row">' + dlFlag(t) + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span></span>' +
@@ -1592,7 +1617,7 @@
         case 'dl-more-toggle': {
           if (!state.dlMoreSel) state.dlMoreSel = {};
           if (state.dlMoreSel[id]) delete state.dlMoreSel[id]; else state.dlMoreSel[id] = true;
-          renderMain();
+          renderMainKeepScroll();
           break;
         }
         case 'dl-more-all': {
@@ -1600,7 +1625,7 @@
           const pend = L.albumTracks(state.albumId).filter(function (t) { return !dlMap()[t.rel]; });
           const all = pend.length > 0 && pend.every(function (t) { return !!sel[t.id]; });
           pend.forEach(function (t) { if (all) delete sel[t.id]; else sel[t.id] = true; });
-          renderMain();
+          renderMainKeepScroll();
           break;
         }
         case 'dl-more-go': {
@@ -1616,7 +1641,7 @@
         case 'dl-toggle': {
           if (!state.dlSel) state.dlSel = {};
           if (state.dlSel[id]) delete state.dlSel[id]; else state.dlSel[id] = true;
-          renderMain();
+          renderMainKeepScroll();
           break;
         }
         case 'dl-sel-all':
@@ -1628,7 +1653,7 @@
             : pool;
           const all = keep.length > 0 && keep.every(function (t) { return !!sel[t.id]; });
           keep.forEach(function (t) { if (all) delete sel[t.id]; else sel[t.id] = true; });
-          renderMain();
+          renderMainKeepScroll();
           break;
         }
         case 'dl-del-selected': {
@@ -2266,11 +2291,16 @@
     });
   }
 
+  /* 播放条显隐统一入口：body 挂 has-player，批量页据此让出/收回底部空间 */
+  function setPlayerbarVisible(on) {
+    refs.playerbar.hidden = !on;
+    document.body.classList.toggle('has-player', !!on);
+  }
+
   function paintTrack(t) {
     if (!t) return;
     const a = L.album(t.albumId);
-    refs.playerbar.hidden = false;
-    document.body.classList.add('has-player');
+    setPlayerbarVisible(true);
     refs.pbTitle.textContent = t.title;
     refs.pbSub.textContent = (a ? a.title : '') + (a ? ' · 第 ' + (t.order + 1) + ' 集' : '');
     paintCover(refs.pbCover, a, t);
@@ -2423,8 +2453,7 @@
       syncAlbumPlayBtn();
       if (refs.sheet.classList.contains('open')) closeSheet();
       setCinema(false);
-      refs.playerbar.hidden = true;
-      document.body.classList.remove('has-player');
+      setPlayerbarVisible(false);
       refs.pbTitle.textContent = '—';
       refs.pbSub.textContent = '选择一集开始收听';
       refs.pbKind.hidden = true;
