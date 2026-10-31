@@ -459,6 +459,8 @@ body.is-server #libSwitch .lib-caret{display:none}
   .search kbd{display:none}
   .view{padding:6px 16px calc(var(--pb-h) + 28px)}
   .view-head .head-actions{display:none}
+  /* hero 里的「加入队列」收进更多菜单 */
+  .hero-actions .hero-queue{display:none}
   .pb-left{flex:0 1 auto;max-width:46%}
   .pb-center{position:static;flex:1;min-width:0}
   .pb-scrub-row{display:none}

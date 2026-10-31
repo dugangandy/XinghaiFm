@@ -525,6 +525,8 @@
     const quiet = !!(opts && opts.quiet);
     const v = refs.view;
     v.innerHTML = '';
+    /* 批量下载/删除页：让页面铺满（没有播放条时不留底部空档） */
+    v.classList.toggle('dl-view', state.view === 'dlMore' || state.view === 'dlRemove');
     if (!L.albums().length) { renderWelcome(); return; }
     let node;
     if (state.q) node = viewSearch(state.q);
@@ -959,31 +961,33 @@
     const groups = [];
     for (let i = 0; i < pend.length; i += 20) groups.push(pend.slice(i, i + 20));
 
-    const head = pend.length
+    const filterHtml = pend.length
       ? '<div class="dl-filter">' +
           '<span>未下载 ' + pend.length + ' 集</span>' +
           '<button class="dl-chip' + (allOn ? ' on' : '') + '" data-act="dl-more-all">' + (allOn ? '取消全选' : '全选') + '</button>' +
-        '</div>' +
-        groups.map(dlGroup).join('')
-      : '<div class="empty"><div class="empty-art">' + icon('download') + '</div><h3>已经全下完了</h3>' +
-        '<p>这张专辑没有待下载的集。</p></div>';
+        '</div>'
+      : '';
+    const groupsHtml = groups.map(dlGroup).join('');
+    const barHtml = pend.length
+      ? '<div class="dl-bar dl-bar-col">' +
+          '<div class="dl-bar-row">' +
+            '<button class="dl-bar-btn" data-act="dl-mine">我的下载</button>' +
+            '<button class="dl-bar-btn primary" data-act="dl-more-go" data-id="' + a.id + '"' + (picked.length ? '' : ' disabled') + '>选集下载' +
+              (picked.length ? '（' + picked.length + '）' : '') + '</button>' +
+          '</div>' +
+          '<div class="dl-bar-note">预计占用 ' + fmtS(need) + ' 空间 / 剩余 ' + (free > 0 ? fmtS(free) : '未知') + ' 可用</div>' +
+        '</div>'
+      : '';
 
-    const wrap = U.el('div');
+    const wrap = U.el('div', { class: 'dl-page' });
     wrap.innerHTML =
       '<div class="dl-page-head"><button class="link-btn" data-act="back">← 返回</button>' +
         '<span class="dl-page-title">批量下载</span><span class="dl-page-spare"></span></div>' +
       (tight ? '<div class="dl-warn">手机空间可能不够，建议少选几集。</div>' : '') +
-      head +
       (pend.length
-        ? '<div class="dl-bar dl-bar-col">' +
-            '<div class="dl-bar-row">' +
-              '<button class="dl-bar-btn" data-act="dl-mine">我的下载</button>' +
-              '<button class="dl-bar-btn primary" data-act="dl-more-go" data-id="' + a.id + '"' + (picked.length ? '' : ' disabled') + '>选集下载' +
-                (picked.length ? '（' + picked.length + '）' : '') + '</button>' +
-            '</div>' +
-            '<div class="dl-bar-note">预计占用 ' + fmtS(need) + ' 空间 / 剩余 ' + (free > 0 ? fmtS(free) : '未知') + ' 可用</div>' +
-          '</div>'
-        : '');
+        ? filterHtml + '<div class="dl-scroll">' + groupsHtml + '</div>' + barHtml
+        : '<div class="dl-scroll"><div class="empty"><div class="empty-art">' + icon('download') + '</div><h3>已经全下完了</h3>' +
+          '<p>这张专辑没有待下载的集。</p></div></div>');
     return wrap;
   }
 
@@ -1020,7 +1024,7 @@
     const doneList = mine.filter(function (t) { const p = L.progressOf(t.id); return !!(p && p.done); });
     const allOn = mine.length > 0 && picked.length === mine.length;
     const doneOn = doneList.length > 0 && doneList.every(function (t) { return !!sel[t.id]; });
-    const wrap = U.el('div');
+    const wrap = U.el('div', { class: 'dl-page' });
     wrap.innerHTML =
       '<div class="dl-page-head"><button class="link-btn" data-act="back">← 返回</button>' +
         '<span class="dl-page-title">批量删除</span><span class="dl-page-spare"></span></div>' +
@@ -1029,7 +1033,7 @@
         '<button class="dl-ck-item" data-act="dl-sel-all">' + ck(allOn) + '全选</button>' +
         '<button class="dl-ck-item" data-act="dl-sel-done">' + ck(doneOn) + '选择已听完</button>' +
       '</div>' +
-      '<div class="dl-tracks">' + mine.map(function (t) { return dlSelRow(t, !!sel[t.id]); }).join('') + '</div>' +
+      '<div class="dl-scroll"><div class="dl-tracks">' + mine.map(function (t) { return dlSelRow(t, !!sel[t.id]); }).join('') + '</div></div>' +
       '<div class="dl-bar">' +
         '<button class="dl-bar-btn" data-act="back">取消</button>' +
         '<button class="dl-bar-btn danger" data-act="dl-del-selected" data-id="' + a.id + '"' + (picked.length ? '' : ' disabled') + '>删除' +
@@ -1110,8 +1114,7 @@
 
     const wrap = U.el('div');
     wrap.innerHTML =
-      '<div class="view-head" style="padding:10px 2px 0"><button class="link-btn" data-act="back">← 返回</button>' +
-        '<div class="head-actions"><button class="btn btn-ghost" data-act="more-album" data-id="' + a.id + '">' + icon('more') + '更多</button></div></div>' +
+      '<div class="view-head" style="padding:10px 2px 0"><button class="link-btn" data-act="back">← 返回</button></div>' +
       '<section class="album-hero" style="' + U.coverVars(a.seed) + '">' +
         '<div class="hero-cover' + (a.cover ? ' has-photo' : '') + '">' +
           (a.cover ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">' : '<span class="card-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>') +
@@ -1128,8 +1131,9 @@
             (done ? '<span class="dot"></span><span style="color:#7ef7d0">已听完</span>' : '') + '</div>' +
           '<div class="hero-actions">' +
             '<button class="btn btn-primary" data-act="album-play" data-id="' + a.id + '">' + icon(albumPlayLabel(a).icon) + albumPlayLabel(a).text + '</button>' +
-            '<button class="btn" data-act="queue-album" data-id="' + a.id + '">' + icon('list') + '加入队列</button>' +
+            '<button class="btn hero-queue" data-act="queue-album" data-id="' + a.id + '">' + icon('list') + '加入队列</button>' +
             '<button class="btn' + (a.fav ? ' danger' : '') + '" data-act="fav" data-id="' + a.id + '">' + icon(a.fav ? 'heart-fill' : 'heart') + (a.fav ? '已收藏' : '收藏') + '</button>' +
+            '<button class="btn" data-act="more-album" data-id="' + a.id + '">' + icon('more') + '更多</button>' +
             assignBtn +
           '</div>' +
         '</div>' +
@@ -1164,6 +1168,14 @@
     state.page = Math.min(Math.max(0, state.page), pages - 1);
     const from = state.page * PAGE;
     return { items: list.slice(from, from + PAGE), from: from, pages: pages };
+  }
+
+  /* 「加入队列」用：在专辑详情页只排当前这一页，其它地方退回整张 */
+  function currentQueueTracks(id) {
+    const a = L.album(id);
+    if (!a) return [];
+    if (state.view === 'album' && state.albumId === id) return pageSlice(albumTracksFiltered(a)).items;
+    return L.albumTracks(id);
   }
 
   function pagerHtml(total) {
@@ -1658,7 +1670,7 @@
           });
           break;
         }
-        case 'queue-album': { const list = L.albumTracks(id); P.addToQueue(list); toast('已加入播放队列（' + list.length + ' 集）'); break; }
+        case 'queue-album': { const list = currentQueueTracks(id); if (!list.length) break; P.addToQueue(list); toast('已加入播放队列（' + list.length + ' 集）'); break; }
         case 'fav': toggleFavorite(id); break;
         case 'assign': if (!assignBlocked()) assignModal(id); break;
         case 'more-album': albumMenu(id, actEl); break;
@@ -1752,11 +1764,13 @@
     const canAssign = FM.fs.native && !FM.fs.server;   // 归类…
     const canModify = !FM.fs.server;                    // 置顶 / 重命名 / 隐藏
     const canEditCover = FM.fs.native || FM.fs.server;  // 编辑封面（本地库 / 自有服务端都可写 .fm-covers/）
+    /* 在专辑详情页点「更多」时，加入队列只排当前页；从卡片菜单进来才整张 */
+    const queueTracks = currentQueueTracks(id);
     const items = [
       { label: '播放全部', icon: 'play', onClick: () => P.playAlbum(id) },
-      { label: '加入队列', icon: 'list', onClick: () => { P.addToQueue(L.albumTracks(id)); toast('已加入播放队列'); } }
+      { label: '加入队列（' + queueTracks.length + ' 集）', icon: 'list', onClick: () => { P.addToQueue(queueTracks); toast('已加入播放队列（' + queueTracks.length + ' 集）'); } }
     ];
-    if (canDownload()) items.push({ label: '下载全部', icon: 'download', onClick: () => downloadTracks(L.albumTracks(id)) });
+    if (canDownload()) items.push({ label: '批量下载', icon: 'download', onClick: () => go('#/downloads/' + id + '/more') });
     items.push({ sep: true });
     items.push({ label: a.fav ? '取消收藏' : '收藏专辑', icon: 'heart', onClick: () => toggleFavorite(id) });
     if (canModify) items.push({ label: a.pinned ? '取消置顶' : '置顶专辑', icon: 'up', onClick: () => { if (readonlyBlocked()) return; L.setMeta(id, { pinned: !a.pinned }); renderAll(); } });
@@ -2256,6 +2270,7 @@
     if (!t) return;
     const a = L.album(t.albumId);
     refs.playerbar.hidden = false;
+    document.body.classList.add('has-player');
     refs.pbTitle.textContent = t.title;
     refs.pbSub.textContent = (a ? a.title : '') + (a ? ' · 第 ' + (t.order + 1) + ' 集' : '');
     paintCover(refs.pbCover, a, t);
@@ -2409,6 +2424,7 @@
       if (refs.sheet.classList.contains('open')) closeSheet();
       setCinema(false);
       refs.playerbar.hidden = true;
+      document.body.classList.remove('has-player');
       refs.pbTitle.textContent = '—';
       refs.pbSub.textContent = '选择一集开始收听';
       refs.pbKind.hidden = true;
