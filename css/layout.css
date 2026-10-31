@@ -349,6 +349,7 @@ body.is-server #libSwitch .lib-caret{display:none}
   display:grid;place-items:center;
 }
 .sheet.playing .disc-vinyl{animation-play-state:running}
+.sheet:not(.open) .disc-vinyl{animation-play-state:paused}
 
 /* 固定光影（不随盘面旋转）：顶光反光 + 左上边缘光，像顶灯打在黑胶上 */
 .sheet-disc::after{
