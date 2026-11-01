@@ -3,7 +3,7 @@ setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 
-rem 8080 常被占用（例如公网隧道已在跑），占了就顺延到一个空闲端口
+rem Pick the first free port from 8080 up (8080 may already be taken by the tunnel).
 set "PORT=8080"
 set "MAXPORT=8099"
 :pick
@@ -14,12 +14,12 @@ goto pick
 
 :up
 echo.
-echo   星海 FM · 本地服务
-echo   库列表默认读桌面端的 config.json
-echo   地址: http://localhost:%PORT%/   （关闭此窗口即停止）
+echo   Xinghai FM - local server
+echo   Library list: desktop config.json
+echo   URL: http://localhost:%PORT%/  (use this PC's LAN IP for other devices)
 echo.
 
-rem 首次运行/升级：初始化数据库（幂等），保证 admin 用户存在
+rem Create/upgrade the database (idempotent) so an admin user always exists.
 node "tools\init-db.js"
 
 start "" cmd /c "timeout /t 2 >nul & start http://localhost:%PORT%/"
@@ -31,6 +31,6 @@ exit /b 0
 
 :noport
 echo.
-echo   8080-%MAXPORT% 端口都被占用，请先关闭占用程序再启动。
+echo   Ports 8080-%MAXPORT% are all in use. Close the program using them and retry.
 pause
 exit /b 1

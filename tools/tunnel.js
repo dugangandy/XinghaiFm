@@ -22,6 +22,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
+const net = require('node:net');
+const http = require('node:http');
 const DB = require('../db');
 
 const HERE = __dirname;
@@ -123,7 +125,80 @@ const serveArgs = [path.join(HERE, 'serve.js'), String(localPort), '--host', '12
 if (cfg.configFile) serveArgs.push('--config', path.resolve(cfg.configFile));
 /* 允许远程增删资源库是个敏感能力，必须在配置里显式打开 */
 if (cfg.allowLibEdit) serveArgs.push('--allow-lib-edit');
-const server = spawn(process.execPath, serveArgs, { stdio: 'inherit' });
+
+let server = null;
+let reused = false;
+
+/* 端口上有没有人在听 */
+function isListening(port) {
+  return new Promise(function (resolve) {
+    const s = net.connect({ port: port, host: '127.0.0.1' });
+    const done = ok => { s.destroy(); resolve(ok); };
+    s.setTimeout(800);
+    s.once('connect', () => done(true));
+    s.once('timeout', () => done(false));
+    s.once('error', () => done(false));
+  });
+}
+
+/* 是不是星海 FM 自己：认我们加的 CSP 头或登录页跳转，别把别的服务当自家复用 */
+function looksLikeUs(port) {
+  return new Promise(function (resolve) {
+    const req = http.request({ host: '127.0.0.1', port: port, path: '/', method: 'GET', timeout: 1500 }, function (res) {
+      const csp = String(res.headers['content-security-policy'] || '');
+      const loc = String(res.headers.location || '');
+      res.resume();
+      resolve(csp.indexOf("default-src 'self'") >= 0 || loc.indexOf('/__auth') >= 0);
+    });
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
+
+/* 复用前确认对方是要登录的：--no-auth 的实例挂到公网等于不设防 */
+function requiresAuth(port) {
+  return new Promise(function (resolve) {
+    const req = http.request({ host: '127.0.0.1', port: port, path: '/api/me', method: 'GET', timeout: 1500 }, function (res) {
+      const status = res.statusCode || 0;
+      res.resume();
+      resolve(status === 401 || status === 403);
+    });
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
+
+/* 本地服务：端口已被自己占着（多半先开了「启动.bat」）就直接复用，别起第二个 */
+async function ensureLocalServer() {
+  if (await isListening(localPort)) {
+    if (await looksLikeUs(localPort)) {
+      if (await requiresAuth(localPort)) {
+        reused = true;
+        console.log('检测到 127.0.0.1:' + localPort + ' 已有星海 FM 在运行，直接复用这份服务');
+        return;
+      }
+      die([
+        '127.0.0.1:' + localPort + ' 上是「免密」模式的星海 FM（多半是用 启动.bat 起的），',
+        '公网隧道不能复用它——那等于把整个库裸露到公网，谁都能访问。',
+        '',
+        '  1) 先关掉那个窗口，再运行本脚本（隧道会自己起一个要登录的服务）',
+        '  2) 或把 .tunnel.json 里的 localPort 改成一个空闲端口'
+      ].join(String.fromCharCode(10)));
+    }
+    die('端口 ' + localPort + ' 被别的程序占用：先关掉它，或把 .tunnel.json 里的 localPort 改成空闲端口');
+  }
+  server = spawn(process.execPath, serveArgs, { stdio: 'inherit' });
+  server.on('exit', function (code) {
+    if (stopping) return;
+    if (!code) return;
+    console.error('本地服务启动失败（退出码 ' + code + '）：' + localPort + ' 端口可能刚被占用，或数据库读不了。');
+    console.error('  1) 关掉占 ' + localPort + ' 的程序，或改 .tunnel.json 的 localPort');
+    console.error('  2) 单独跑 node tools\\serve.js ' + localPort + ' 看具体报错');
+    stop(1);
+  });
+}
 
 /* 3. 反向隧道 */
 const args = ['-N'].concat(sshBase.slice(0, sshBase.length), [
@@ -156,7 +231,7 @@ function retryLabel(n) {
 function stop(code) {
   stopping = true;
   try { if (tunnel) tunnel.kill(); } catch (e) {}
-  try { server.kill(); } catch (e) {}
+  if (server) { try { server.kill(); } catch (e) {} }
   process.exit(code || 0);
 }
 
@@ -224,7 +299,7 @@ function connect() {
   });
 }
 
-setTimeout(function () {
+setTimeout(async function () {
   console.log('');
   console.log('  访问地址  http://' + ssh.host + ':' + remotePort + '/');
   console.log('  本地服务  http://127.0.0.1:' + localPort + '/');
@@ -233,11 +308,16 @@ setTimeout(function () {
   console.log('  断线重连  ' + (MAX_RETRIES > 0 ? '最多 ' + MAX_RETRIES + ' 次后放弃' : '不限次数，每 30 秒试一次'));
   console.log('  登录方式  ' + target + ' · ' + (keyFile || path.join(os.homedir(), '.ssh', 'id_rsa')));
   console.log('');
+  /* 端口被自己占着就复用，占着别人就报错退出——不硬起第二个服务，否则 ssh 转发目标会打空 */
+  await ensureLocalServer();
+  if (stopping) return;
   connect();
 }, 900);
 
-process.on('SIGINT', function () { console.log(''); console.log('[tunnel] 已手动停止'); stop(0); });
-process.on('SIGTERM', function () { stop(0); });
-server.on('exit', function (code) {
-  if (code) { console.error('本地服务异常退出：' + code + '（端口被占用？）'); stop(1); }
+process.on('SIGINT', function () {
+  console.log('');
+  if (reused) console.log('[tunnel] 已手动停止（本地服务是复用的，不会被一起关掉）');
+  else console.log('[tunnel] 已手动停止');
+  stop(0);
 });
+process.on('SIGTERM', function () { stop(0); });
