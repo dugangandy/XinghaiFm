@@ -6,6 +6,7 @@ package local.xinghai.fm
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
@@ -411,7 +412,24 @@ class MainActivity : Activity() {
         }
     }
 
+    /* 最后一次返回：
+     *   正在播放 → 退回后台继续播（服务与通知栏都留着，点通知直接回来）
+     *   没在播放 → 再按一次退出
+     * 以前这里一律 finish：finish 会停前台服务（通知没了），但 WebView 里的媒体还在渲染进程里出声，
+     * 于是变成「有声音、没入口」，既控制不了也回不来。 */
     private fun leave() {
+        val svc = PlaybackService.current
+        if (svc != null && svc.isPlaying) {
+            /* 通知被系统关掉时「后台继续播」照样是有声音没入口：这种就直接停播退出 */
+            if (notificationsBlocked()) {
+                web?.evaluateJavascript("window.FM && FM.player && FM.player.pause && FM.player.pause()", null)
+                toast(Msg.NO_NOTI_STOPPED)
+                finish()
+                return
+            }
+            moveTaskToBack(true)
+            return
+        }
         val now = System.currentTimeMillis()
         if (now - lastBack < 2000) {
             finish()
@@ -419,6 +437,16 @@ class MainActivity : Activity() {
         }
         lastBack = now
         toast("再按一次返回键退出")
+    }
+
+    /* 通知被用户/系统关掉了吗（13+ 未授权，或用户手动关了通知） */
+    private fun notificationsBlocked(): Boolean {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED
+        ) return true
+        return runCatching {
+            getSystemService(NotificationManager::class.java)?.areNotificationsEnabled() == false
+        }.getOrDefault(false)
     }
 
     /* ── 服务器设置 ── */
@@ -487,7 +515,17 @@ class MainActivity : Activity() {
         Dl.unwatch(onDlChanged)
         Dl.unwatchProgress(onDlChanged)
         ui.removeCallbacks(pushDlState)
-        if (isFinishing) PlaybackService.stop(this)
+        if (isFinishing) {
+            /* 先把网页里的播放停掉再拆 WebView：停服务只是把通知收走，媒体还挂在渲染进程里，
+               会变成「App 已经退出但声音还在」 */
+            web?.let { w ->
+                runCatching { w.evaluateJavascript("window.FM && FM.player && FM.player.pause && FM.player.pause()", null) }
+                runCatching { w.loadUrl("about:blank") }
+                ui.postDelayed({ runCatching { w.destroy() } }, 150)
+            }
+            web = null
+            PlaybackService.stop(this)
+        }
         super.onDestroy()
     }
 

@@ -108,6 +108,9 @@ class PlaybackService : Service() {
 
         startForegroundCompat()
         refresh()
+        /* 服务是异步建起来的：网页第一次 setPlaying 时 current 还是 null，那条「正在播放」会丢掉，
+           通知栏就会停在「播放」按钮、也不是常驻的。建好后让网页把当前状态重推一遍。 */
+        MainActivity.current?.js("window.FM && FM.android && FM.android.syncMedia && FM.android.syncMedia(true)")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
