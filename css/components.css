@@ -171,6 +171,8 @@
 /* 专辑网格 */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(152px,1fr));gap:12px 10px;padding-bottom:10px}
 @media (max-width:560px){.grid{grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:10px 8px}}
+/* 专辑网格分批渲染：滚到底自动续，这个按钮是兜底（键盘/短列表） */
+.grid-more{display:flex;justify-content:center;margin:16px 0 8px}
 
 .card{
   position:relative;border-radius:var(--r-lg);padding:7px 7px 9px;

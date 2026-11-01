@@ -9,6 +9,10 @@
   function hideBoot() {
     const node = document.getElementById('boot');
     if (!node) return;
+    /* 遮罩盖着的时候界面不真画，撤之前把攒下的那一次渲染补上 */
+    if (FM.ui && FM.ui.flushBootRender) {
+      try { FM.ui.flushBootRender(); } catch (e) { console.warn('[boot] 首屏渲染失败', e); }
+    }
     node.classList.add('hide');
     setTimeout(function () { node.remove(); }, 400);
   }

@@ -4,16 +4,18 @@
   const U = FM.util, L = FM.lib, P = FM.player;
   const esc = U.escape, icon = U.icon, fmtT = U.fmtTime, fmtS = U.fmtSize, fmtD = U.fmtDur;
 
-  const state = { view: 'home', cat: null, albumId: null, q: '', detailQ: '', sortDesc: false, showHidden: false, page: 0, qMore: false };
+  const state = { view: 'home', cat: null, albumId: null, q: '', detailQ: '', sortDesc: false, showHidden: false, page: 0, qMore: false, gridShown: 0 };
   const PAGE = 30;            // 专辑声音列表每页集数
   const SEARCH_ALBUMS = 24;   // 搜索结果首屏最多画多少张卡片（点「显示更多」才展开）
   const SEARCH_TRACKS = 40;   // 搜索结果首屏最多画多少行单集
+  const GRID_BATCH = 60;      // 专辑网格每批画多少张卡（一次画几百张要几百毫秒）
   let refs = {};
   let dragId = null;
   let queueOpen = false;
   let scrubbing = false;
   let menuEl = null;
   let menuOff = null;
+  let gridTail = null;        // 还没画出来的专辑（滚动加载用）
 
   const CAT_COLORS = ['#22d3ee', '#a855f7', '#f472b6', '#34d399', '#fbbf24', '#ff8a65', '#60a5fa', '#c084fc'];
 
@@ -522,6 +524,9 @@
     }
     state.detailQ = '';
     state.page = 0;
+    state.gridShown = GRID_BATCH;   // 换页回到「只画第一批」
+    gridTail = null;
+    if (bootVisible()) { bootPending = true; return; }   // 启动遮罩还在：等撤遮罩前再画
     renderMain();
     renderNav();
     renderCats();
@@ -545,6 +550,7 @@
     const quiet = !!(opts && opts.quiet);
     const v = refs.view;
     v.innerHTML = '';
+    gridTail = null;
     /* 批量下载/删除页：让页面铺满（没有播放条时不留底部空档） */
     if (!L.albums().length) { v.classList.remove('dl-view'); renderWelcome(); return; }
     v.classList.toggle('dl-view', state.view === 'dlMore' || state.view === 'dlRemove');
@@ -610,10 +616,59 @@
 
   function gridHtml(list) {
     if (!list.length) {
+      gridTail = null;
       return '<div class="empty"><div class="empty-art">' + icon('folder') + '</div>' +
         '<h3>这里还没有专辑</h3><p>换个分类看看，或把专辑卡片拖到左侧分类里。</p></div>';
     }
-    return '<div class="grid">' + list.map(albumCard).join('') + '</div>';
+    /* 首屏只画前 gridShown 张，剩下的滚到底（或点按钮）再追加，避免一次解析几百张卡 */
+    const shown = Math.min(list.length, state.gridShown || GRID_BATCH);
+    gridTail = list.length > shown ? list : null;
+    return '<div class="grid">' + list.slice(0, shown).map(albumCard).join('') + '</div>' +
+      (gridTail ? moreHtml(list.length - shown) : '');
+  }
+
+  function moreHtml(rest) {
+    return '<div class="grid-more"><button class="btn" data-act="grid-more">加载更多（还有 ' + rest + ' 个）</button></div>';
+  }
+
+  /* 追加下一批：只往现有 .grid 里塞新卡，不重建已经画好的那些 */
+  function appendGridBatch() {
+    if (!gridTail) return;
+    const host = refs.view.querySelector('.grid');
+    if (!host) return;
+    const shown = host.children.length;
+    const next = gridTail.slice(shown, shown + GRID_BATCH);
+    if (!next.length) { gridTail = null; paintMoreLabel(); return; }
+    const tmp = document.createElement('div');
+    tmp.innerHTML = next.map(albumCard).join('');
+    const frag = document.createDocumentFragment();
+    while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+    host.appendChild(frag);
+    state.gridShown = shown + next.length;
+    observeCards(host, true);       // 追加的不播交错淡入，直接落终态
+    applyPlayingState(host);
+    paintMoreLabel();
+  }
+
+  function paintMoreLabel() {
+    const box = refs.view.querySelector('.grid-more');
+    if (!box) return;
+    const rest = gridTail ? Math.max(0, gridTail.length - state.gridShown) : 0;
+    if (!rest) { box.remove(); return; }
+    const btn = box.querySelector('button');
+    if (btn) btn.textContent = '加载更多（还有 ' + rest + ' 个）';
+  }
+
+  /* 滚到接近底部就自动加载下一批（手机上不必手动点） */
+  let moreTick = 0;
+  function maybeLoadMore() {
+    if (!gridTail || moreTick) return;
+    const v = refs.view;
+    if (v.scrollTop + v.clientHeight < v.scrollHeight - 900) return;
+    moreTick = requestAnimationFrame(function () {
+      moreTick = 0;
+      appendGridBatch();
+    });
   }
 
   /* ── 各个视图 ── */
@@ -1541,6 +1596,7 @@
 
     refs.view.addEventListener('scroll', function () {
       refs.topbar.classList.toggle('scrolled', refs.view.scrollTop > 8);
+      maybeLoadMore();
     });
   }
 
@@ -1754,6 +1810,7 @@
           break;
         }
         case 'search-more': state.qMore = true; renderMain(); break;
+        case 'grid-more': appendGridBatch(); break;
         case 'scan': addLibFlow(); break;
         case 'rescan': doScan(); break;
         case 'retry': location.reload(); break;
@@ -1791,20 +1848,30 @@
     });
   }
 
+  /* 卡片入场：全站共用一个 observer（以前每次渲染都新建一个、观察一整屏卡片，
+     冷启动 trace 里光是 computeIntersections 就跑了 200 多次） */
+  let cardIO = null;
+  function cardObserver() {
+    if (cardIO) return cardIO;
+    cardIO = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) { en.target.classList.add('in'); cardIO.unobserve(en.target); }
+      });
+    }, { root: refs.view, rootMargin: '0px 0px -30px 0px' });
+    return cardIO;
+  }
+
   function observeCards(root, instant) {
     const cards = U.$$('.card', root);
     if (!cards.length) return;
     if (instant) {
-      /* 静默刷新：直接落在终态，不走交错淡入 */
+      /* 静默刷新/追加：直接落在终态，不走交错淡入 */
       cards.forEach(function (c) { c.style.transitionDelay = '0ms'; c.classList.add('in'); });
       return;
     }
     if (!('IntersectionObserver' in window)) { cards.forEach(c => c.classList.add('in')); return; }
-    const io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (en) {
-        if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); }
-      });
-    }, { root: refs.view, rootMargin: '0px 0px -30px 0px' });
+    const io = cardObserver();
+    io.disconnect();        // 上一屏的卡片已经全部换掉，别让它们继续挂在 observer 上
     cards.forEach(function (c, i) {
       c.style.transitionDelay = Math.min(i, 10) * 22 + 'ms';
       io.observe(c);
@@ -3376,7 +3443,17 @@
     el.hidden = !v;
   }
 
+  /* 启动遮罩还盖着的时候不必真画：那几次整页重建用户一帧都看不见，
+     攒到遮罩撤掉之前统一画一次（冷启动本来会重建 3 次，现在 1 次） */
+  let bootPending = false;
+  function bootVisible() {
+    const b = document.getElementById('boot');
+    return !!(b && !b.classList.contains('hide'));
+  }
+
   function renderAll(opts) {
+    if (bootVisible()) { bootPending = true; return; }
+    bootPending = false;
     syncMode();
     renderNav();
     renderCats();
@@ -3384,8 +3461,19 @@
     renderMain(opts);
   }
 
+  /* 由 app.js 在撤遮罩前调用：把启动期间攒下的那一次渲染补上 */
+  function flushBootRender() {
+    if (!bootPending) return;
+    bootPending = false;
+    syncMode();
+    renderNav();
+    renderCats();
+    renderStat();
+    renderMain();
+  }
+
   FM.ui = {
-    init, renderAll, paintTrack, syncMode, downloadsChanged,
+    init, renderAll, flushBootRender, paintTrack, syncMode, downloadsChanged,
     autoRescan, runScan, enterLib, switchLib, addLibFlow,
     openLibMenu, openLibDrawer, renderStat, renderWelcome, renderBrokenLib,
     toast, openSheet, closeSheet,
