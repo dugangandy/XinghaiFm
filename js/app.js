@@ -106,12 +106,46 @@
     if (driftTimer) { clearInterval(driftTimer); driftTimer = 0; }
   }
 
-  /* 窗口失焦 / 切到后台时连漂移也停掉：被别的窗口盖住时合成器不会自己省电，
-     照样重算，等于后台白烧一个核。只影响背景装饰，音频和交互都不受牵连。 */
+  /* ── 品牌 logo 的声波跳动 ──
+     同样不用 CSS 动画：任何无限动画都会让合成器以 60fps 出帧，软件渲染下整屏每帧
+     重新合成。这里每 100ms 写一次 scaleY，1.9s 一个来回，观感和原动画基本一致，
+     合成开销只有原来的 1/6。曲线也照搬原来的 keyframes：0.5 → 1 → 0.5。 */
+  const EQ_PERIOD_MS = 1900;
+  const EQ_STEP_MS = 100;
+  const EQ_DELAY_MS = [0, 160, 320, 480, 640];   /* 五根柱子依次起跳 */
+  let eqBars = null;
+  let eqTimer = 0;
+  let eqT0 = 0;
+
+  function stepEq() {
+    if (!eqBars) {
+      eqBars = document.querySelectorAll('.brand-mark.eq-mark span');
+      if (!eqBars.length) return;
+    }
+    const now = Date.now();
+    for (let i = 0; i < eqBars.length; i++) {
+      const phase = ((now - eqT0 - EQ_DELAY_MS[i]) / EQ_PERIOD_MS) * Math.PI * 2;
+      const v = 0.75 - 0.25 * Math.cos(phase);
+      eqBars[i].style.transform = 'scaleY(' + v.toFixed(3) + ')';
+    }
+  }
+  function startEq() {
+    if (eqTimer) return;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    eqT0 = Date.now();
+    stepEq();
+    eqTimer = setInterval(stepEq, EQ_STEP_MS);
+  }
+  function stopEq() {
+    if (eqTimer) { clearInterval(eqTimer); eqTimer = 0; }
+  }
+
+  /* 窗口失焦 / 切到后台时把这些装饰动画全停掉：被别的窗口盖住时合成器不会自己省电，
+     照样重算，等于后台白烧一个核。只影响装饰层，音频和交互都不受牵连。 */
   function bindBgMotion() {
     const body = document.body;
-    const idle = function () { body.classList.add('bg-idle'); stopDrift(); };
-    const live = function () { body.classList.remove('bg-idle'); startDrift(); };
+    const idle = function () { body.classList.add('bg-idle'); stopDrift(); stopEq(); };
+    const live = function () { body.classList.remove('bg-idle'); startDrift(); startEq(); };
     window.addEventListener('blur', idle);
     window.addEventListener('focus', live);
     document.addEventListener('visibilitychange', function () {
@@ -119,6 +153,7 @@
       else live();
     });
     startDrift();
+    startEq();
   }
 
   function boot() {

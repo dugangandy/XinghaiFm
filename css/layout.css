@@ -45,9 +45,9 @@
 .eq-mark{
   position:relative;display:flex;align-items:center;gap:.12em;height:1em;font-size:26px;
 }
-/* 柱子不再做 scaleY 无限动画：只要页面上还有任意一个动画在跑，合成器就会以 60fps
-   持续出帧，软件渲染下整屏每帧都要重新合成。侧栏 logo 是常驻元素，代价太高。
-   静态的高低柱形保留了品牌识别度，只是不再跳动。 */
+/* 柱子的跳动不用 CSS 动画，改由 js/app.js 低频写 scaleY（每 100ms 一次）。
+   CSS 无限动画会让合成器以 60fps 出帧，软件渲染下整屏每帧都要重新合成；
+   低频驱动观感接近原来的 1.9s 跳动，合成开销降到约 1/6。 */
 .eq-mark span{
   display:block;width:.16em;border-radius:.09em;
   background:var(--grad);box-shadow:0 0 12px rgba(34,211,238,.7);
@@ -63,7 +63,6 @@
   clip-path:polygon(50% 0,61% 39%,100% 50%,61% 61%,50% 100%,39% 61%,0 50%,39% 39%);
   filter:drop-shadow(0 0 6px rgba(34,211,238,.85));
 }
-@keyframes eq{0%,100%{transform:scaleY(.5)}50%{transform:scaleY(1)}}
 .brand-text{display:flex;flex-direction:column;line-height:1.15}
 .brand-text strong{font-size:17px;letter-spacing:.06em;font-weight:800;
   background:linear-gradient(100deg,#fff,#bfe9ff 40%,#d9b8ff);-webkit-background-clip:text;background-clip:text;color:transparent}
