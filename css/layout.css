@@ -137,6 +137,11 @@ body.is-server #libSwitch .lib-caret{display:none}
 .lib-stat{font-size:11px;color:var(--dim);line-height:1.6;font-variant-numeric:tabular-nums;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .side-hint{font-size:10px;color:var(--dim-2);letter-spacing:.04em}
+/* 矮屏（手机横屏）：菜单/分类这段只剩一两行，改成整条侧栏一起滚，
+   滚动条从 logo 一直覆盖到分类末尾 */
+@media (max-height:560px){
+  .side-scroll{flex:none;min-height:0;overflow:visible}
+}
 
 /* ── 主区 ── */
 .main{position:relative;display:flex;flex-direction:column;min-width:0;overflow:hidden}
@@ -509,6 +514,8 @@ body.is-server #libSwitch .lib-caret{display:none}
 
 /* 画面舞台：默认 16:9 居中，影院模式贴边 */
 .sheet.is-video{background:#000}
+/* 竖屏不铺满时留个渐变底，16:9 的黑卡片才不会糊成一整屏黑 */
+.sheet.is-video:not(.cinema){background:radial-gradient(120% 80% at 50% 0%,#0b1424,#05070e 70%)}
 .sheet.is-video .sheet-glow,
 .sheet.is-video .sheet-art,
 .sheet.is-video .sheet-art-veil,
