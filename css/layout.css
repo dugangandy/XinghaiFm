@@ -514,12 +514,8 @@ body.is-server #libSwitch .lib-caret{display:none}
 
 /* 画面舞台：默认 16:9 居中，影院模式贴边 */
 .sheet.is-video{background:#000}
-/* 竖屏不铺满时给深蓝渐变底 + 顶部一点青色辉光，16:9 卡片才立得住 */
-.sheet.is-video:not(.cinema){
-  background:
-    radial-gradient(120% 68% at 50% 0%,rgba(34,211,238,.12),transparent 62%),
-    radial-gradient(130% 90% at 50% 8%,#12294a,#060a12 72%);
-}
+/* 竖屏不铺满时留个渐变底，16:9 的黑卡片才不会糊成一整屏黑 */
+.sheet.is-video:not(.cinema){background:radial-gradient(120% 80% at 50% 0%,#0b1424,#05070e 70%)}
 .sheet.is-video .sheet-glow,
 .sheet.is-video .sheet-art,
 .sheet.is-video .sheet-art-veil,
@@ -542,17 +538,11 @@ body.is-server #libSwitch .lib-caret{display:none}
 .sheet.is-video.queue-open .sheet-stage{right:min(380px,92vw)}
 .vstage{
   position:relative;width:min(1180px,100%);aspect-ratio:16/9;max-height:100%;
-  display:flex;overflow:hidden;border-radius:14px;
-  /* 底色兜黑；cover 姿态让封面海报铺满卡片（内联 backgroundImage 会覆盖它） */
-  background-color:#000;background-size:cover;background-position:center;background-repeat:no-repeat;
+  display:flex;background:#000;overflow:hidden;border-radius:14px;
   box-shadow:0 40px 110px -50px #000,0 0 0 1px rgba(255,255,255,.06);
 }
 .vstage.vhidden{position:absolute;inset:0;visibility:hidden;opacity:0;pointer-events:none}
-.vstage video{width:100%;height:100%;object-fit:contain;background:transparent;display:block}
-/* 还没开始播：画面先别出，露卡片上的封面海报（也避免看到上一条视频的残帧） */
-.vstage.v-pending video{opacity:0}
-/* 影院模式铺满整屏时不要海报：视频两侧留黑边就行，别露出封面 */
-.sheet.cinema .vstage{background-image:none !important}
+.vstage video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
 .sheet.cinema .sheet-stage{padding:0}
 .sheet.cinema .vstage{
   width:100%;height:100%;aspect-ratio:auto;max-height:none;border-radius:0;box-shadow:none;
