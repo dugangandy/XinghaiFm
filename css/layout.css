@@ -107,16 +107,18 @@ body.is-server #libSwitch .lib-caret{display:none}
 }
 .nav-item.active .i{color:var(--cyan);opacity:1}
 
-/* 分类区吃掉剩余高度：屏幕不够高时只让分类列表内滚，
-   否则它会缩到比内容还矮，列表溢出后和底部统计文字叠在一起 */
-.side-section{display:flex;flex-direction:column;gap:8px;flex:1 1 auto;min-height:96px}
+/* 菜单 + 分类共用一个滚动区：矮屏时这一段自己滚，品牌和底部统计固定，
+   分类列表也不会再缩到比内容还矮而和统计文字叠在一起 */
+.side-scroll{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:18px;
+  overflow-y:auto;overflow-x:hidden;padding-right:2px}
+.side-section{display:flex;flex-direction:column;gap:8px}
 .side-title{display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:10.5px;letter-spacing:.2em;color:var(--dim-2);text-transform:uppercase}
 .mini-btn{width:22px;height:22px;display:grid;place-items:center;border-radius:6px;color:var(--dim);transition:.2s}
 .mini-btn .i{width:14px;height:14px}
 .mini-btn:hover{color:var(--cyan);background:var(--panel-3)}
-.cat-list{display:flex;flex-direction:column;gap:1px;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+.cat-list{display:flex;flex-direction:column;gap:2px}
 .cat-item{
-  position:relative;display:flex;align-items:center;gap:10px;height:36px;padding:0 12px;border-radius:10px;
+  position:relative;display:flex;align-items:center;gap:10px;height:40px;padding:0 12px;border-radius:10px;
   font-size:13px;color:var(--txt-2);transition:.18s var(--ease);cursor:pointer;
 }
 .cat-item .bullet{width:7px;height:7px;border-radius:99px;flex:none;background:var(--cc,#7c879d);box-shadow:0 0 10px var(--cc,#7c879d)}
@@ -131,7 +133,9 @@ body.is-server #libSwitch .lib-caret{display:none}
 .cat-empty{font-size:11.5px;color:var(--dim-2);padding:6px 12px;line-height:1.6}
 
 .side-foot{flex:none;margin-top:auto;padding:10px 10px 0;display:flex;flex-direction:column;gap:4px}
-.lib-stat{font-size:11px;color:var(--dim);line-height:1.6;font-variant-numeric:tabular-nums}
+
+.lib-stat{font-size:11px;color:var(--dim);line-height:1.6;font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .side-hint{font-size:10px;color:var(--dim-2);letter-spacing:.04em}
 
 /* ── 主区 ── */
@@ -451,7 +455,7 @@ body.is-server #libSwitch .lib-caret{display:none}
   .sidebar{
     position:fixed;left:0;top:0;bottom:0;width:280px;z-index:50;
     transform:translateX(-102%);transition:transform .38s var(--ease);
-    padding-bottom:calc(var(--pb-h) + 20px);
+    padding-bottom:calc(var(--pb-h) + 6px);
   }
   .sidebar.open{transform:none;box-shadow:30px 0 70px -20px #000}
   .menu-btn{display:grid}

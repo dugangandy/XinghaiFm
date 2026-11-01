@@ -93,14 +93,17 @@
       </button>
     </div>
 
-    <nav class="nav" id="nav"></nav>
+    <!-- 菜单 + 分类共用一个滚动区：滚动条贯穿这一段，品牌和底部统计固定 -->
+    <div class="side-scroll">
+      <nav class="nav" id="nav"></nav>
 
-    <div class="side-section">
-      <div class="side-title">
-        <span>分类</span>
-        <button class="mini-btn" id="btnAddCat" title="新建分类"><svg class="i"><use href="#i-plus"/></svg></button>
+      <div class="side-section">
+        <div class="side-title">
+          <span>分类</span>
+          <button class="mini-btn" id="btnAddCat" title="新建分类"><svg class="i"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="cat-list" id="catList"></div>
       </div>
-      <div class="cat-list" id="catList"></div>
     </div>
 
     <div class="side-foot">
