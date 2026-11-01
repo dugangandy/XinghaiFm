@@ -651,3 +651,9 @@ body.is-server #libSwitch .lib-caret{display:none}
 .lib-txt b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lib-txt small{font-size:10.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lib-caret{width:14px;height:14px;flex:none;color:var(--dim)}
+/* 矮屏（手机横屏）：资源库卡片收成一行只留库名，给菜单和分类腾高度 */
+@media (max-height:560px){
+  .side-lib-btn{min-height:38px;padding:4px 10px}
+  .lib-badge{width:22px;height:22px;border-radius:8px;font-size:11px}
+  .lib-txt small{display:none}
+}
