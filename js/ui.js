@@ -2601,9 +2601,12 @@
   }
 
   function openSheet() {
+    /* 壳内视频由原生播放器负责，网页这层没有画面可展开：
+       再打开只会得到一个空的黑页面，返回后还停在暂停态 */
+    if (FM.android && P.kind === 'video') return;
     refs.sheet.classList.add('open');
     refs.sheet.setAttribute('aria-hidden', 'false');
-    if (P.kind === 'video') { if (FM.android) setCinema(true); wakeUi(); return; }
+    if (P.kind === 'video') { wakeUi(); return; }
     FM.viz.attach();
     FM.viz.resume();
     FM.viz.start();
