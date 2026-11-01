@@ -21,6 +21,19 @@
 
   function $(id) { return document.getElementById(id); }
 
+  /* 顶部「← 返回」：安卓壳有系统返回手势（左滑 / 返回键），窄屏上不必再占一行，
+     整行都不画；行里的右侧按钮在手机布局里本来就隐藏，一并省掉。
+     桌面版与浏览器保持原样。 */
+  const APP = !!(FM.android && FM.android.native);
+  const BACK_BTN = APP ? '' : '<button class="link-btn" data-act="back">← 返回</button>';
+  const BACK_SPARE = APP ? '' : '<span class="dl-page-spare"></span>';
+
+  function backHead(actions) {
+    if (APP) return '';
+    return '<div class="view-head" style="padding:10px 2px 0">' + BACK_BTN +
+      (actions ? '<div class="head-actions">' + actions + '</div>' : '') + '</div>';
+  }
+
   /* ── 初始化 ── */
   function init() {
     refs = {
@@ -812,8 +825,7 @@
   function viewFavTracks() {
     const tracks = favTrackList();
     const wrap = U.el('div');
-    wrap.innerHTML = '<div class="view-head" style="padding:10px 2px 0"><button class="link-btn" data-act="back">← 返回</button>' +
-      '<div class="head-actions">' + (tracks.length ? '<button class="btn btn-ghost" data-act="play-fav-tracks">' + icon('play') + '播放全部</button>' : '') + '</div></div>' +
+    wrap.innerHTML = backHead(tracks.length ? '<button class="btn btn-ghost" data-act="play-fav-tracks">' + icon('play') + '播放全部</button>' : '') +
       '<div class="view-head"><div><div class="page-title">我收藏的声音</div>' +
       '<div class="page-sub">' + tracks.length + ' 条</div></div></div>' +
       (tracks.length ? '<div class="track-list">' + tracks.map(function (t) { return flatTrack(t, { noIdx: true }); }).join('') + '</div>'
@@ -970,8 +982,7 @@
     const last = lastPlayed(done);
     const wrap = U.el('div');
     wrap.innerHTML =
-      '<div class="view-head" style="padding:10px 2px 0"><button class="link-btn" data-act="back">← 返回</button>' +
-        '<div class="head-actions"><button class="btn btn-ghost" data-act="open-downloads">' + icon('download') + '下载任务</button></div></div>' +
+      backHead('<button class="btn btn-ghost" data-act="open-downloads">' + icon('download') + '下载任务</button>') +
       '<div class="dl-hero">' +
         '<span class="dl-cover lg" style="' + U.coverVars(a.seed) + '">' + coverArt(a) + '</span>' +
         '<div class="dl-hero-body">' +
@@ -1066,8 +1077,8 @@
 
     const wrap = U.el('div', { class: 'dl-page' });
     wrap.innerHTML =
-      '<div class="dl-page-head"><button class="link-btn" data-act="back">← 返回</button>' +
-        '<span class="dl-page-title">批量下载</span><span class="dl-page-spare"></span></div>' +
+      '<div class="dl-page-head">' + BACK_BTN +
+        '<span class="dl-page-title">批量下载</span>' + BACK_SPARE + '</div>' +
       (tight ? '<div class="dl-warn">手机空间可能不够，建议少选几集。</div>' : '') +
       (pend.length
         ? filterHtml + '<div class="dl-scroll">' + groupsHtml + '</div>' + barHtml
@@ -1111,8 +1122,8 @@
     const doneOn = doneList.length > 0 && doneList.every(function (t) { return !!sel[t.id]; });
     const wrap = U.el('div', { class: 'dl-page' });
     wrap.innerHTML =
-      '<div class="dl-page-head"><button class="link-btn" data-act="back">← 返回</button>' +
-        '<span class="dl-page-title">批量删除</span><span class="dl-page-spare"></span></div>' +
+      '<div class="dl-page-head">' + BACK_BTN +
+        '<span class="dl-page-title">批量删除</span>' + BACK_SPARE + '</div>' +
       '<div class="dl-sum"><b>已占用 ' + fmtS(size) + '</b><span>/ 可用 ' + (free > 0 ? fmtS(free) : '未知') + '</span></div>' +
       '<div class="dl-sel-head">' +
         '<button class="dl-ck-item" data-act="dl-sel-all">' + ck(allOn) + '全选</button>' +
@@ -1210,7 +1221,7 @@
 
     const wrap = U.el('div');
     wrap.innerHTML =
-      '<div class="view-head" style="padding:10px 2px 0"><button class="link-btn" data-act="back">← 返回</button></div>' +
+      backHead('') +
       '<section class="album-hero" style="' + U.coverVars(a.seed) + '">' +
         '<div class="hero-cover' + (a.cover ? ' has-photo' : '') + '">' +
           (a.cover ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">' : '<span class="card-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>') +
