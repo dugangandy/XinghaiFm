@@ -322,31 +322,37 @@ function mergeMeta(cur, incoming) {
   return out;
 }
 
-/* ── 硬件加速检测 ──
-   没有走 GPU 合成的机器（老 Intel Mac 的显卡常落在 Chromium 的 GPU blocklist 里，
-   连 Helper (GPU) 进程都不会起），模糊、混合、动画全部由 CPU 计算。
-   界面据此决定要不要上重特效，而不是让所有机器都吃同一套降级方案。
-   注意：ready 之后 GPU 进程还要几十毫秒才初始化完，这段时间 getGPUFeatureStatus()
-   一律返回 disabled_software，必须等 gpu-info-update 才拿得到真值。 */
+/* ── 界面特效档位 ──
+   默认走精简档。这里踩过一次坑：老 Intel Mac 上 gpu_compositing 依然报 enabled，
+   但 90px 模糊 + 混合模式 + 毛玻璃一开，CPU 立刻翻倍 —— 从 Chromium 的任何接口
+   都分不清「没有硬件加速」和「有加速但显卡扛不住」，前者还能靠 glRenderer 里的
+   warp/swiftshader 认出来，后者完全看不出来。
+   所以默认取安全档，想要全特效启动前设 FM_FX=full。 */
 let gpuAccel = false;
-function detectGpu(timeoutMs) {
-  return new Promise(function (resolve) {
-    let done = false;
-    function finish() {
-      if (done) return;
-      done = true;
-      try {
-        const s = app.getGPUFeatureStatus() || {};
-        resolve(s.gpu_compositing === 'enabled' || s.rasterization === 'enabled');
-      } catch (e) {
-        console.warn('[gpu] 读取加速状态失败，按无加速处理', e);
-        resolve(false);
-      }
-    }
-    /* 万一事件已经发生过，就只能靠超时兜底，但那时读到的值也已经是对的 */
-    app.once('gpu-info-update', finish);
-    setTimeout(finish, timeoutMs || 800);
-  });
+
+function resolveFx() {
+  const fx = String(process.env.FM_FX || '').toLowerCase();
+  if (fx === 'full') return true;
+  return false;
+}
+
+/* 只打日志，不参与决策：真出问题时能一眼看出跑的是哪条渲染路径 */
+function logGpuInfo() {
+  let done = false;
+  function dump() {
+    if (done) return;
+    done = true;
+    app.getGPUInfo('complete').then(function (info) {
+      const s = app.getGPUFeatureStatus() || {};
+      const aux = info.auxAttributes || {};
+      console.log('[gpu] 合成=' + s.gpu_compositing +
+        ' 光栅=' + s.rasterization +
+        ' 渲染器=' + (aux.glRenderer || '?') +
+        ' 特效档位=' + (gpuAccel ? 'full' : 'light'));
+    }).catch(function () {});
+  }
+  app.once('gpu-info-update', dump);
+  setTimeout(dump, 1500);
 }
 
 /* ── IPC ── */
@@ -621,11 +627,11 @@ if (!gotLock) {
     if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
   });
 
-  app.whenReady().then(async function () {
+  app.whenReady().then(function () {
     nativeTheme.themeSource = 'dark';
     /* 必须在 createWindow 之前算好：preload 会在窗口创建时同步读它 */
-    gpuAccel = await detectGpu(800);
-    console.log('[gpu] 硬件加速：' + (gpuAccel ? '启用' : '未启用（界面降级为轻特效）'));
+    gpuAccel = resolveFx();
+    logGpuInfo();
     setupMenu();
     registerProtocol();
     bindIpc();
