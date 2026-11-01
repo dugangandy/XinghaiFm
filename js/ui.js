@@ -4,8 +4,10 @@
   const U = FM.util, L = FM.lib, P = FM.player;
   const esc = U.escape, icon = U.icon, fmtT = U.fmtTime, fmtS = U.fmtSize, fmtD = U.fmtDur;
 
-  const state = { view: 'home', cat: null, albumId: null, q: '', detailQ: '', sortDesc: false, showHidden: false, page: 0 };
-  const PAGE = 30;   // 专辑声音列表每页集数
+  const state = { view: 'home', cat: null, albumId: null, q: '', detailQ: '', sortDesc: false, showHidden: false, page: 0, qMore: false };
+  const PAGE = 30;            // 专辑声音列表每页集数
+  const SEARCH_ALBUMS = 24;   // 搜索结果首屏最多画多少张卡片（点「显示更多」才展开）
+  const SEARCH_TRACKS = 40;   // 搜索结果首屏最多画多少行单集
   let refs = {};
   let dragId = null;
   let queueOpen = false;
@@ -587,7 +589,7 @@
     const initial = initialOf(a);
     const countLabel = a.videoCount === a.count ? a.count + ' 视频' : a.count + ' 集' + (a.videoCount ? ' · ' + a.videoCount + ' 视频' : '');
     const art = a.cover
-      ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">'
+      ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">'
       : '<div class="rings"><i></i><i></i><i></i></div><span class="card-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span>';
     return '<article class="card' + (a.fav ? ' fav' : '') + '" data-id="' + a.id + '" draggable="true" style="' +
       U.coverVars(a.seed) + '">' +
@@ -643,7 +645,7 @@
       if (a) {
         resume = '<div class="resume-card" style="' + U.coverVars(a.seed) + '">' +
           '<div class="resume-cover" data-act="open-album" data-id="' + a.id + '" title="查看专辑">' + (a.cover
-            ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">'
+            ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">'
             : '<span>' + esc(initialOf(a)) + '</span>') + '</div>' +
           '<div class="resume-body">' +
             '<div class="resume-kicker">继续收听</div>' +
@@ -701,7 +703,7 @@
   function favSoundsRow(tracks) {
     const top = tracks[0];
     const a = top ? L.album(top.albumId) : null;
-    const art = a && a.cover ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">' : '';
+    const art = a && a.cover ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">' : '';
     return '<div class="fav-row fav-sounds" data-act="open-fav-tracks">' +
       '<span class="fav-thumb"' + (a ? ' style="' + U.coverVars(a.seed) + '"' : '') + '>' +
         art + '<span class="fav-star">' + icon('heart-fill') + '</span>' +
@@ -718,7 +720,7 @@
   function favAlbumRow(a) {
     const st = L.albumStat(a);
     const art = a.cover
-      ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">'
+      ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">'
       : '<span class="fav-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>';
     const p = lastPlayed(L.albumTracks(a.id));
     return '<div class="fav-row" data-act="open-album" data-id="' + a.id + '">' +
@@ -1115,12 +1117,23 @@
 
   function viewSearch(q) {
     const res = L.search(q);
+    /* 一次画 200 张卡 + 200 行，手机上一次按键就要卡一秒多；先给最相关的一屏，剩下的按需展开 */
+    const albums = state.qMore ? res.albums : res.albums.slice(0, SEARCH_ALBUMS);
+    const tracks = state.qMore ? res.tracks : res.tracks.slice(0, SEARCH_TRACKS);
+    const restA = res.albums.length - albums.length;
+    const restT = res.tracks.length - tracks.length;
+    const more = (restA > 0 || restT > 0)
+      ? '<div style="margin-top:20px;text-align:center"><button class="btn" data-act="search-more">显示更多' +
+        (restA > 0 ? ' · 还有 ' + restA + ' 个专辑' : '') + (restT > 0 ? ' · 还有 ' + restT + ' 集' : '') + '</button></div>'
+      : '';
     const wrap = U.el('div');
     wrap.innerHTML = '<div class="view-head"><div><div class="page-title">搜索 “' + esc(q) + '”</div>' +
-      '<div class="page-sub">命中 ' + res.albums.length + ' 个专辑 · ' + res.tracks.length + ' 集</div></div></div>' +
-      (res.albums.length ? '<div class="section-head"><div class="section-title">专辑</div></div>' + gridHtml(res.albums) : '') +
-      (res.tracks.length ? '<div class="section-head" style="margin-top:26px"><div class="section-title">单集</div></div>' +
-        '<div class="track-list">' + res.tracks.slice(0, 200).map(t => flatTrack(t)).join('') + '</div>' : '') +
+      '<div class="page-sub">命中 ' + res.albums.length + ' 个专辑 · ' + res.tracks.length + ' 集' +
+      ((restA > 0 || restT > 0) ? '（当前显示 ' + albums.length + ' 个专辑 · ' + tracks.length + ' 集）' : '') + '</div></div></div>' +
+      (albums.length ? '<div class="section-head"><div class="section-title">专辑</div></div>' + gridHtml(albums) : '') +
+      (tracks.length ? '<div class="section-head" style="margin-top:26px"><div class="section-title">单集</div></div>' +
+        '<div class="track-list">' + tracks.map(t => flatTrack(t)).join('') + '</div>' : '') +
+      more +
       (!res.albums.length && !res.tracks.length ? '<div class="empty"><div class="empty-art">' + icon('search') + '</div><h3>没有找到相关内容</h3><p>换个关键词，或检查资源库是否已授权。</p></div>' : '');
     return wrap;
   }
@@ -1145,7 +1158,7 @@
       '<div class="view-head" style="padding:10px 2px 0"><button class="link-btn" data-act="back">← 返回</button></div>' +
       '<section class="album-hero" style="' + U.coverVars(a.seed) + '">' +
         '<div class="hero-cover' + (a.cover ? ' has-photo' : '') + '">' +
-          (a.cover ? '<img class="cover-img" src="' + esc(a.cover) + '" alt="">' : '<span class="card-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>') +
+          (a.cover ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">' : '<span class="card-char' + (initialOf(a).length > 2 ? ' word' : '') + '">' + esc(initialOf(a)) + '</span>') +
         '</div>' +
         '<div class="hero-info">' +
           '<div class="hero-heading">' +
@@ -1269,56 +1282,68 @@
   }
 
 
-  /* ── 时长探测（后台低并发） ── */
+  /* ── 时长探测（后台低并发） ──
+     复用一个 <audio>/<video>：每集新建媒体元素，手机上光是初始化就要几十毫秒
+     （实测 15 集就让主线程忙了 4 秒多），串行复用一个元素便宜得多。
+     探不到时长的集记在 __noDur 上，同一会话不再重试（以前失败不记账，翻页/排序会重新探一遍）。 */
   let probeToken = 0;
+  let probeAudio = null;
+  let probeVideo = null;
+
   function readDuration(url, isVideo) {
+    const el = isVideo
+      ? (probeVideo || (probeVideo = document.createElement('video')))
+      : (probeAudio || (probeAudio = document.createElement('audio')));
     return new Promise(function (res) {
-      const a = isVideo ? document.createElement('video') : new Audio();
       let done = false;
+      let timer = 0;
       const finish = function (v) {
         if (done) return;
         done = true;
-        a.removeAttribute('src');
-        a.load();
+        clearTimeout(timer);
+        el.onloadedmetadata = null;
+        el.onerror = null;
+        try { el.removeAttribute('src'); el.load(); } catch (e) {}
         res(v);
       };
-      a.preload = 'metadata';
-      a.onloadedmetadata = function () { finish(isFinite(a.duration) ? a.duration : 0); };
-      a.onerror = function () { finish(0); };
-      setTimeout(function () { finish(0); }, 8000);
-      a.src = url;
+      timer = setTimeout(function () { finish(0); }, 8000);
+      el.preload = 'metadata';
+      el.muted = true;
+      el.onloadedmetadata = function () { finish(isFinite(el.duration) ? el.duration : 0); };
+      el.onerror = function () { finish(0); };
+      el.src = url;
+      try { el.load(); } catch (e) {}
     });
   }
 
   async function probeDurations(list) {
     const token = ++probeToken;
     if (!FM.fs.hasSource) return;
-    const pool = list.filter(t => !t.duration && t.duration !== -1).slice(0, 500);
-    pool.forEach(t => { t.__probing = true; });
-    let cursor = 0;
-    async function worker() {
-      while (cursor < pool.length) {
+    const pool = list.filter(t => !t.duration && !t.__noDur).slice(0, 500);
+    if (!pool.length) return;
+    /* 屏幕上正在显示的那一页先探，用户先看到的那几行先有时长 */
+    const visible = new Set();
+    U.$$('.track', refs.view || document).forEach(function (row) { visible.add(row.dataset.id); });
+    pool.sort(function (a, b) { return (visible.has(b) ? 1 : 0) - (visible.has(a) ? 1 : 0); });
+    for (let i = 0; i < pool.length; i++) {
+      const t = pool[i];
+      if (token !== probeToken) return;
+      try {
+        const s = await FM.fs.src(t.rel);
+        const dur = await readDuration(s.url, t.kind === 'video');
+        if (s.revoke) s.revoke();
         if (token !== probeToken) return;
-        const t = pool[cursor++];
-        try {
-          const s = await FM.fs.src(t.rel);
-          const dur = await readDuration(s.url, t.kind === 'video');
-          if (s.revoke) s.revoke();
-          if (token !== probeToken) return;
-          t.__probing = false;
-          if (dur > 0) {
-            L.setDuration(t.id, dur);
-            const cell = document.querySelector('.track[data-id="' + t.id + '"] .tk-dur');
-            if (cell) cell.textContent = U.fmtTime(dur);
-          }
-        } catch (e) {
-          t.__probing = false;
+        if (dur > 0) {
+          L.setDuration(t.id, dur);
+          const cell = document.querySelector('.track[data-id="' + t.id + '"] .tk-dur');
+          if (cell) cell.textContent = U.fmtTime(dur);
+        } else {
+          t.__noDur = true;
         }
+      } catch (e) {
+        t.__noDur = true;
       }
     }
-    const workers = [];
-    for (let i = 0; i < 3; i++) workers.push(worker());
-    await Promise.all(workers);
   }
 
   /* ── 列表工具 ── */
@@ -1503,12 +1528,14 @@
       const q = refs.searchInput.value.trim();
       refs.searchClear.hidden = !q;
       state.q = q;
+      state.qMore = false;      /* 换了关键词就回到「只显示首屏」，别把上次的展开状态带过来 */
       if (q) { renderMain(); } else { route(); }
     }, 160));
     refs.searchClear.addEventListener('click', function () {
       refs.searchInput.value = '';
       refs.searchClear.hidden = true;
       state.q = '';
+      state.qMore = false;
       route();
     });
 
@@ -1726,6 +1753,7 @@
           if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ block: 'start' });
           break;
         }
+        case 'search-more': state.qMore = true; renderMain(); break;
         case 'scan': addLibFlow(); break;
         case 'rescan': doScan(); break;
         case 'retry': location.reload(); break;

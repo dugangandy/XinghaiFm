@@ -114,6 +114,13 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .bg-aurora.a2,.bg-aurora.a3{display:none}
   .bg-aurora{opacity:.34;filter:blur(58px)}
   .lib-loading,.queue-panel{backdrop-filter:none}
+  /* 卡片徽标和专辑页工具条都常驻 backdrop-filter：滚动时每帧都要重新取背景重绘，
+     手机上换成同色系的纯色底，观感差别很小、开销低一个数量级 */
+  .card-badge,.card-fav,.track-toolbar{backdrop-filter:none}
+  .card-badge{background:rgba(6,9,16,.74)}
+  .card-badge.done{background:rgba(6,30,26,.8)}
+  .card-fav{background:rgba(6,9,16,.76)}
+  .track-toolbar{background:linear-gradient(180deg,rgba(6,9,16,.97),rgba(6,9,16,.88) 70%,transparent)}
 }
 
 /* ── 手机横屏：宽度常常 >760，靠「矮」识别（Electron 窗口最小高度 640，不会误伤） ── */
