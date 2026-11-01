@@ -2480,7 +2480,10 @@
     if (pbLeft) {
       pbLeft.addEventListener('click', function (e) {
         if (e.target.closest('#pbFav')) return;
-        if (P.current) openSheet();
+        if (!P.current) return;
+        openSheet();
+        /* 从播放条展开详情页时接着播，别一进去是暂停态 */
+        if (!P.playing) P.toggle();
       });
     }
 
