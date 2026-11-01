@@ -448,6 +448,13 @@ const reqOf = new WeakMap();
 function wantsGzip(req) {
   return !!req && /gzip/.test(String(req.headers['accept-encoding'] || ''));
 }
+/* 大包异步压缩：gzipSync 会把事件循环整段占住（整库清单 2~3MB 要几百毫秒），
+ * 这期间正在传输的视频流一字节都发不出去，播放端就卡住等数据。 */
+function gzipAsync(buf) {
+  return new Promise(function (resolve, reject) {
+    zlib.gzip(buf, { level: 6 }, function (e, out) { if (e) reject(e); else resolve(out); });
+  });
+}
 function gzipOf(buf) {
   const key = crypto.createHash('sha1').update(buf).digest('base64');
   const hit = gzCache.get(key);
@@ -487,12 +494,24 @@ function send(res, code, body, headers) {
   const canZip = buf && buf.length > 1024 && !h['content-encoding'] &&
     /text|json|javascript|css|svg/.test(type) && wantsGzip(reqOf.get(res));
   if (canZip) {
-    const out = gzipOf(buf);
     h['content-encoding'] = 'gzip';
     h['vary'] = 'Accept-Encoding';
-    h['content-length'] = String(out.length);
-    res.writeHead(code, h);
-    return res.end(out);
+    /* 小包同步压（1ms 级）+ 缓存；大包（整库清单动辄几 MB）必须异步，
+       否则压缩的几百毫秒里视频流发不出去，播放端就卡住等 */
+    if (buf.length <= 64 * 1024) {
+      const out = gzipOf(buf);
+      h['content-length'] = String(out.length);
+      res.writeHead(code, h);
+      return res.end(out);
+    }
+    res.writeHead(code, h);          // 不设 content-length，让 Node 用分块传输
+    const t0g = Date.now();
+    gzipAsync(buf).then(function (out) {
+      const ms = Date.now() - t0g;
+      if (ms > 200 || DEBUG_REQ) console.log('[gzip] ' + (buf.length >> 10) + 'KB → ' + (out.length >> 10) + 'KB，' + ms + 'ms');
+      if (!res.writableEnded) res.end(out);
+    }, function () { if (!res.writableEnded) res.end(buf); });
+    return;
   }
   if (buf && h['content-length'] == null) h['content-length'] = String(buf.length);
   res.writeHead(code, h);
@@ -532,7 +551,12 @@ function loginPage(err, next) {
     '</form>';
 }
 
+/* 整库扫描实测 2~3 秒（几万个目录项 + stat），短时间内重复请求（刷新页面、
+   来回切页签）没必要重扫，缓存 5 秒 */
+const scanCache = new Map();
 async function scanFolder(root) {
+  const hit = scanCache.get(root);
+  if (hit && Date.now() - hit.at < 5000) return hit.data;
   const out = [];
   async function walk(dir, prefix, depth) {
     let list;
@@ -553,7 +577,9 @@ async function scanFolder(root) {
     }
   }
   await walk(root, '', 1);
-  return { rootName: path.basename(root), root: root, files: out };
+  const data = { rootName: path.basename(root), root: root, files: out };
+  scanCache.set(root, { at: Date.now(), data: data });
+  return data;
 }
 
 function parseRange(header, size) {
@@ -585,6 +611,7 @@ async function serveMedia(req, res, rel, root) {
   try { st = await fsp.stat(file); } catch (e) { return send(res, 404, 'not found'); }
   if (!st.isFile()) return send(res, 404, 'not found');
 
+  res.__media = true;
   const head = {
     'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
     'accept-ranges': 'bytes',
@@ -612,8 +639,20 @@ async function serveMedia(req, res, rel, root) {
  * 于是那条流会一路读到文件尾——几次 seek 就叠出好几条全量读，磁盘/CPU 一满，播放就开始顿。 */
 function pipeFile(file, res, opts) {
   const stream = opts ? fs.createReadStream(file, opts) : fs.createReadStream(file);
+  const t0p = Date.now();
+  let bytes = 0;
+  stream.on('data', function (c) { bytes += c.length; });
   const kill = () => { try { stream.destroy(); } catch (e) {} };
-  res.on('close', kill);
+  res.on('close', function () {
+    kill();
+    /* 媒体流的「总时长」就是一直传到浏览器不再要为止，所以记吞吐、不记耗时；
+       0 字节说明请求一进来就断了（多半是客户端取消，不必紧张） */
+    if (DEBUG_REQ) {
+      const ms = Math.max(1, Date.now() - t0p);
+      console.log('[media] 发 ' + (bytes / 1048576).toFixed(1) + 'MB / ' + ms + 'ms（' +
+        (bytes / 1048576 / (ms / 1000)).toFixed(1) + 'MB/s，起 ' + (opts ? opts.start : 0) + '）');
+    }
+  });
   res.on('error', kill);
   stream.on('error', () => { try { res.destroy(); } catch (e) {} });
   stream.pipe(res);
@@ -724,6 +763,7 @@ const server = http.createServer(async function (req, res) {
   reqOf.set(res, req);
   const t0 = Date.now();
   res.on('close', function () {
+    if (res.__media) return;                 /* 媒体流自己记（它的总时长=传输时长，不是耗时） */
     const ms = Date.now() - t0;
     const label = req.method + ' ' + u.pathname;
     if (ms > 1000) console.log('[slow] ' + label + ' ' + res.statusCode + ' ' + ms + 'ms');
@@ -929,7 +969,8 @@ const server = http.createServer(async function (req, res) {
     const root = userActiveRoot(uid);
     if (!root) return send(res, 404, 'server mode off');
     try {
-      const data = await scanFolder(root);
+      /* 拷一份再往上加字段：缓存里的对象别被改动 */
+      const data = Object.assign({}, await scanFolder(root));
       const a = userActiveLib(uid);
       data.libId = a ? a.id : null;
       /* 封面不再扫描时自动拉取：交给用户在网页「编辑封面」里手动上传/抓取/删除 */
