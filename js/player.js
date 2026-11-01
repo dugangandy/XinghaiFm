@@ -193,7 +193,9 @@
     let el = (track.kind === 'video' && !audioOnly) ? videoEl : audioEl;
     if (media !== el) { if (media) stopEl(media); media = el; }
     setKind(track.kind === 'video' ? 'video' : 'audio');
-    ev.emit('track', track, { restored: false });
+    /* restored 决定界面要不要为视频自动展开播放页。setAudioOnly 触发的重载是
+       在收起播放页时发生的，不能再让界面把它拉回来。 */
+    ev.emit('track', track, { restored: !!o.restored });
     updateSession(track);
     try {
       const s = await FM.fs.src(track.rel);
@@ -258,7 +260,8 @@
     if (nativeVideo || !cur || cur.kind !== 'video' || !media.src) return;
     const pos = media.currentTime || 0;
     const wasPlaying = !media.paused;
-    load(cur, { seek: pos, autoplay: wasPlaying });
+    /* restored: true —— 这是同一集的重新载入，界面别把视频播放页又弹开 */
+    load(cur, { seek: pos, autoplay: wasPlaying, restored: true });
   }
 
   /* ── 停止并清空（切换资源库时用） ── */
