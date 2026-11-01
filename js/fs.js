@@ -551,12 +551,17 @@
   async function pushProgress(rec) {
     if (!serverMode || !rec || !rec.id) return false;
     try {
-      await apiFetch('/api/progress', {
+      const r = await apiFetch('/api/progress', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(Object.assign({ libId: activeId }, rec))
       });
-      return true;
+      /* 必须把响应体读掉：fetch 的 body 不消费，浏览器就认为这条请求还没结束，
+         一条连接被占着不还。进度每 10 秒报一次，一分钟就能把同一域名下的 6 条连接占满，
+         之后视频的 Range 请求排不上队——表现就是「播几秒卡几秒，反复」。
+         响应体只有 11 字节，读掉最省事。 */
+      try { await r.text(); } catch (e) {}
+      return r.ok;
     } catch (e) { return false; }
   }
 
@@ -613,7 +618,8 @@
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ libId: id, albumId: a, fav: next })
         });
-        if (!r.ok) throw new Error((await r.text()) || 'HTTP ' + r.status);
+        const txt = await r.text();
+        if (!r.ok) throw new Error(txt || 'HTTP ' + r.status);
       } else {
         FM.store.write('favs:' + id, Array.from(favSet));
         FM.store.touch('favs:' + id);
@@ -641,7 +647,8 @@
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ libId: id, trackId: t, fav: next })
         });
-        if (!r.ok) throw new Error((await r.text()) || 'HTTP ' + r.status);
+        const txt = await r.text();
+        if (!r.ok) throw new Error(txt || 'HTTP ' + r.status);
       } else {
         FM.store.write('favTracks:' + id, Array.from(trackFavSet));
         FM.store.touch('favTracks:' + id);

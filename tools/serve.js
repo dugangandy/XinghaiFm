@@ -157,33 +157,43 @@ function capProgress(prog) {
   for (let i = 0; i < keys.length - MAX_PROGRESS; i++) delete prog[keys[i]];
 }
 
-/* 同一份 .fm-meta.json 的读-改-写要排队：手机连续上报进度时并发进来会互相覆盖 */
+/* 同一份 .fm-meta.json 的读-改-写要排队：手机连续上报进度时并发进来会互相覆盖。
+ * 但排队必须能中断：文件被杀软/别的进程锁住时一次写入可能卡很久，
+ * 若一直等着，后面的进度请求会全堆在那里，浏览器对同一域名只有 6 条连接，
+ * 堆满了连视频的 Range 请求都排不上队——表现就是「播几秒卡几秒」。
+ * 所以超过 LOCK_WAIT 就让它失败返回（客户端下次再报），队列立刻放行。 */
+const LOCK_WAIT = 1500;
 const metaLocks = new Map();
 function withMetaLock(root, fn) {
   const prev = metaLocks.get(root) || Promise.resolve();
   const run = prev.then(fn, fn);              // 上一把失败了也继续排队，别把后面的卡死
-  metaLocks.set(root, run.then(function () {}, function () {}));
-  return run;
+  let timer = 0;
+  const guard = new Promise(function (resolve, reject) {
+    timer = setTimeout(function () { reject(new Error('meta busy')); }, LOCK_WAIT);
+  });
+  const settled = Promise.race([run, guard]).finally(function () { clearTimeout(timer); });
+  /* 队列按「已结束」推进：超时后也放行，否则一次卡死会把后面的永久堵住 */
+  metaLocks.set(root, settled.then(function () {}, function () {}));
+  return settled;
 }
 
-/* 手机推上来的一条进度：按时间戳合并，文件里更新的记录不会被覆盖 */
-function mergeProgress(lib, rec) {
-  if (!lib) return Promise.resolve(false);
-  return withMetaLock(lib.path, function () { return doMergeProgress(lib, rec); });
-}
 
-async function doMergeProgress(lib, rec) {
+/* 一次读改写可以写入多条：进度上报改成先攒着、隔一会儿合并落盘，
+ * 既快（接口立即返回）又省（一次播放只写几回文件，不是十秒一回）。 */
+async function doMergeProgress(lib, recs) {
   const file = path.join(lib.path, META_FILE);
   for (let attempt = 0; attempt < 3; attempt++) {
     /* 桌面端也在写这个文件：写前确认期间没人动过，动过就重来（乐观并发） */
     const before = statOrNull(file);
     const meta = (await readMeta(lib.path)) || {};
     meta.progress = meta.progress || {};
-    const old = meta.progress[rec.id];
-    if (!old || (Number(rec.t) || 0) >= (Number(old.t) || 0)) {
-      meta.progress[rec.id] = { p: rec.p, d: rec.d, t: rec.t };
-      if (rec.done) meta.progress[rec.id].done = true;
-    }
+    recs.forEach(function (rec) {
+      const old = meta.progress[rec.id];
+      if (!old || (Number(rec.t) || 0) >= (Number(old.t) || 0)) {
+        meta.progress[rec.id] = { p: rec.p, d: rec.d, t: rec.t };
+        if (rec.done) meta.progress[rec.id].done = true;
+      }
+    });
     capProgress(meta.progress);
     meta.updatedAt = Date.now();
     const after = statOrNull(file);
@@ -192,6 +202,53 @@ async function doMergeProgress(lib, rec) {
     return true;
   }
   return false;
+}
+
+/* 攒着的进度：root -> Map(id -> rec)，同一个 id 只留最新的一条 */
+const progPending = new Map();
+const progTimers = new Map();
+
+function queueProgress(lib, rec) {
+  const root = lib.path;
+  let m = progPending.get(root);
+  if (!m) { m = new Map(); progPending.set(root, m); }
+  const old = m.get(rec.id);
+  if (!old || (Number(rec.t) || 0) >= (Number(old.t) || 0)) m.set(rec.id, rec);
+  if (!progTimers.has(root)) {
+    progTimers.set(root, setTimeout(function () { progTimers.delete(root); flushProgress(root); }, 900));
+  }
+}
+
+async function flushProgress(root) {
+  const m = progPending.get(root);
+  progPending.delete(root);
+  if (!m || !m.size) return;
+  const recs = Array.from(m.values());
+  const lib = { path: root };
+  try { await withMetaLock(root, function () { return doMergeProgress(lib, recs); }); }
+  catch (e) { console.log('[progress] 落盘失败：' + e.message); }
+}
+
+/* 退出前把攒着的写完，别丢最后一段进度 */
+function flushAllProgressSync() {
+  progTimers.forEach(function (t) { clearTimeout(t); });
+  progTimers.clear();
+  progPending.forEach(function (m, root) {
+    if (!m || !m.size) return;
+    const file = path.join(root, META_FILE);
+    try {
+      let meta = {};
+      try { meta = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (e) {}
+      meta.progress = meta.progress || {};
+      m.forEach(function (rec) {
+        const old = meta.progress[rec.id];
+        if (!old || (Number(rec.t) || 0) >= (Number(old.t) || 0)) meta.progress[rec.id] = { p: rec.p, d: rec.d, t: rec.t };
+      });
+      meta.updatedAt = Date.now();
+      fs.writeFileSync(file, JSON.stringify(meta));
+    } catch (e) {}
+  });
+  progPending.clear();
 }
 
 /* ── 改资源库（加 / 改名 / 移除）：改数据库里该用户的库列表 ──
@@ -531,19 +588,35 @@ async function serveMedia(req, res, rel, root) {
   const head = {
     'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
     'accept-ranges': 'bytes',
+    /* 媒体一律不进浏览器磁盘缓存。之前试过 private, max-age=3600 想让 seek 复用已下载区间，
+       结果 Chrome 会把缓冲到的每一段都写进自己的磁盘缓存（实测播 15 秒写 22MB），
+       盘一慢或被杀软扫一遍，视频就「播几秒开始转圈」。局域网/本机重新拉一遍本来就是毫秒级，
+       换来的风险不值当。 */
     'cache-control': 'no-store'
   };
   const range = parseRange(req.headers.range, st.size);
   if (range === 'bad') return send(res, 416, null, Object.assign({}, head, { 'content-range': 'bytes */' + st.size }));
   if (!range) {
     res.writeHead(200, Object.assign({}, head, { 'content-length': st.size }));
-    return fs.createReadStream(file).pipe(res);
+    return pipeFile(file, res);
   }
   res.writeHead(206, Object.assign({}, head, {
     'content-length': range.end - range.start + 1,
     'content-range': 'bytes ' + range.start + '-' + range.end + '/' + st.size
   }));
-  fs.createReadStream(file, { start: range.start, end: range.end }).pipe(res);
+  pipeFile(file, res, { start: range.start, end: range.end });
+}
+
+/* 读文件并把内容写到响应里。
+ * 关键点：浏览器（尤其拖进度条时）会中断前一个 Range 请求，pipe 不会自动停掉读流，
+ * 于是那条流会一路读到文件尾——几次 seek 就叠出好几条全量读，磁盘/CPU 一满，播放就开始顿。 */
+function pipeFile(file, res, opts) {
+  const stream = opts ? fs.createReadStream(file, opts) : fs.createReadStream(file);
+  const kill = () => { try { stream.destroy(); } catch (e) {} };
+  res.on('close', kill);
+  res.on('error', kill);
+  stream.on('error', () => { try { res.destroy(); } catch (e) {} });
+  stream.pipe(res);
 }
 
 /* ── 一次性：设置 / 校验口令 ── */
@@ -630,11 +703,34 @@ async function assetsVersion() {
   return h.digest('hex').slice(0, 8);
 }
 
+/* ── 诊断：正常不吭声，出问题时能有据可查 ────────────────────────
+ * 1) 事件循环停顿：Node 被同步操作卡住时，视频流也会跟着断，一眼能看出来
+ * 2) 慢请求：超过 1 秒的请求打一行（含媒体 Range）
+ * 3) FM_DEBUG=1：把媒体/进度这类关键请求逐条打出来，用来对时间线
+ */
+const DEBUG_REQ = /^(1|true|yes)$/i.test(String(process.env.FM_DEBUG || ''));
+let lastTick = Date.now();
+setInterval(function () {
+  const now = Date.now();
+  const lag = now - lastTick - 1000;
+  lastTick = now;
+  if (lag > 300) console.log('[lag] 事件循环停顿 ' + lag + 'ms');
+}, 1000).unref();
+
 const server = http.createServer(async function (req, res) {
   const u = new URL(req.url, 'http://localhost');
   const p = decodeURIComponent(u.pathname);
   const ip = (req.socket.remoteAddress || '').replace('::ffff:', '');
   reqOf.set(res, req);
+  const t0 = Date.now();
+  res.on('close', function () {
+    const ms = Date.now() - t0;
+    const label = req.method + ' ' + u.pathname;
+    if (ms > 1000) console.log('[slow] ' + label + ' ' + res.statusCode + ' ' + ms + 'ms');
+    else if (DEBUG_REQ && /^\/api\/(media|progress|meta|scan|ticket|covers)/.test(u.pathname)) {
+      console.log('[req] ' + label + ' ' + res.statusCode + ' ' + ms + 'ms' + (req.headers.range ? ' range=' + req.headers.range : ''));
+    }
+  });
 
   /* 跨源只放行桌面端（fm://app，靠 Bearer 不带 cookie）；同源请求本来就不需要 ACAO */
   const origin = String(req.headers.origin || '');
@@ -772,18 +868,17 @@ const server = http.createServer(async function (req, res) {
     const lib = userLibs(uid).find(l => l.id === rec.libId) || userActiveLib(uid);
     const p2 = Number(rec.p), d2 = Number(rec.d);
     if (!isFinite(p2) || p2 < 0) return send(res, 400, 'bad progress');
-    try {
-      const ok = await mergeProgress(lib, {
-        id: String(rec.id),
-        p: Math.round(p2 * 100) / 100,
-        d: isFinite(d2) && d2 > 0 ? Math.round(d2 * 100) / 100 : 0,
-        t: Number(rec.t) || Date.now(),
-        done: !!rec.done
-      });
-      /* 三次乐观重试都撞上外部写入时别装作成功，让客户端下次再报一次 */
-      if (!ok) return send(res, 503, 'busy');
-      return json(res, { ok: true });
-    } catch (e) { return send(res, 500, e.message); }
+    if (!lib) return send(res, 404, 'no library');
+    /* 只入内存队列就返回：读改写 .fm-meta.json 要几十到几百毫秒，
+       让播放端为一条「进度」等这么久毫无意义（还会把连接和主线程都拴着）。 */
+    queueProgress(lib, {
+      id: String(rec.id),
+      p: Math.round(p2 * 100) / 100,
+      d: isFinite(d2) && d2 > 0 ? Math.round(d2 * 100) / 100 : 0,
+      t: Number(rec.t) || Date.now(),
+      done: !!rec.done
+    });
+    return json(res, { ok: true });
   }
   if (p === '/api/favs') {
     const own = function (id) { return userLibs(uid).some(function (l) { return l.id === id; }); };
@@ -942,6 +1037,12 @@ server.on('error', function (e) {
   process.exit(1);
 });
 
+/* 退出前把攒着的进度写完：Ctrl+C 关服务不该丢掉最后十几秒的进度 */
+['SIGINT', 'SIGTERM'].forEach(function (sig) {
+  process.on(sig, function () { flushAllProgressSync(); process.exit(0); });
+});
+process.on('exit', flushAllProgressSync);
+
 server.listen(port, host, function () {
   const users = DB.listUsers(db);
   console.log('星海 FM · http://' + host + ':' + port + '/');
@@ -950,4 +1051,5 @@ server.listen(port, host, function () {
     const libs = DB.listLibs(db, u.id);
     console.log('  ' + (u.role === 'admin' ? '*' : ' ') + ' ' + u.username + '  资源库 ' + libs.length + ' 个');
   });
+  if (DEBUG_REQ) console.log('调试日志已开（FM_DEBUG=1）：/api/media、/api/progress 等逐个记一行');
 });
