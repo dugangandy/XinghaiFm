@@ -143,6 +143,14 @@
           setTimeout(function () { FM.ui.toast('没找到「喜马拉雅」资源库，分类暂未迁移', 'warn'); }, 900);
         }
       }
+      /* 上一版把喜马拉雅库的分类写成空的：从备份补回来（只做一次，且专辑还指着这些分类时才补） */
+      let rep = null;
+      try { rep = FM.lib.repairCats(FM.fs.libs()); } catch (e) { console.warn('[boot] 分类恢复失败', e); }
+      if (rep) {
+        if (hasLib && rep.libId === FM.fs.activeId) { try { FM.lib.restore(FM.fs.activeId); } catch (e) {} }
+        scheduleMetaWrite(1200, true);
+        setTimeout(function () { FM.ui.toast('已把 ' + rep.count + ' 个分类恢复到「' + rep.libName + '」'); }, 900);
+      }
       /* 封面索引是独立文件，先加载再渲染一次，卡片就能直接显示真封面 */
       return FM.covers.load().then(function (n) {
         if (n) {

@@ -600,6 +600,36 @@
     return res;
   }
 
+  /* 一次性修复：上一版在「库列表还没加载」时给喜马拉雅库写了空分类，迁移又因此跳过，
+     分类定义看起来就没了。备份还在 cats:legacy、专辑的归属也没动过，
+     所以只在「专辑还指着这些已经不存在的分类」时把备份写回去（用户主动删掉的不会被搬回来）。 */
+  function repairCats(libs) {
+    const st = db.state();
+    const mark = function () { st.catRepaired = 1; db.setState(st); db.touch('state'); };
+    if (st.catRepaired) return null;
+    const backup = FM.store.read('cats:legacy', null);
+    if (!Array.isArray(backup) || !backup.length) { mark(); return null; }
+    const hit = (libs || FM.fs.libs() || []).filter(isXimalayaLib);
+    const target = hit.find(function (l) { return !!db.index(l.id); }) || hit[0];
+    if (!target) return null;                   /* 还没有库：下次启动再试 */
+    const cur = db.catsFor(target.id);
+    if (!Array.isArray(cur) || cur.length) { mark(); return null; }
+    const idx = db.index(target.id);
+    const root = (idx && (idx.root || idx.rootName)) || '';
+    if (!root) { mark(); return null; }
+    const ids = new Set(backup.map(function (c) { return c.id; }));
+    const prefix = root + '|';
+    const metas = db.albumMeta();
+    const used = Object.keys(metas).some(function (k) {
+      return k.indexOf(prefix) === 0 && (metas[k].cats || []).some(function (id) { return ids.has(id); });
+    });
+    if (!used) { mark(); return null; }
+    db.setCatsFor(target.id, backup.map(function (c, i) { return Object.assign({}, c, { order: i }); }));
+    db.touch('cats:' + target.id);
+    mark();
+    return { libId: target.id, libName: target.name, count: backup.length };
+  }
+
   /* 一个库都没有时把内存里的模型清干净 */
   function clear() {
     albums = []; tracks = []; rootName = ''; rootKey = ''; libId = ''; scannedAt = 0;
@@ -619,7 +649,7 @@
     stats,
     progressOf, setProgress, albumStat,
     setMeta, recomputeAlbum, applyFavs, applyTrackFavs, catCount,
-    cats, addCat, updateCat, removeCat, migrateCats,
+    cats, addCat, updateCat, removeCat, migrateCats, repairCats,
     catsOf: id => db.catsFor(id) || [],
     get rootName() { return rootName; },
     get libId() { return libId; },
