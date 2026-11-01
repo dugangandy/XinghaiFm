@@ -585,6 +585,20 @@ if (DB.countUsers(db) === 0) {
   process.exit(1);
 }
 
+/* css/js 的内容指纹：只有这些文件变了才变，用作 index.html 里 ?v= 的版本号，
+   免得改完样式还要用户手动清 WebView 缓存才看得到 */
+async function assetsVersion() {
+  const h = crypto.createHash('sha1');
+  for (const dir of ['css', 'js']) {
+    const names = (await fsp.readdir(path.join(APP_ROOT, dir))).sort();
+    for (const n of names) {
+      if (!/\.(css|js)$/i.test(n)) continue;
+      h.update(n).update(await fsp.readFile(path.join(APP_ROOT, dir, n)));
+    }
+  }
+  return h.digest('hex').slice(0, 8);
+}
+
 const server = http.createServer(async function (req, res) {
   const u = new URL(req.url, 'http://localhost');
   const p = decodeURIComponent(u.pathname);
@@ -851,18 +865,24 @@ const server = http.createServer(async function (req, res) {
   try { file = inside(APP_ROOT, rel); } catch (e) { return send(res, 403, 'forbidden'); }
   try {
     const st = await fsp.stat(file);
+    /* index.html 决定 css/js 的版本号，它自己不能缓存，否则版本号也跟着旧 */
+    const ver = rel === 'index.html' ? await assetsVersion() : '';
+    const cc = ver ? 'no-store' : 'no-cache';
     /* 内容没变就别重发：ETag 用 size+mtime，比每次算哈希便宜；no-cache 让浏览器每次回来问一句 */
-    const etag = 'W/"' + st.size.toString(16) + '-' + Math.round(st.mtimeMs).toString(16) + '"';
+    const tag = st.size.toString(16) + '-' + Math.round(st.mtimeMs).toString(16) + (ver ? '-' + ver : '');
+    const etag = 'W/"' + tag + '"';
     const inm = String(req.headers['if-none-match'] || '');
-    if (inm && (inm === etag || inm === '*')) {
-      res.writeHead(304, { 'etag': etag, 'cache-control': 'no-cache' });
+    if (!ver && inm && (inm === etag || inm === '*')) {
+      res.writeHead(304, { 'etag': etag, 'cache-control': cc });
       return res.end();
     }
-    const buf = await fsp.readFile(file);
+    let buf = await fsp.readFile(file);
+    /* 把 index.html 里 css/js 的 ?v= 换成内容指纹：文件一改 URL 就变，安卓 WebView 不会再拿旧样式 */
+    if (ver) buf = Buffer.from(buf.toString('utf8').replace(/(\.(?:css|js))\?v=[\w.-]*/g, '$1?v=' + ver));
     return send(res, 200, buf, {
       'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
       'etag': etag,
-      'cache-control': 'no-cache',
+      'cache-control': cc,
       'content-length': String(buf.length)
     });
   } catch (e) {

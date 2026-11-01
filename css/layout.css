@@ -107,12 +107,14 @@ body.is-server #libSwitch .lib-caret{display:none}
 }
 .nav-item.active .i{color:var(--cyan);opacity:1}
 
-.side-section{display:flex;flex-direction:column;gap:8px;min-height:0}
+/* 分类区吃掉剩余高度：屏幕不够高时只让分类列表内滚，
+   否则它会缩到比内容还矮，列表溢出后和底部统计文字叠在一起 */
+.side-section{display:flex;flex-direction:column;gap:8px;flex:1 1 auto;min-height:96px}
 .side-title{display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:10.5px;letter-spacing:.2em;color:var(--dim-2);text-transform:uppercase}
 .mini-btn{width:22px;height:22px;display:grid;place-items:center;border-radius:6px;color:var(--dim);transition:.2s}
 .mini-btn .i{width:14px;height:14px}
 .mini-btn:hover{color:var(--cyan);background:var(--panel-3)}
-.cat-list{display:flex;flex-direction:column;gap:1px}
+.cat-list{display:flex;flex-direction:column;gap:1px;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
 .cat-item{
   position:relative;display:flex;align-items:center;gap:10px;height:36px;padding:0 12px;border-radius:10px;
   font-size:13px;color:var(--txt-2);transition:.18s var(--ease);cursor:pointer;
@@ -128,7 +130,7 @@ body.is-server #libSwitch .lib-caret{display:none}
 .cat-item .cat-edit .i{width:12px;height:12px}
 .cat-empty{font-size:11.5px;color:var(--dim-2);padding:6px 12px;line-height:1.6}
 
-.side-foot{margin-top:auto;padding:10px 10px 0;display:flex;flex-direction:column;gap:4px}
+.side-foot{flex:none;margin-top:auto;padding:10px 10px 0;display:flex;flex-direction:column;gap:4px}
 .lib-stat{font-size:11px;color:var(--dim);line-height:1.6;font-variant-numeric:tabular-nums}
 .side-hint{font-size:10px;color:var(--dim-2);letter-spacing:.04em}
 
