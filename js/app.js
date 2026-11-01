@@ -81,19 +81,44 @@
     if (changed || dch) FM.ui.renderAll();
   }
 
-  /* 窗口失焦 / 切到后台时停掉背景的无限动画（见 base.css 的 body.bg-idle）。
-     macOS 上被别的窗口盖住时合成器不会自己省电，照样满帧重算，后台白烧一个核。
-     只影响背景装饰层，音频播放和界面交互都不受牵连。 */
+  /* ── 背景漂移 ──
+     CSS 无限动画在软件渲染的机器上会让合成器每帧重绘整个背景层，空闲就吃掉半个核。
+     这里改成低频跳格：每 2 秒推进一次 --drift，帧与帧之间画面完全静止。
+     50 步走完一个来回（约 100 秒），每步位移不到 3px，肉眼看不出来。 */
+  const DRIFT_STEP_MS = 2000;
+  const DRIFT_STEP = 0.02;
+  let driftPhase = 0;
+  let driftTimer = 0;
+
+  function stepDrift() {
+    driftPhase = (driftPhase + DRIFT_STEP) % 1;
+    /* 余弦让两端速度归零，折返处不会顿一下 */
+    const p = (1 - Math.cos(driftPhase * Math.PI * 2)) / 2;
+    document.documentElement.style.setProperty('--drift', p.toFixed(3));
+  }
+  function startDrift() {
+    if (driftTimer) return;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    stepDrift();
+    driftTimer = setInterval(stepDrift, DRIFT_STEP_MS);
+  }
+  function stopDrift() {
+    if (driftTimer) { clearInterval(driftTimer); driftTimer = 0; }
+  }
+
+  /* 窗口失焦 / 切到后台时连漂移也停掉：被别的窗口盖住时合成器不会自己省电，
+     照样重算，等于后台白烧一个核。只影响背景装饰，音频和交互都不受牵连。 */
   function bindBgMotion() {
     const body = document.body;
-    const idle = function () { body.classList.add('bg-idle'); };
-    const live = function () { body.classList.remove('bg-idle'); };
+    const idle = function () { body.classList.add('bg-idle'); stopDrift(); };
+    const live = function () { body.classList.remove('bg-idle'); startDrift(); };
     window.addEventListener('blur', idle);
     window.addEventListener('focus', live);
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'hidden' || !document.hasFocus()) idle();
       else live();
     });
+    startDrift();
   }
 
   function boot() {

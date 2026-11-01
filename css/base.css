@@ -65,35 +65,25 @@ ul,ol{margin:0;padding:0;list-style:none}
   radial-gradient(900px 600px at 96% 0%,#1a0f2b 0%,transparent 55%),
   linear-gradient(180deg,#05070e,#04060c 70%,#050810);
 }
-/* 光晕只做平移，不带 scale：scale 会让 90px 的模糊半径在设备像素上跟着变，
-   Chromium 只能每帧把整层重新栅格化；纯平移的合成层栅格化一次之后只贴图位移。
-   另外不再用 mix-blend-mode:screen —— 混合模式会逼合成器每帧拿该层跟背景回读混合，
-   blur 的结果缓存不住；深色底上改用普通 alpha 叠加并把透明度提上来，观感基本一致。 */
+/* 光晕：位移不再由 CSS 动画驱动，改由 js/app.js 的低频定时器写入 --drift（0~1）。
+   老 Intel 机器上 Chromium 没启用硬件加速，CSS 无限动画会让合成器每帧重绘整个背景层，
+   空闲就能吃掉半个核；现在每 2 秒才推进一次，帧与帧之间画面完全静止。
+   scale 也一并去掉：它会让 90px 的模糊半径跟着变，整层只能每帧重新栅格化。 */
 .bg-aurora{position:absolute;border-radius:50%;filter:blur(90px);opacity:.55;will-change:transform}
-.bg-aurora.a1{width:56vw;height:56vw;left:-14vw;top:-18vw;background:radial-gradient(circle at 35% 35%,rgba(34,211,238,.42),transparent 62%);animation:drift1 34s ease-in-out infinite alternate}
-.bg-aurora.a2{width:50vw;height:50vw;right:-12vw;top:-6vw;background:radial-gradient(circle at 60% 40%,rgba(168,85,247,.4),transparent 62%);animation:drift2 42s ease-in-out infinite alternate}
-.bg-aurora.a3{width:44vw;height:44vw;left:38vw;bottom:-26vw;background:radial-gradient(circle at 50% 50%,rgba(244,114,182,.26),transparent 65%);animation:drift3 38s ease-in-out infinite alternate}
-@keyframes drift1{to{transform:translate3d(7vw,4vw,0)}}
-@keyframes drift2{to{transform:translate3d(-6vw,6vw,0)}}
-@keyframes drift3{to{transform:translate3d(4vw,-5vw,0)}}
+.bg-aurora.a1{width:56vw;height:56vw;left:-14vw;top:-18vw;background:radial-gradient(circle at 35% 35%,rgba(34,211,238,.42),transparent 62%);transform:translate3d(calc(7vw * var(--drift,0)),calc(4vw * var(--drift,0)),0)}
+.bg-aurora.a2{width:50vw;height:50vw;right:-12vw;top:-6vw;background:radial-gradient(circle at 60% 40%,rgba(168,85,247,.4),transparent 62%);transform:translate3d(calc(-6vw * var(--drift,0)),calc(6vw * var(--drift,0)),0)}
+.bg-aurora.a3{width:44vw;height:44vw;left:38vw;bottom:-26vw;background:radial-gradient(circle at 50% 50%,rgba(244,114,182,.26),transparent 65%);transform:translate3d(calc(4vw * var(--drift,0)),calc(-5vw * var(--drift,0)),0)}
 
-/* 网格：3D 变换和遮罩留在外层不动，动画交给内层伪元素做纯平移。
+/* 网格：完全静态。透视和遮罩留在同一层，没有动画就不再需要额外的合成层。
    原来动的是 background-position —— 它不是合成属性，每帧都要把 1.8 倍视口大的网格
-   连同 mask 一起重绘（Retina 上约 1500 万像素/帧），是空闲时吃满一个核的主因。
-   网格周期正好 64px，整体平移一格视觉等效；伪元素底部多留 64px 保证平移时不会露边。 */
+   连同 mask 一起重绘（Retina 上约 1500 万像素/帧）。 */
 .bg-grid{position:absolute;inset:-40%;opacity:.5;
   transform:perspective(700px) rotateX(58deg) translateY(-6%);
   mask-image:radial-gradient(circle at 50% 30%,#000 0%,transparent 72%);
   -webkit-mask-image:radial-gradient(circle at 50% 30%,#000 0%,transparent 72%);
-}
-.bg-grid::before{
-  content:"";position:absolute;left:0;right:0;top:0;bottom:-64px;
   background-image:linear-gradient(rgba(120,160,255,.055) 1px,transparent 1px),linear-gradient(90deg,rgba(120,160,255,.055) 1px,transparent 1px);
   background-size:64px 64px;
-  animation:gridMove 22s linear infinite;
-  will-change:transform;
 }
-@keyframes gridMove{to{transform:translate3d(0,64px,0)}}
 .bg-vignette{position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 0%,transparent 40%,rgba(2,4,10,.72) 100%)}
 /* 噪点同理去掉 overlay 混合：0.05 的白噪点用普通叠加就够，没必要为它每帧做一次全屏混合 */
 .bg-noise{position:absolute;inset:0;opacity:.04;
@@ -106,13 +96,10 @@ body.sheet-open .bg-aurora,
 body.sheet-open .bg-grid,
 body.sheet-open .bg-noise{display:none}
 
-/* 窗口失焦 / 切到别的应用：把背景无限动画停住。
-   被别的窗口盖住时合成器不会自己省电，照样每帧重算，等于后台白烧一个核。
-   只停背景装饰动画，音频播放与界面交互都不受影响。 */
-body.bg-idle .bg-aurora,
-body.bg-idle .bg-grid::before{animation-play-state:paused}
+/* 窗口失焦 / 切到别的应用：连低频漂移的定时器也停掉（见 js/app.js 的 bindBgMotion），
+   此时 --drift 停在最后一次的值，画面保持不动。 */
+body.bg-idle .bg-aurora{will-change:auto}
 
 @media (prefers-reduced-motion:reduce){
-  .bg-aurora,.bg-grid::before{animation:none}
   *{animation-duration:.001ms !important;transition-duration:.001ms !important}
 }
