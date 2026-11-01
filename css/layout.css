@@ -45,16 +45,18 @@
 .eq-mark{
   position:relative;display:flex;align-items:center;gap:.12em;height:1em;font-size:26px;
 }
+/* 柱子不再做 scaleY 无限动画：只要页面上还有任意一个动画在跑，合成器就会以 60fps
+   持续出帧，软件渲染下整屏每帧都要重新合成。侧栏 logo 是常驻元素，代价太高。
+   静态的高低柱形保留了品牌识别度，只是不再跳动。 */
 .eq-mark span{
   display:block;width:.16em;border-radius:.09em;
   background:var(--grad);box-shadow:0 0 12px rgba(34,211,238,.7);
-  animation:eq 1.9s var(--ease) infinite;
 }
-.eq-mark span:nth-child(1){height:.42em;animation-delay:0s}
-.eq-mark span:nth-child(2){height:.66em;animation-delay:.16s}
-.eq-mark span:nth-child(3){height:1em;animation-delay:.32s}
-.eq-mark span:nth-child(4){height:.66em;animation-delay:.48s}
-.eq-mark span:nth-child(5){height:.42em;animation-delay:.64s}
+.eq-mark span:nth-child(1){height:.42em}
+.eq-mark span:nth-child(2){height:.66em}
+.eq-mark span:nth-child(3){height:1em}
+.eq-mark span:nth-child(4){height:.66em}
+.eq-mark span:nth-child(5){height:.42em}
 .eq-mark::after{
   content:"";position:absolute;right:-.32em;top:-.14em;width:.46em;height:.46em;
   background:#eaf7ff;
@@ -207,6 +209,10 @@ body.is-server #libSwitch .lib-caret{display:none}
 }
 .lib-loading[hidden]{display:none}
 .lib-loading.show{opacity:1;visibility:visible;pointer-events:auto;transition:opacity .3s var(--ease),visibility 0s}
+/* visibility:hidden 不会停掉内部动画 —— 这几个旋转和脉冲会一直让合成器出帧，
+   平时它就藏在主区底下谁也看不见。只在真正弹出时才跑。 */
+.lib-loading:not(.show) .lib-loading-orbit i,
+.lib-loading:not(.show) .lib-loading-orbit .core{animation-play-state:paused}
 /* 没有毛玻璃时（GPU 合成被关掉等）遮罩几乎不透，别让亮封面把文字衬得看不清 */
 @supports not (backdrop-filter:blur(1px)){
   .lib-loading{background:radial-gradient(120% 95% at 50% 38%,rgba(9,14,26,.94),rgba(4,7,13,.97))}
