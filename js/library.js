@@ -63,30 +63,39 @@
   let scannedAt = 0;
   let libId = '';
 
+  /* ── 分类：按资源库分开 ──
+     分类最初是给喜马拉雅有声书用的，别的库不该继承同一份清单。
+     存储键 cats:<libId>（与 index:<libId> 同构）：null = 从未初始化，[] = 用户删光了。 */
+  const XIMALAYA = /喜马拉雅|ximalaya|xmly/i;
+  function isXimalayaLib(lib) {
+    return !!lib && XIMALAYA.test(String(lib.name || '') + ' ' + String(lib.path || ''));
+  }
+  function findLib(id) {
+    return (FM.fs.libs() || []).find(function (l) { return l.id === id; }) || null;
+  }
+  function seedList() {
+    return SEED_CATS.map(function (c) { return Object.assign({}, c); });
+  }
+  /* 新库第一次打开给什么：只有喜马拉雅预置内置分类，其它库从空开始 */
+  function initialCats() {
+    return isXimalayaLib(findLib(libId)) ? seedList() : [];
+  }
+  /* 目标库里是不是原封未动的内置分类（迁移时用来区分「刚种下的」和「用户真实数据」） */
+  function isPristineSeed(list) {
+    if (!Array.isArray(list) || list.length !== SEED_CATS.length) return false;
+    const ids = list.map(function (c) { return c.id; }).sort().join(',');
+    return ids === SEED_CATS.map(function (c) { return c.id; }).sort().join(',');
+  }
+
+  /* 当前库的分类。libId 还没确定时返回空且不写盘，免得留下一个裸键 cats: */
   function ensureCats() {
-    let cats = db.cats();
-    if (!cats.length) {
-      db.setCats(SEED_CATS.slice());
-      const st = db.state();
-      st.seedVer = SEED_VER;
-      db.setState(st);
-      db.touch('state');
-      return SEED_CATS.slice();
-    }
-    /* 内置分类升级：只在版本号落后时补一次，用户之后删掉就不会再长回来 */
-    const st = db.state();
-    if ((st.seedVer || 1) < SEED_VER) {
-      const missing = SEED_CATS.filter(s => !cats.some(c => c.id === s.id));
-      if (missing.length) {
-        cats = cats.concat(missing.map((c, i) => ({ id: c.id, name: c.name, color: c.color, order: cats.length + i })));
-        db.setCats(cats);
-        db.touch('cats');
-      }
-      st.seedVer = SEED_VER;
-      db.setState(st);
-      db.touch('state');
-    }
-    return cats;
+    if (!libId) return [];
+    const raw = db.catsFor(libId);
+    if (raw !== null) return raw;
+    const init = initialCats();
+    db.setCatsFor(libId, init);
+    db.touch('cats:' + libId);
+    return init;
   }
 
   /* ── 标题解析 ── */
@@ -160,7 +169,7 @@
     ensureMetaKeys();
     rootName = scan.rootName || '';
     rootKey = String(scan.root || scan.rootName || '');
-    libId = scan.libId || libId;
+    libId = scan.libId || FM.fs.activeId || libId;
     scannedAt = Date.now();
 
     const groups = new Map();
@@ -174,6 +183,8 @@
     const metas = db.albumMeta();
     const durs = db.durations();
     const cats = ensureCats();
+    const catIds = new Set(cats.map(function (c) { return c.id; }));
+    const autoFor = function (text) { return autoCats(text).filter(function (id) { return catIds.has(id); }); };
     const favs = FM.fs.favIds || new Set();
     const trackFavs = FM.fs.favTrackIds || new Set();
     const nextAlbums = [];
@@ -224,7 +235,7 @@
       const mkey = metaKey(albumId);
       let meta = metas[mkey] || adoptMeta(metas, albumId);
       if (!meta) {
-        meta = { cats: autoCats(dirName), auto: true, addedAt: Date.now(), root: rootKey };
+        meta = { cats: autoFor(dirName), auto: true, addedAt: Date.now(), root: rootKey };
         metas[mkey] = meta;
       }
       /* 同名但属于别的库：不继承，切回去时元数据仍然完好 */
@@ -234,7 +245,7 @@
          空分类的大多是新专辑，或旧版本关键词没命中，扫描时补一次。
          规则升级也不再往已分类的专辑里追加。 */
       if (own && meta.auto !== false && !(meta.cats || []).length) {
-        const auto = autoCats(dirName);
+        const auto = autoFor(dirName);
         if (auto.length) meta.cats = auto;
         meta.auto = true;
       }
@@ -445,7 +456,8 @@
     a.pinned = !!m.pinned;
     a.hidden = !!m.hidden;
     a.title = m.title || a.origTitle;
-    a.cats = (m.cats || []).slice();
+    const okIds = new Set(ensureCats().map(function (c) { return c.id; }));
+    a.cats = (m.cats || []).filter(function (id) { return okIds.has(id); });
   }
 
   /* 收藏从数据库刷新后同步到内存模型（切库/拉取完成后调用） */
@@ -495,35 +507,86 @@
     return { albums: albums.filter(a => !a.hidden).length, tracks: tracks.length, dur, size, done, posSum };
   }
 
-  /* ── 分类 CRUD ── */
+  /* ── 分类 CRUD（都只影响当前库） ── */
   function cats() { return ensureCats().slice().sort((a, b) => a.order - b.order); }
 
   function addCat(name, color) {
     const list = cats();
     const id = 'c' + Date.now().toString(36);
     list.push({ id, name: name || '新分类', color: color || '#22d3ee', order: list.length });
-    db.setCats(list);
-    db.touch('cats');
+    db.setCatsFor(libId, list);
+    db.touch('cats:' + libId);
     return id;
   }
 
   function updateCat(id, patch) {
     const list = cats().map(c => c.id === id ? Object.assign({}, c, patch) : c);
-    db.setCats(list);
-    db.touch('cats');
+    db.setCatsFor(libId, list);
+    db.touch('cats:' + libId);
   }
 
+  /* 删分类只清当前库的归属：别的库同名 id（内置种子跨库同 id）不能被误伤 */
   function removeCat(id) {
-    db.setCats(cats().filter(c => c.id !== id));
-    db.touch('cats');
+    db.setCatsFor(libId, cats().filter(c => c.id !== id));
+    db.touch('cats:' + libId);
+    albums.forEach(function (a) { a.cats = a.cats.filter(x => x !== id); });
+    /* rootKey 还没定就宁可不动元数据，空前缀会匹配到所有库 */
+    const prefix = rootKey ? rootKey + '|' : '';
+    if (!prefix) return;
     const metas = db.albumMeta();
+    let hit = false;
     Object.keys(metas).forEach(function (k) {
+      if (k.indexOf(prefix) !== 0) return;
       const m = metas[k];
-      if (m && m.cats) m.cats = m.cats.filter(x => x !== id);
+      if (m && m.cats && m.cats.indexOf(id) >= 0) { m.cats = m.cats.filter(x => x !== id); hit = true; }
     });
+    if (!hit) return;
     db.setAlbumMeta(metas);
     db.touch('albumMeta');
-    albums.forEach(function (a) { a.cats = a.cats.filter(x => x !== id); });
+  }
+
+  /* 老版本只有一份全局分类：一次性挪到喜马拉雅库（按库名自动认）。
+     幂等靠 state.catMigrated；找不到目标库时不删旧键，下次启动再试。 */
+  function migrateCats(libs) {
+    const st = db.state();
+    const res = { ran: false, reason: '', libId: '', libName: '', count: 0 };
+    if (st.catMigrated) { res.reason = 'done'; return res; }
+    const legacy = db.legacyCats();
+    if (!Array.isArray(legacy)) {
+      st.catMigrated = 1; db.setState(st); db.touch('state');
+      res.reason = 'none'; return res;
+    }
+    const hit = (libs || FM.fs.libs() || []).filter(isXimalayaLib);
+    if (!hit.length) { res.reason = 'nolib'; return res; }
+    /* 命中多个时优先挑真在用的（有索引缓存）那个 */
+    const target = hit.find(function (l) { return !!db.index(l.id); }) || hit[0];
+
+    let next = legacy.slice();
+    if ((st.seedVer || 1) < SEED_VER) {
+      seedList().forEach(function (s) {
+        if (!next.some(function (c) { return c.id === s.id; })) next.push(Object.assign({}, s, { order: next.length }));
+      });
+      st.seedVer = SEED_VER;
+    }
+    const cur = db.catsFor(target.id);
+    /* 空 / 原封种子 = 这次启动刚种下的，用旧数据覆盖；否则是真实数据，保留 */
+    if (cur === null || isPristineSeed(cur)) {
+      db.setCatsFor(target.id, next);
+      db.touch('cats:' + target.id);
+    }
+    if (FM.store.read('cats:legacy', null) === null) {
+      FM.store.write('cats:legacy', legacy);
+      FM.store.touch('cats:legacy');
+    }
+    FM.store.flush();               /* 备份先落盘，再删旧键 */
+    db.dropLegacyCats();
+    st.catMigrated = 1;
+    db.setState(st);
+    db.touch('state');
+    FM.store.flush();
+
+    res.ran = true; res.libId = target.id; res.libName = target.name; res.count = next.length;
+    return res;
   }
 
   /* 一个库都没有时把内存里的模型清干净 */
@@ -545,7 +608,8 @@
     stats,
     progressOf, setProgress, albumStat,
     setMeta, recomputeAlbum, applyFavs, applyTrackFavs, catCount,
-    cats, addCat, updateCat, removeCat,
+    cats, addCat, updateCat, removeCat, migrateCats,
+    catsOf: id => db.catsFor(id) || [],
     get rootName() { return rootName; },
     get libId() { return libId; },
     get scannedAt() { return scannedAt; },

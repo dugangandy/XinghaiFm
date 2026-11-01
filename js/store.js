@@ -84,8 +84,14 @@
   const db = FM.db = {
     touch: k => touch(k),
 
-    cats: () => read('cats', []),
-    setCats: v => write('cats', v),
+    /* 分类按资源库分开存：cats:<libId>。没初始化过返回 null（空数组是用户删光了），
+       两个语义不能混，否则删光的库会一直长回种子分类 */
+    catsFor: id => (id ? read('cats:' + id, null) : null),
+    setCatsFor: (id, v) => { if (id) write('cats:' + id, v); },
+    dropCats: id => { if (id) drop('cats:' + id); },
+    /* 老版本的全局分类键：只给一次性迁移读，业务代码别用 */
+    legacyCats: () => read('cats', null),
+    dropLegacyCats: () => drop('cats'),
 
     albumMeta: () => read('albumMeta', {}),
     setAlbumMeta: v => write('albumMeta', v),
@@ -96,7 +102,7 @@
     durations: () => read('durations', {}),
     setDurations: v => write('durations', v),
 
-    state: () => read('state', { volume: 1, rate: 1, loop: 'all', sortDesc: false, showHidden: false }),
+    state: () => read('state', { volume: 1, rate: 1, loop: 'all', sortDesc: false, showHidden: false, catMigrated: 0, catMigrateWarn: 0 }),
     setState: v => write('state', v),
 
     /* 索引按资源库分开存，切库时直接读缓存 */

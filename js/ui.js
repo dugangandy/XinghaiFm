@@ -430,7 +430,10 @@
   function renderCats() {
     const cats = L.cats();
     if (!cats.length) {
-      refs.catList.innerHTML = '<div class="cat-empty">还没有分类，点右上角 + 新建</div>';
+      /* 分类按资源库独立：非喜马拉雅库本来就是空的，只读端别提示去新建 */
+      const canEdit = FM.fs.native && !FM.fs.server;
+      refs.catList.innerHTML = '<div class="cat-empty">' +
+        (canEdit ? '还没有分类，点右上角 + 新建' : '这个资源库还没有分类') + '</div>';
       return;
     }
     refs.catList.innerHTML = cats.map(function (c) {
@@ -3241,7 +3244,9 @@
 
   /* 内容指纹：专辑集合、集数、时长、体积、分类、收藏，任一变化才算更新 */
   function libSignature() {
-    return L.albums().map(function (a) {
+    /* 分类也算进指纹：远程只改了分类名/颜色时，专辑指纹不变也要重绘 */
+    const catsSig = L.cats().map(function (c) { return [c.id, c.name, c.color, c.order].join(':'); }).join('|');
+    return catsSig + '#' + L.albums().map(function (a) {
       return [a.id, a.count, a.duration, a.size, a.fav ? 1 : 0, a.hidden ? 1 : 0, (a.cats || []).join('+')].join(',');
     }).join('|');
   }

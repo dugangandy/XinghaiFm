@@ -30,7 +30,6 @@
     /* 只有播放进度变了就别惊动其它库：它们的内容一个字都没变 */
     const libs = full ? FM.fs.libs() : [FM.fs.active()].filter(Boolean);
     if (!libs.length) return;
-    const cats = FM.db.cats();
     const metas = FM.db.albumMeta();
     const prog = FM.db.progress();
     const durs = FM.db.durations();
@@ -38,7 +37,10 @@
       const lib = libs[i];
       const root = String(lib.path || '');
       if (!root) continue;
-      const snap = { v: 1, libId: lib.id, root: root, cats: cats, albumMeta: {}, progress: {}, durations: {} };
+      const snap = { v: 2, libId: lib.id, root: root, albumMeta: {}, progress: {}, durations: {} };
+      /* 分类各自写各自的；这个库还没初始化过（null）就别写字段，免得拿空值盖掉别人写的 */
+      const own = FM.db.catsFor(lib.id);
+      if (own !== null) snap.cats = own;
       const prefix = root + '|';
       Object.keys(metas).forEach(function (k) { if (k.indexOf(prefix) === 0) snap.albumMeta[k] = metas[k]; });
       /* 进度/时长按本库曲目 id 过滤；没缓存就先不传，服务端会保留文件里已有的 */
@@ -94,7 +96,8 @@
 
     /* 分类/收藏/进度/时长有变化就攒着写一次盘 */
     FM.store.onPersist(function (keys) {
-      if (keys.indexOf('cats') >= 0 || keys.indexOf('albumMeta') >= 0 || keys.indexOf('durations') >= 0) {
+      const catsChanged = keys.some(function (k) { return k === 'cats' || k.indexOf('cats:') === 0; });
+      if (catsChanged || keys.indexOf('albumMeta') >= 0 || keys.indexOf('durations') >= 0) {
         scheduleMetaWrite(5000, true);       /* 整理结果变了：所有库都刷新 */
       } else if (keys.indexOf('progress') >= 0) {
         scheduleMetaWrite(5000, false);      /* 只是听了会儿：只写当前库 */
@@ -125,6 +128,21 @@
     }
 
     FM.fs.load().then(function (r) {
+      /* 老版本只有一份全局分类：按库名认「喜马拉雅」，一次性迁过去，迁完备份并删旧键 */
+      let mig = { ran: false, reason: '' };
+      try { mig = FM.lib.migrateCats(FM.fs.libs()); } catch (e) { console.warn('[boot] 分类迁移失败', e); }
+      if (mig.ran) {
+        /* 启动时那次 restore 用旧分类过滤过 a.cats，迁完要按新分类重算一次 */
+        if (hasLib && mig.libId === FM.fs.activeId) { try { FM.lib.restore(FM.fs.activeId); } catch (e) {} }
+        scheduleMetaWrite(1200, true);
+        setTimeout(function () { FM.ui.toast('分类已迁移到「' + mig.libName + '」'); }, 900);
+      } else if (mig.reason === 'nolib') {
+        const st = FM.db.state();
+        if (!st.catMigrateWarn) {
+          st.catMigrateWarn = 1; FM.db.setState(st); FM.db.touch('state');
+          setTimeout(function () { FM.ui.toast('没找到「喜马拉雅」资源库，分类暂未迁移', 'warn'); }, 900);
+        }
+      }
       /* 封面索引是独立文件，先加载再渲染一次，卡片就能直接显示真封面 */
       return FM.covers.load().then(function (n) {
         if (n) {

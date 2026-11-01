@@ -444,6 +444,7 @@
 
   async function remove(id) {
     FM.db.dropIndex(id);
+    FM.db.dropCats(id);
     if (DESKTOP_FS) {
       const res = await window.fmNative.removeLib(id);
       const list = await window.fmNative.libs();
@@ -464,6 +465,7 @@
       }
     }
     FM.db.dropIndex(id);
+    FM.db.dropCats(id);
     syncActive();
     if (!activeLib) return null;
     applyMode();
@@ -510,9 +512,10 @@
     if (!data || data.empty) return false;
     let touched = false;
 
-    if (Array.isArray(data.cats) && data.cats.length) {
-      FM.db.setCats(data.cats);
-      FM.store.touch('cats');
+    /* 分类也按库走：只认 v>=2 的快照（老文件里那份是当年的全局分类，不能拿来覆盖） */
+    if (Array.isArray(data.cats) && Number(data.v) >= 2 && activeId) {
+      FM.db.setCatsFor(activeId, data.cats);
+      FM.store.touch('cats:' + activeId);
       touched = true;
     }
     if (data.albumMeta && typeof data.albumMeta === 'object') {
