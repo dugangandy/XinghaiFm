@@ -38,6 +38,11 @@
   min-height:0;
   transition:opacity .26s var(--ease),transform .36s var(--ease);
 }
+/* 有硬件加速才恢复毛玻璃 */
+.hw .sidebar{
+  background:linear-gradient(180deg,rgba(10,14,24,.82),rgba(7,10,18,.7));
+  backdrop-filter:blur(22px) saturate(140%);
+}
 .brand{display:flex;align-items:center;gap:12px;padding:4px 6px 2px;cursor:pointer;border-radius:12px}
 .brand:hover .brand-mark span{filter:brightness(1.25)}
 .brand:focus-visible{outline:2px solid rgba(34,211,238,.6);outline-offset:2px}
@@ -57,6 +62,14 @@
 .eq-mark span:nth-child(3){height:1em}
 .eq-mark span:nth-child(4){height:.66em}
 .eq-mark span:nth-child(5){height:.42em}
+/* 有硬件加速时交回给 CSS 动画：60fps 且不占主线程，比 JS 逐帧写 scaleY 更顺 */
+.hw .eq-mark span{animation:eq 1.9s var(--ease) infinite}
+.hw .eq-mark span:nth-child(1){animation-delay:0s}
+.hw .eq-mark span:nth-child(2){animation-delay:.16s}
+.hw .eq-mark span:nth-child(3){animation-delay:.32s}
+.hw .eq-mark span:nth-child(4){animation-delay:.48s}
+.hw .eq-mark span:nth-child(5){animation-delay:.64s}
+@keyframes eq{0%,100%{transform:scaleY(.5)}50%{transform:scaleY(1)}}
 .eq-mark::after{
   content:"";position:absolute;right:-.32em;top:-.14em;width:.46em;height:.46em;
   background:#eaf7ff;
@@ -155,6 +168,8 @@ body.is-server #libSwitch .lib-caret{display:none}
   z-index:5;
 }
 .topbar.scrolled{background:rgba(7,10,18,.96);border-bottom-color:var(--line)}
+/* 有硬件加速才上毛玻璃：它在软件渲染下是每帧重算整块区域的高斯模糊 */
+.hw .topbar.scrolled{background:rgba(7,10,18,.72);backdrop-filter:blur(18px)}
 .menu-btn{display:grid}
 .search{
   position:relative;display:flex;align-items:center;gap:10px;
@@ -253,6 +268,11 @@ body.is-server #libSwitch .lib-caret{display:none}
   background:linear-gradient(180deg,rgba(9,13,22,.97),rgba(5,8,14,.98));
   border-top:1px solid var(--line);
   box-shadow:0 -20px 50px -30px rgba(0,0,0,.95);
+}
+/* 有硬件加速才恢复毛玻璃 */
+.hw .playerbar{
+  background:linear-gradient(180deg,rgba(9,13,22,.86),rgba(5,8,14,.94));
+  backdrop-filter:blur(26px) saturate(160%);
 }
 .playerbar::before{
   content:"";position:absolute;top:-1px;left:0;right:0;height:1px;

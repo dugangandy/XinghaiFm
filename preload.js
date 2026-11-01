@@ -9,9 +9,14 @@ try { remote = ipcRenderer.sendSync('fm:remote'); } catch (e) {}
 let appVersion = '';
 try { appVersion = ipcRenderer.sendSync('fm:version') || ''; } catch (e) {}
 
+/* 是否启用了硬件加速：界面据此决定上不上重特效（毛玻璃、混合模式、逐帧动画） */
+let gpuAccel = false;
+try { gpuAccel = !!ipcRenderer.sendSync('fm:gpu'); } catch (e) {}
+
 contextBridge.exposeInMainWorld('fmNative', {
   isDesktop: true,
   remote: remote,
+  gpuAccel: gpuAccel,
   setRemote: (cfg) => ipcRenderer.invoke('fm:setRemote', cfg),
   platform: process.platform,
   electron: process.versions.electron,

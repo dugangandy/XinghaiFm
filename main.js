@@ -322,10 +322,39 @@ function mergeMeta(cur, incoming) {
   return out;
 }
 
+/* ── 硬件加速检测 ──
+   没有走 GPU 合成的机器（老 Intel Mac 的显卡常落在 Chromium 的 GPU blocklist 里，
+   连 Helper (GPU) 进程都不会起），模糊、混合、动画全部由 CPU 计算。
+   界面据此决定要不要上重特效，而不是让所有机器都吃同一套降级方案。
+   注意：ready 之后 GPU 进程还要几十毫秒才初始化完，这段时间 getGPUFeatureStatus()
+   一律返回 disabled_software，必须等 gpu-info-update 才拿得到真值。 */
+let gpuAccel = false;
+function detectGpu(timeoutMs) {
+  return new Promise(function (resolve) {
+    let done = false;
+    function finish() {
+      if (done) return;
+      done = true;
+      try {
+        const s = app.getGPUFeatureStatus() || {};
+        resolve(s.gpu_compositing === 'enabled' || s.rasterization === 'enabled');
+      } catch (e) {
+        console.warn('[gpu] 读取加速状态失败，按无加速处理', e);
+        resolve(false);
+      }
+    }
+    /* 万一事件已经发生过，就只能靠超时兜底，但那时读到的值也已经是对的 */
+    app.once('gpu-info-update', finish);
+    setTimeout(finish, timeoutMs || 800);
+  });
+}
+
 /* ── IPC ── */
 function bindIpc() {
   /* 远程配置：preload 启动时同步取一次，连接/断开后由页面 reload 生效 */
   ipcMain.on('fm:remote', function (e) { e.returnValue = readRemote(); });
+  /* 硬件加速开关：preload 同步取一次，页面据此加 html.hw */
+  ipcMain.on('fm:gpu', function (e) { e.returnValue = gpuAccel; });
   /* 应用版本号：渲染进程在左侧 logo 旁显示 */
   ipcMain.on('fm:version', function (e) { e.returnValue = app.getVersion(); });
   ipcMain.handle('fm:setRemote', function (e, cfg) { return writeRemote(cfg); });
@@ -592,8 +621,11 @@ if (!gotLock) {
     if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
   });
 
-  app.whenReady().then(function () {
+  app.whenReady().then(async function () {
     nativeTheme.themeSource = 'dark';
+    /* 必须在 createWindow 之前算好：preload 会在窗口创建时同步读它 */
+    gpuAccel = await detectGpu(800);
+    console.log('[gpu] 硬件加速：' + (gpuAccel ? '启用' : '未启用（界面降级为轻特效）'));
     setupMenu();
     registerProtocol();
     bindIpc();

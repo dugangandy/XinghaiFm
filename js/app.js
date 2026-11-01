@@ -2,6 +2,10 @@
 (function (FM) {
   'use strict';
 
+  /* 有硬件加速时，背景漂移和 logo 跳动都交给 CSS（见 css 里的 .hw 规则）：
+     原生合成路径最平滑，也不用 JS 每帧写样式。没加速的机器才用下面这套低频驱动。 */
+  const HW = document.documentElement.classList.contains('hw');
+
   function hideBoot() {
     const node = document.getElementById('boot');
     if (!node) return;
@@ -97,7 +101,7 @@
     document.documentElement.style.setProperty('--drift', p.toFixed(3));
   }
   function startDrift() {
-    if (driftTimer) return;
+    if (HW || driftTimer) return;
     if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     stepDrift();
     driftTimer = setInterval(stepDrift, DRIFT_STEP_MS);
@@ -130,7 +134,7 @@
     }
   }
   function startEq() {
-    if (eqTimer) return;
+    if (HW || eqTimer) return;
     if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     eqT0 = Date.now();
     stepEq();
