@@ -86,6 +86,13 @@ ul,ol{margin:0;padding:0;list-style:none}
 .bg-noise{position:absolute;inset:0;opacity:.05;mix-blend-mode:overlay;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E")}
 
+/* 全屏播放页是不透明的，盖住了背景；但这几层还在逐帧做模糊、混合和 3D 变换，
+   1080p 视频会被拖到个位数帧率（实测开着背景 42 帧/10 秒，关掉 296 帧/10 秒）。
+   播放页打开时整层停掉，关掉再恢复——反正盖住时也看不见。 */
+body.sheet-open .bg-aurora,
+body.sheet-open .bg-grid,
+body.sheet-open .bg-noise{display:none}
+
 @media (prefers-reduced-motion:reduce){
   .bg-aurora,.bg-grid{animation:none}
   *{animation-duration:.001ms !important;transition-duration:.001ms !important}

@@ -2606,6 +2606,8 @@
     if (FM.android && P.kind === 'video') return;
     refs.sheet.classList.add('open');
     refs.sheet.setAttribute('aria-hidden', 'false');
+    /* 盖住背景时把背景动画层停掉：它们每帧都在重算，会把视频拖到几帧 */
+    document.body.classList.add('sheet-open');
     if (P.kind === 'video') { wakeUi(); return; }
     FM.viz.attach();
     FM.viz.resume();
@@ -2618,6 +2620,7 @@
     hideUiNow();
     refs.sheet.classList.remove('open');
     refs.sheet.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('sheet-open');
     if (queueOpen) toggleQueue();
     FM.viz.stop();
   }
