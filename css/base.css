@@ -66,8 +66,10 @@ ul,ol{margin:0;padding:0;list-style:none}
   linear-gradient(180deg,#05070e,#04060c 70%,#050810);
 }
 /* 光晕只做平移，不带 scale：scale 会让 90px 的模糊半径在设备像素上跟着变，
-   Chromium 只能每帧把整层重新栅格化；纯平移的合成层栅格化一次之后只贴图位移。 */
-.bg-aurora{position:absolute;border-radius:50%;filter:blur(90px);opacity:.5;mix-blend-mode:screen;will-change:transform}
+   Chromium 只能每帧把整层重新栅格化；纯平移的合成层栅格化一次之后只贴图位移。
+   另外不再用 mix-blend-mode:screen —— 混合模式会逼合成器每帧拿该层跟背景回读混合，
+   blur 的结果缓存不住；深色底上改用普通 alpha 叠加并把透明度提上来，观感基本一致。 */
+.bg-aurora{position:absolute;border-radius:50%;filter:blur(90px);opacity:.55;will-change:transform}
 .bg-aurora.a1{width:56vw;height:56vw;left:-14vw;top:-18vw;background:radial-gradient(circle at 35% 35%,rgba(34,211,238,.42),transparent 62%);animation:drift1 34s ease-in-out infinite alternate}
 .bg-aurora.a2{width:50vw;height:50vw;right:-12vw;top:-6vw;background:radial-gradient(circle at 60% 40%,rgba(168,85,247,.4),transparent 62%);animation:drift2 42s ease-in-out infinite alternate}
 .bg-aurora.a3{width:44vw;height:44vw;left:38vw;bottom:-26vw;background:radial-gradient(circle at 50% 50%,rgba(244,114,182,.26),transparent 65%);animation:drift3 38s ease-in-out infinite alternate}
@@ -93,7 +95,8 @@ ul,ol{margin:0;padding:0;list-style:none}
 }
 @keyframes gridMove{to{transform:translate3d(0,64px,0)}}
 .bg-vignette{position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 0%,transparent 40%,rgba(2,4,10,.72) 100%)}
-.bg-noise{position:absolute;inset:0;opacity:.05;mix-blend-mode:overlay;
+/* 噪点同理去掉 overlay 混合：0.05 的白噪点用普通叠加就够，没必要为它每帧做一次全屏混合 */
+.bg-noise{position:absolute;inset:0;opacity:.04;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E")}
 
 /* 全屏播放页是不透明的，盖住了背景；但这几层还在逐帧做模糊、混合和 3D 变换，
