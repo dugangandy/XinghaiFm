@@ -2607,6 +2607,8 @@
     /* 壳内视频由原生播放器负责，网页这层没有画面可展开：
        再打开只会得到一个空的黑页面，返回后还停在暂停态 */
     if (FM.android && P.kind === 'video') return;
+    /* 播放页要出画面了，把媒体从 <audio> 换回 <video> */
+    P.setAudioOnly(false);
     refs.sheet.classList.add('open');
     refs.sheet.setAttribute('aria-hidden', 'false');
     /* 盖住背景时把背景动画层停掉：它们每帧都在重算，会把视频拖到几帧 */
@@ -2626,6 +2628,10 @@
     document.body.classList.remove('sheet-open');
     if (queueOpen) toggleQueue();
     FM.viz.stop();
+    /* 画面看不见了：换成 <audio> 继续放声音，别再解码视频轨道 */
+    P.setAudioOnly(true);
+    /* audio 元素一旦被 WebAudio 接管过，上下文处于挂起状态就没声音了 */
+    FM.viz.resume();
   }
 
   function toggleQueue() {

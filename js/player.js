@@ -55,6 +55,9 @@
   let nativeVideo = false;    // 壳内视频交给原生播放器
   let nativePlaying = false;
   let nativeRemoteAt = 0;
+  /* 播放页没打开时，视频只用 <audio> 放声音：画面看不见还让 Chromium 解码整幅画面，
+     在没硬件加速的机器上很贵（收起播放页后 CPU 居高不下的原因）。 */
+  let audioOnly = true;
 
   const st = FM.db.state();
   let rate = snapRate(st.rate || 1);
@@ -185,14 +188,21 @@
       return;
     }
     nativeVideo = false;
-    const el = track.kind === 'video' ? videoEl : audioEl;
-    if (media !== el) { stopEl(media); media = el; }
+    /* 先按当前状态挂一个元素上去：这样 stopEl 触发的 pause 事件会因为 el !== media
+       被忽略，换集瞬间界面不会闪成「已停止」。真正用哪个等 src 就绪后再确认一次。 */
+    let el = (track.kind === 'video' && !audioOnly) ? videoEl : audioEl;
+    if (media !== el) { if (media) stopEl(media); media = el; }
     setKind(track.kind === 'video' ? 'video' : 'audio');
     ev.emit('track', track, { restored: false });
     updateSession(track);
     try {
       const s = await FM.fs.src(track.rel);
       if (my !== loadToken) { if (s.revoke) s.revoke(); return; }
+      /* 视频集在播放页收起时走 <audio>：同一个文件，只是不让它解码视频轨道。
+         上面 emit('track') 之后界面可能自动展开播放页、把 audioOnly 改回来，所以这里再确认。 */
+      const asAudio = audioOnly && track.kind === 'video';
+      const want = (track.kind === 'video' && !asAudio) ? videoEl : audioEl;
+      if (want !== el) { stopEl(el); media = el = want; }
       if (objectRevoke) { objectRevoke(); objectRevoke = null; }
       objectUrl = s.url;
       objectRevoke = s.revoke;
@@ -205,8 +215,9 @@
       el.load();
       await once(el, 'loadedmetadata');
       if (my !== loadToken) return;
-      /* 扩展名说是视频、实际只有音轨（或者反过来）时以真实轨道为准 */
-      setKind(el.videoWidth > 0 ? 'video' : 'audio');
+      /* 扩展名说是视频、实际只有音轨（或者反过来）时以真实轨道为准。
+         asAudio 时用的一定是 <audio>，videoWidth 恒为 0，别拿它把 kind 改掉。 */
+      if (!asAudio) setKind(el.videoWidth > 0 ? 'video' : 'audio');
       const dur = isFinite(el.duration) ? el.duration : (track.duration || 0);
       if (dur > 0) FM.lib.setDuration(track.id, dur);
       const p = FM.lib.progressOf(track.id);
@@ -235,6 +246,19 @@
       if (!el.paused || el.error || el.readyState >= 2) return;
       try { el.load(); el.play(); } catch (e) {}
     }, 2000);
+  }
+
+  /* 播放页收起 / 展开时切换承载媒体。
+     收起后换 <audio> 播同一个文件：Chromium 没有视频渲染目标就不会去解码画面，
+     只剩音轨。位置和播放状态原样接过去，界面上看起来只是换了个标签。 */
+  function setAudioOnly(on) {
+    on = !!on;
+    if (on === audioOnly) return;
+    audioOnly = on;
+    if (nativeVideo || !cur || cur.kind !== 'video' || !media.src) return;
+    const pos = media.currentTime || 0;
+    const wasPlaying = !media.paused;
+    load(cur, { seek: pos, autoplay: wasPlaying });
   }
 
   /* ── 停止并清空（切换资源库时用） ── */
@@ -722,6 +746,7 @@
     next, prev, setQueue, playAlbum, playTrack, addToQueue,
     setRate, cycleRate, setVolume, toggleMute, cycleLoop, setSleep, setSleepChapter, setAutoSleep, togglePip,
     setAutoRewind,
+    setAudioOnly,
     restoreLast, saveProgress, onNative,
     artworkFor,
     get current() { return cur; },
