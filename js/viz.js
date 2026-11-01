@@ -3,12 +3,14 @@
   'use strict';
   const U = FM.util;
 
-  let ctx = null, srcNode = null, analyser = null, freq = null;
+  let ctx = null, analyser = null, freq = null;
   let canvas = null, g = null, raf = 0, active = false, failed = false;
   let w = 0, h = 0, dpr = 1;
   let phase = 0;
 
-  function attach() {
+  const wired = new Set();   // 已经接过 WebAudio 的元素（每个元素只能接一次）
+
+  function ensureCtx() {
     if (ctx || failed) return !!ctx;
     /* 安卓壳里不接管音频输出：WebAudio 一旦被系统挂起（切后台、来电），
        走过它的声音就只剩静音图，而频谱本身只是装饰 */
@@ -20,13 +22,6 @@
       analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
       analyser.smoothingTimeConstant = 0.82;
-      /* 音频和视频各一个源，谁在放谁出声 */
-      ['media', 'mediaAudio'].forEach(function (id) {
-        const el = document.getElementById(id);
-        if (!el) return;
-        ctx.createMediaElementSource(el).connect(analyser);
-      });
-      srcNode = analyser;
       analyser.connect(ctx.destination);
       freq = new Uint8Array(analyser.frequencyBinCount);
       return true;
@@ -34,6 +29,22 @@
       console.warn('[viz] 初始化失败，降级为纯播放', e);
       failed = true;
       ctx = null;
+      return false;
+    }
+  }
+
+  /* 只接管「当前在放音频」的那个元素。视频不接：接了等于让声音绕一圈 WebAudio，
+     桌面端更容易音画不同步、主线程一忙就卡；而视频本来也不画频谱。 */
+  function attach(el) {
+    if (!ensureCtx()) return false;
+    const node = el || document.getElementById('mediaAudio');
+    if (!node || wired.has(node)) return true;
+    try {
+      ctx.createMediaElementSource(node).connect(analyser);
+      wired.add(node);
+      return true;
+    } catch (e) {
+      console.warn('[viz] 接管音频失败', e);
       return false;
     }
   }

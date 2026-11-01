@@ -573,6 +573,9 @@ body.is-server #libSwitch .lib-caret{display:none}
   background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(8px);
 }
 .v-btn:hover{background:rgba(34,211,238,.18);border-color:rgba(34,211,238,.42)}
+/* 视频画面上不要毛玻璃：Chrome 得每帧把整幅画面回读一遍再模糊，1080p 直接掉帧。
+   半透明底色已经够用了，移动端走原生播放器碰不到这块，所以只有网页端卡。 */
+.vstage .v-btn,.vstage .v-bigplay{backdrop-filter:none}
 .v-btn .i{width:15px;height:15px}
 
 .v-bottom{
