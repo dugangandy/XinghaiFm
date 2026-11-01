@@ -410,6 +410,20 @@ function cookieOf(req, name) {
   return hit ? decodeURIComponent(hit.slice(name.length + 1)) : '';
 }
 
+/* 登录页的 HTML 转义：err/next 都可能是外部输入，绝不能直接插进标签 */
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+  });
+}
+
+/* 登录后跳回哪儿：只认站内单斜杠开头的相对路径。
+   挡掉 //evil.com 这类协议相对跳转（浏览器会当外站），顺手去掉控制字符防头部注入 */
+function safeNext(v) {
+  const s = String(v || '').replace(/[\u0000-\u001f\u007f]/g, '');
+  return /^\/(?![/\\])/.test(s) ? s : '/';
+}
+
 function loginPage(err, next) {
   const style = 'body{background:#05070e;color:#e9eefb;font:14px/1.7 system-ui,"Microsoft YaHei",sans-serif;display:grid;place-items:center;height:100vh;margin:0}' +
     'form{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);padding:28px 26px;border-radius:16px;width:300px}' +
@@ -422,8 +436,8 @@ function loginPage(err, next) {
   return '<!doctype html><meta charset="utf-8"><title>星海 FM</title><style>' + style + '</style>' +
     '<form method="post" action="/__auth">' +
       '<h1>星海 FM</h1>' +
-      (err ? '<p class="err">' + err + '</p>' : '') +
-      '<input type="hidden" name="next" value="' + (next || '/') + '">' +
+      (err ? '<p class="err">' + escHtml(err) + '</p>' : '') +
+      '<input type="hidden" name="next" value="' + escHtml(safeNext(next)) + '">' +
       '<input type="text" name="user" placeholder="用户名" autofocus autocomplete="username">' +
       '<input type="password" name="pw" placeholder="密码" autocomplete="current-password">' +
       '<button type="submit">进入媒体库</button>' +
@@ -610,7 +624,7 @@ const server = http.createServer(async function (req, res) {
       const form = new URLSearchParams(body);
       const username = form.get('user') || '';
       const pw = form.get('pw') || '';
-      const next = form.get('next') || '/';
+      const next = safeNext(form.get('next'));
       const key = ip + '|' + username;
       const lock = lockedFor(key);
       if (lock) return send(res, 429, loginPage('尝试过多，请 ' + lock + ' 秒后再试', next), { 'content-type': 'text/html; charset=utf-8' });
@@ -625,11 +639,11 @@ const server = http.createServer(async function (req, res) {
       const nowSec = Math.floor(Date.now() / 1000);
       res.writeHead(302, {
         'set-cookie': [sessionCookie(makeToken(nowSec, nowSec + SESSION_ABS, user.id, user.token_version)), uidCookie(user.id)],
-        'location': next.indexOf('/') === 0 ? next : '/'
+        'location': next
       });
       return res.end();
     }
-    return send(res, 200, loginPage('', u.searchParams.get('next') || '/'), { 'content-type': 'text/html; charset=utf-8' });
+    return send(res, 200, loginPage('', u.searchParams.get('next')), { 'content-type': 'text/html; charset=utf-8' });
   }
   /* 退出登录：清 cookie 后回登录页；--no-auth 时没有登录页，直接回首页 */
   if (p === '/__auth/logout') {
@@ -792,8 +806,14 @@ const server = http.createServer(async function (req, res) {
   if (p === '/api/cover' && req.method === 'POST') {
     const root = userActiveRoot(uid);
     if (!root) return send(res, 404, 'server mode off');
+    if (!writeAllowed(ip, 10, 'cover')) return send(res, 429, 'too many writes');
+    /* 上传的图片走 dataUrl，2MB 的图 base64 之后约 2.8MB，留点余量卡在 4MB */
+    const MAX_COVER_BODY = 4 * 1024 * 1024;
     let body = '';
-    for await (const chunk of req) body += chunk;
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > MAX_COVER_BODY) return send(res, 413, 'too large');
+    }
     let payload;
     try { payload = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
     if (!payload || !payload.dirName) return send(res, 400, 'missing dirName');
@@ -808,7 +828,10 @@ const server = http.createServer(async function (req, res) {
     let dir = u.searchParams.get('dir') || '';
     if (!dir && req.method === 'POST') {
       let b2 = '';
-      for await (const chunk of req) b2 += chunk;
+      for await (const chunk of req) {
+        b2 += chunk;
+        if (b2.length > 4096) return send(res, 413, 'too large');
+      }
       try { dir = (JSON.parse(b2) || {}).dirName || ''; } catch (e) {}
     }
     if (!dir) return send(res, 400, 'missing dir');

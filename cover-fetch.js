@@ -20,6 +20,8 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const net = require('node:net');
+const dns = require('node:dns').promises;
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 const HEADERS = {
@@ -95,6 +97,45 @@ function scoreOf(dirName, albumTitle) {
 /* ── 网络 ── */
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+/* 单张封面的大小上限：正常 600×600 也就几十 KB，超过 2MB 基本是打歪了 */
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+
+/* 本机 / 私有网段 / 链路本地 / 云元数据：这些地址一律不许服务端去碰 */
+function isBlockedIp(ip) {
+  if (net.isIPv4(ip)) {
+    const p = ip.split('.').map(Number);
+    if (p[0] === 0 || p[0] === 10 || p[0] === 127) return true;
+    if (p[0] === 169 && p[1] === 254) return true;                    // 链路本地（含云元数据）
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+    if (p[0] === 192 && p[1] === 168) return true;
+    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true;        // CGNAT
+    return p[0] >= 224;                                                // 组播 / 保留
+  }
+  const s = String(ip).toLowerCase();
+  if (s === '::1' || s === '::') return true;
+  if (s.indexOf('::ffff:') === 0) return isBlockedIp(s.slice(7));
+  return s.indexOf('fe80') === 0 || s.indexOf('fc') === 0 || s.indexOf('fd') === 0;
+}
+
+/* 封面地址是客户端给的，服务端不能盲取：只放行 http(s) 的公网地址，
+   域名先解析一遍再逐个校验，避免解析到 127.0.0.1 / 内网。 */
+async function assertPublicUrl(raw) {
+  let u;
+  try { u = new URL(String(raw)); } catch (e) { throw new Error('图片地址无效'); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('只支持 http/https 图片地址');
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(host)) {
+    if (isBlockedIp(host)) throw new Error('不允许访问内网地址');
+    return u;
+  }
+  if (/(^localhost$)|(\.local$)|(\.internal$)|(\.localhost$)/i.test(host)) throw new Error('不允许访问内网地址');
+  let addrs = [];
+  try { addrs = await dns.lookup(host, { all: true }); } catch (e) { throw new Error('图片域名解析失败'); }
+  if (!addrs.length) throw new Error('图片域名解析失败');
+  for (const a of addrs) if (isBlockedIp(a.address)) throw new Error('不允许访问内网地址');
+  return u;
+}
+
 async function fetchText(url, headers) {
   /* 后台任务不能无限挂着：网络半死不活时 20 秒就放弃，下次扫描再试 */
   const res = await fetch(url, {
@@ -105,10 +146,39 @@ async function fetchText(url, headers) {
   return { status: res.status, text: await res.text() };
 }
 
+/* 取图：每一跳都重新校验地址（跳转也可能被引到内网），并卡住体积 */
 async function fetchImage(url, extra) {
-  const res = await fetch(url, { headers: Object.assign({}, HEADERS, extra || {}), signal: AbortSignal.timeout(30000) });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  return { buf: Buffer.from(await res.arrayBuffer()), type: res.headers.get('content-type') || '' };
+  let cur = String(url);
+  for (let hop = 0; hop < 4; hop++) {
+    const target = await assertPublicUrl(cur);
+    const res = await fetch(target, {
+      headers: Object.assign({}, HEADERS, extra || {}),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(30000)
+    });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc) throw new Error('HTTP ' + res.status);
+      cur = new URL(loc, target).toString();
+      continue;
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const len = Number(res.headers.get('content-length') || 0);
+    if (len > MAX_IMAGE_BYTES) throw new Error('图片太大（上限 2MB）');
+    /* 边读边数：不信任 content-length，超大响应立刻掐掉，别整包读进内存 */
+    const chunks = [];
+    let size = 0;
+    const reader = res.body.getReader();
+    for (;;) {
+      const step = await reader.read();
+      if (step.done) break;
+      size += step.value.length;
+      if (size > MAX_IMAGE_BYTES) { try { await reader.cancel(); } catch (e) {} throw new Error('图片太大（上限 2MB）'); }
+      chunks.push(Buffer.from(step.value));
+    }
+    return { buf: Buffer.concat(chunks), type: res.headers.get('content-type') || '' };
+  }
+  throw new Error('图片地址跳转过多');
 }
 
 async function postJson(url, body, headers) {
@@ -434,6 +504,8 @@ async function saveCoverForDir(root, dirName, opt) {
   if (opt.dataUrl) {
     const m = /^data:([^;]+);base64,(.*)$/.exec(String(opt.dataUrl));
     if (!m) throw new Error('无效的图片数据');
+    /* base64 会涨 4/3，留点余量按 1.4 倍卡 */
+    if (m[2].length > MAX_IMAGE_BYTES * 1.4) throw new Error('图片太大（上限 2MB）');
     buf = Buffer.from(m[2], 'base64');
     ext = /png/i.test(m[1]) ? '.png' : /webp/i.test(m[1]) ? '.webp' : '.jpg';
   } else if (opt.url) {
