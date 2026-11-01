@@ -1047,14 +1047,15 @@ const server = http.createServer(async function (req, res) {
   try { file = inside(APP_ROOT, rel); } catch (e) { return send(res, 403, 'forbidden'); }
   try {
     const st = await fsp.stat(file);
-    /* index.html 决定 css/js 的版本号，它自己不能缓存，否则版本号也跟着旧 */
+    /* index.html 决定 css/js 的版本号：可以缓存，但每次都要回源校验。
+       etag 里已经带了资源指纹，HTML 和资源都没变就是 304，手机端每次启动只多一个 RTT，不重下整页 */
     const ver = rel === 'index.html' ? await assetsVersion() : '';
-    const cc = ver ? 'no-store' : 'no-cache';
+    const cc = 'no-cache';
     /* 内容没变就别重发：ETag 用 size+mtime，比每次算哈希便宜；no-cache 让浏览器每次回来问一句 */
     const tag = st.size.toString(16) + '-' + Math.round(st.mtimeMs).toString(16) + (ver ? '-' + ver : '');
     const etag = 'W/"' + tag + '"';
     const inm = String(req.headers['if-none-match'] || '');
-    if (!ver && inm && (inm === etag || inm === '*')) {
+    if (inm && (inm === etag || inm === '*')) {
       res.writeHead(304, { 'etag': etag, 'cache-control': cc });
       return res.end();
     }

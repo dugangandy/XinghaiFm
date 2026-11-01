@@ -76,9 +76,12 @@
   function seedList() {
     return SEED_CATS.map(function (c) { return Object.assign({}, c); });
   }
-  /* 新库第一次打开给什么：只有喜马拉雅预置内置分类，其它库从空开始 */
+  /* 新库第一次打开给什么：只有喜马拉雅预置内置分类，其它库从空开始。
+     认不出这个库（libs 还没到/已被删）时返回 null，交给上层先别初始化 */
   function initialCats() {
-    return isXimalayaLib(findLib(libId)) ? seedList() : [];
+    const lib = findLib(libId);
+    if (!lib) return null;
+    return isXimalayaLib(lib) ? seedList() : [];
   }
   /* 目标库里是不是原封未动的内置分类（迁移时用来区分「刚种下的」和「用户真实数据」） */
   function isPristineSeed(list) {
@@ -92,7 +95,11 @@
     if (!libId) return [];
     const raw = db.catsFor(libId);
     if (raw !== null) return raw;
+    /* 库列表还没加载时分不清是不是喜马拉雅（桌面端启动是先 restore 再 fs.load），
+       这时候写盘会把空分类落进去，宁可先不初始化 */
+    if (!(FM.fs.libs() || []).length) return [];
     const init = initialCats();
+    if (init === null) return [];
     db.setCatsFor(libId, init);
     db.touch('cats:' + libId);
     return init;
@@ -358,12 +365,16 @@
     rootKey = String(cached.root || cached.rootName || '');
     scannedAt = cached.scannedAt || 0;
     const metas = db.albumMeta();
+    const rawCats = db.catsFor(libId);
     const cats = ensureCats();
+    /* catIds=null 表示「这个库的分类还没初始化（库列表都没加载）」：这时别过滤，
+       否则启动首屏会把用户已归好的分类全抹掉，等 scan 回来又闪一下 */
+    const catIds = (rawCats === null && !cats.length) ? null : new Set(cats.map(function (c) { return c.id; }));
     albums = cached.albums.map(function (a) {
       const m = metas[rootKey + '|' + a.id] || {};
       const own = !m.root || m.root === rootKey;
       return Object.assign({}, a, {
-        cats: own ? (m.cats || []).filter(id => cats.some(c => c.id === id)) : [],
+        cats: own ? (catIds ? (m.cats || []).filter(function (id) { return catIds.has(id); }) : (m.cats || []).slice()) : [],
         fav: !!(FM.fs.favIds && FM.fs.favIds.has(a.id)), pinned: own && !!m.pinned, hidden: own && !!m.hidden,
         title: (own && m.title) || a.title
       });
