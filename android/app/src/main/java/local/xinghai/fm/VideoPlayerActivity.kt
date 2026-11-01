@@ -1251,8 +1251,13 @@ class AspectLayout(ctx: Context) : ViewGroup(ctx) {
         val ph = MeasureSpec.getSize(heightMeasureSpec)
         setMeasuredDimension(pw, ph)
 
-        val r = if (fixedRatio > 0f) fixedRatio else ratio
-        if (stretch || r <= 0f || pw <= 0 || ph <= 0) {
+        /* 还没拿到画面尺寸时按 16:9 留边：否则第一帧出来前会把画面拉满整屏，糊得很难看 */
+        val r = when {
+            fixedRatio > 0f -> fixedRatio
+            ratio > 0f -> ratio
+            else -> 16f / 9f
+        }
+        if (stretch || pw <= 0 || ph <= 0) {
             childW = pw; childH = ph
         } else if (pw / ph.toFloat() > r) {
             /* 屏幕比画面更宽：贴高度，左右留边 */
