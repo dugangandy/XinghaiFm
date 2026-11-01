@@ -42,6 +42,8 @@ const zlib = require('node:zlib');
 
 const APP_ROOT = path.resolve(__dirname, '..');
 const covers = require('../cover-fetch');
+/* 登录页的转义与站内跳转校验：单独成模块，方便单测 */
+const { escHtml, safeNext } = require('./safe');
 /* 版本号：打包前已把 package.json 的 version 自增，这里读出来给远程页面显示 */
 const APP_VERSION = (function () {
   try { return String(JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || ''); }
@@ -155,9 +157,22 @@ function capProgress(prog) {
   for (let i = 0; i < keys.length - MAX_PROGRESS; i++) delete prog[keys[i]];
 }
 
+/* 同一份 .fm-meta.json 的读-改-写要排队：手机连续上报进度时并发进来会互相覆盖 */
+const metaLocks = new Map();
+function withMetaLock(root, fn) {
+  const prev = metaLocks.get(root) || Promise.resolve();
+  const run = prev.then(fn, fn);              // 上一把失败了也继续排队，别把后面的卡死
+  metaLocks.set(root, run.then(function () {}, function () {}));
+  return run;
+}
+
 /* 手机推上来的一条进度：按时间戳合并，文件里更新的记录不会被覆盖 */
-async function mergeProgress(lib, rec) {
-  if (!lib) return false;
+function mergeProgress(lib, rec) {
+  if (!lib) return Promise.resolve(false);
+  return withMetaLock(lib.path, function () { return doMergeProgress(lib, rec); });
+}
+
+async function doMergeProgress(lib, rec) {
   const file = path.join(lib.path, META_FILE);
   for (let attempt = 0; attempt < 3; attempt++) {
     /* 桌面端也在写这个文件：写前确认期间没人动过，动过就重来（乐观并发） */
@@ -239,7 +254,10 @@ function writeAllowed(ip, limit, scope) {
   if (now - rec.since > 1000) { rec.n = 0; rec.since = now; }
   rec.n++;
   writeHits.set(key, rec);
-  if (writeHits.size > 256) writeHits.clear();
+  /* 超量时按时间清旧数据；不能直接 clear()——那样刷一批 key 就能把别人的计数也清零 */
+  if (writeHits.size > 512) {
+    for (const [k, v] of writeHits) if (now - v.since > 60000) writeHits.delete(k);
+  }
   return rec.n <= (limit || 5);
 }
 
@@ -281,26 +299,31 @@ function readSession(token) {
   if ((Number(u.token_version) || 0) !== ver) return null;
   return { iat: iat, abs: abs, uid: uid, ver: ver, username: u.username, role: u.role };
 }
-/* 短期票据：带 uid，只能读该用户自己的库（<audio>/<img> 带不了请求头） */
-const TICKET_TTL = 2 * 3600;
-function makeTicket(uid) {
-  const exp = Math.floor(Date.now() / 1000) + TICKET_TTL;
-  const payload = 't.' + exp + '.' + uid;
+/* 短期票据：带 uid，只能读该用户自己的库（<audio>/<img> 带不了请求头）。
+   按用途分范围、不同寿命：封面图 10 分钟就够；媒体要覆盖单集时长——整本一个文件的有声书
+   可能一两个小时，签太短会让中途拖动进度条直接 403。 */
+const TICKET_TTL = { cover: 10 * 60, media: 2 * 3600 };
+function makeTicket(uid, scope) {
+  const exp = Math.floor(Date.now() / 1000) + (TICKET_TTL[scope] || TICKET_TTL.media);
+  const payload = 't.' + exp + '.' + uid + '.' + scope;
   return payload + '.' + sign(payload, DB.secret(db));
 }
-function readTicket(t) {
+function readTicket(t, scope) {
   if (!t) return null;
   const parts = String(t).split('.');
-  if (parts.length !== 4 || parts[0] !== 't') return null;
+  if (parts.length !== 5 || parts[0] !== 't') return null;
   const exp = parseInt(parts[1], 10);
   const uid = parts[2];
   if (!(exp > 0) || !uid) return null;
-  const want = Buffer.from(sign('t.' + exp + '.' + uid, DB.secret(db)));
-  const got = Buffer.from(parts[3]);
+  /* 票据分范围：封面票不能拿来读媒体，反之亦然 */
+  if (parts[3] !== scope) return null;
+  const payload = 't.' + exp + '.' + uid + '.' + scope;
+  const want = Buffer.from(sign(payload, DB.secret(db)));
+  const got = Buffer.from(parts[4]);
   if (want.length !== got.length || !crypto.timingSafeEqual(want, got)) return null;
   if (Math.floor(Date.now() / 1000) > exp) return null;
   if (!DB.getUser(db, uid)) return null;
-  return { uid: uid, exp: exp };
+  return { uid: uid, exp: exp, scope: scope };
 }
 function bearerOf(req) {
   const h = req.headers.authorization || '';
@@ -378,8 +401,30 @@ function gzipOf(buf) {
   return out;
 }
 
+/* 页面侧的安全策略：脚本/样式只认同源（页面里没有内联脚本），
+   图片额外放行 data/blob 与封面候选的外链，媒体放行 blob 和 APK 里的本机 127.0.0.1 */
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https: http:",
+  "media-src 'self' blob: data: http://127.0.0.1:*",
+  "connect-src 'self' http://127.0.0.1:*",
+  "font-src 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'"
+].join('; ');
+
 function send(res, code, body, headers) {
-  const h = Object.assign({ 'cache-control': 'no-store' }, headers || {});
+  const h = Object.assign({
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',     /* 媒体票据在 query 里，别随 Referer 漏出去 */
+    'x-frame-options': 'DENY',
+    'content-security-policy': CSP
+  }, headers || {});
   const type = String(h['content-type'] || '');
   const buf = Buffer.isBuffer(body) ? body : (typeof body === 'string' ? Buffer.from(body) : null);
   const canZip = buf && buf.length > 1024 && !h['content-encoding'] &&
@@ -408,20 +453,6 @@ function cookieOf(req, name) {
   const raw = req.headers.cookie || '';
   const hit = raw.split(';').map(function (s) { return s.trim(); }).find(function (s) { return s.indexOf(name + '=') === 0; });
   return hit ? decodeURIComponent(hit.slice(name.length + 1)) : '';
-}
-
-/* 登录页的 HTML 转义：err/next 都可能是外部输入，绝不能直接插进标签 */
-function escHtml(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-    return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
-  });
-}
-
-/* 登录后跳回哪儿：只认站内单斜杠开头的相对路径。
-   挡掉 //evil.com 这类协议相对跳转（浏览器会当外站），顺手去掉控制字符防头部注入 */
-function safeNext(v) {
-  const s = String(v || '').replace(/[\u0000-\u001f\u007f]/g, '');
-  return /^\/(?![/\\])/.test(s) ? s : '/';
 }
 
 function loginPage(err, next) {
@@ -605,10 +636,14 @@ const server = http.createServer(async function (req, res) {
   const ip = (req.socket.remoteAddress || '').replace('::ffff:', '');
   reqOf.set(res, req);
 
-  /* 桌面端从 fm://app 跨源访问：不带 cookie（靠 Bearer），预检直接放行 */
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  /* 跨源只放行桌面端（fm://app，靠 Bearer 不带 cookie）；同源请求本来就不需要 ACAO */
+  const origin = String(req.headers.origin || '');
+  if (origin === 'fm://app') {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  }
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
   /* 桌面端登录：用户名 + 密码换长期 token */
@@ -665,12 +700,15 @@ const server = http.createServer(async function (req, res) {
     return res.end();
   }
 
-  /* 会话来源：浏览器 cookie，或桌面端的 Authorization: Bearer；媒体/封面可用 ?t= 票据 */
-  let sess = null, ticket = null;
+  /* 会话来源：浏览器 cookie，或桌面端的 Authorization: Bearer；媒体/封面在没有会话时才用 ?t= 票据 */
+  let sess = null, ticket = null, viaCookie = false;
   if (!NO_AUTH) {
-    sess = readSession(cookieOf(req, SESSION_COOKIE)) || readSession(bearerOf(req));
-    if (!sess && (p.indexOf('/api/media/') === 0 || p.indexOf('/api/cover/') === 0)) {
-      ticket = readTicket(u.searchParams.get('t'));
+    const ck = readSession(cookieOf(req, SESSION_COOKIE));
+    sess = ck || readSession(bearerOf(req));
+    viaCookie = !!ck;
+    if (!sess) {
+      const scope = p.indexOf('/api/media/') === 0 ? 'media' : (p.indexOf('/api/cover/') === 0 ? 'cover' : '');
+      if (scope) ticket = readTicket(u.searchParams.get('t'), scope);
     }
   }
   /* --no-auth：免密，但必须有用户（取第一个用户） */
@@ -695,7 +733,11 @@ const server = http.createServer(async function (req, res) {
     return json(res, { uid: uid, username: me ? me.username : '', role: me ? me.role : '' });
   }
   if (p === '/api/ticket') {
-    return json(res, NO_AUTH ? { t: '', exp: 0 } : { t: makeTicket(uid), exp: Math.floor(Date.now() / 1000) + TICKET_TTL });
+    /* 浏览器/APK 有会话 cookie：<audio>/<img> 同源请求会自带 cookie，URL 里不必挂票据；
+       只有桌面端（fm://app + Bearer，没有 cookie）才需要换票据 */
+    if (NO_AUTH || viaCookie) return json(res, { t: '', exp: 0, cookie: true });
+    const scope = u.searchParams.get('scope') === 'cover' ? 'cover' : 'media';
+    return json(res, { t: makeTicket(uid, scope), exp: Math.floor(Date.now() / 1000) + TICKET_TTL[scope], scope: scope });
   }
   if (p === '/api/config') {
     const libs = userLibs(uid);
@@ -731,13 +773,15 @@ const server = http.createServer(async function (req, res) {
     const p2 = Number(rec.p), d2 = Number(rec.d);
     if (!isFinite(p2) || p2 < 0) return send(res, 400, 'bad progress');
     try {
-      await mergeProgress(lib, {
+      const ok = await mergeProgress(lib, {
         id: String(rec.id),
         p: Math.round(p2 * 100) / 100,
         d: isFinite(d2) && d2 > 0 ? Math.round(d2 * 100) / 100 : 0,
         t: Number(rec.t) || Date.now(),
         done: !!rec.done
       });
+      /* 三次乐观重试都撞上外部写入时别装作成功，让客户端下次再报一次 */
+      if (!ok) return send(res, 503, 'busy');
       return json(res, { ok: true });
     } catch (e) { return send(res, 500, e.message); }
   }
@@ -771,6 +815,8 @@ const server = http.createServer(async function (req, res) {
   if (p === '/api/lib') {
     if (req.method !== 'POST') return send(res, 405, 'POST only');
     if (!ALLOW_LIB_EDIT) return send(res, 403, '服务端未开启资源库编辑（启动时加 --allow-lib-edit）');
+    /* 多用户时只有管理员能改资源库：add 接受任意绝对路径，不能让普通用户随便挂服务器目录 */
+    if (MULTI && (!me || me.role !== 'admin')) return send(res, 403, '只有管理员能修改资源库');
     if (!writeAllowed(ip)) return send(res, 429, 'too many writes');
     let body = '';
     for await (const chunk of req) {

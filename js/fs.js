@@ -59,7 +59,7 @@
     linkTries = 0;
     clearTimeout(linkTimer);
     if (linkState === 'offline' || linkState === 'auth') {
-      ticketCache = null;          // 重连后票据可能已过期，下次取媒体重新换
+      ticketCache = Object.create(null);   // 重连后票据可能已过期，下次取媒体重新换
       setLink('online');
     } else if (linkState === 'unknown') {
       setLink('online');
@@ -125,18 +125,22 @@
     });
   }
 
-  /* <audio>/<img> 带不了请求头：换一张短期票据挂 query，长期 token 不进 URL */
-  let ticketCache = null;   // { t, exp }
+  /* <audio>/<img> 带不了请求头：能靠 cookie 的就靠 cookie（浏览器/APK，URL 上不挂票据），
+     桌面端（fm://app + Bearer，没有 cookie）才换一张短期票据挂 query */
+  let ticketCache = Object.create(null);     // scope -> { t, exp }
   async function signedUrl(path) {
     if (!REMOTE) return path;
+    const scope = path.indexOf('/api/cover/') === 0 ? 'cover' : 'media';
     const now = Math.floor(Date.now() / 1000);
-    if (!ticketCache || ticketCache.exp - now < 60) {
-      const r = await apiFetch('/api/ticket', { cache: 'no-store' });
+    let c = ticketCache[scope];
+    /* 票据按用途分开取：封面 10 分钟一轮，媒体要顶住单集时长，不能共用一份 */
+    if (!c || (c.t && c.exp - now < 60)) {
+      const r = await apiFetch('/api/ticket?scope=' + scope, { cache: 'no-store' });
       if (!r.ok) throw new Error(r.status === 401 ? '登录已过期，请重新登录' : U.NET_FAIL);
-      ticketCache = await r.json();
+      c = ticketCache[scope] = await r.json();
     }
-    if (!ticketCache.t) return API_BASE + path;
-    return API_BASE + path + (path.indexOf('?') >= 0 ? '&' : '?') + 't=' + encodeURIComponent(ticketCache.t);
+    if (!c.t) return API_BASE + path;      // cookie 模式：同源请求自带会话 cookie
+    return API_BASE + path + (path.indexOf('?') >= 0 ? '&' : '?') + 't=' + encodeURIComponent(c.t);
   }
 
   /* ── IndexedDB：仅存目录 handle ── */

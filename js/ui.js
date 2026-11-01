@@ -471,7 +471,7 @@
       return;
     }
     const s = L.stats();
-    refs.libStat.innerHTML = s.albums + ' 个专辑 · ' + s.tracks + ' 集<br>' + fmtS(s.size);
+    refs.libStat.innerHTML = s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size);
   }
 
   /* 远程服务器去掉协议头的显示名，例如 192.168.1.8:8080 */
@@ -827,7 +827,7 @@
     return '<span>' + icon('clock') + (dur ? fmtT(dur) : '—') + '</span>' +
       '<span>' + icon('folder') + fmtS(it.size || t.size) + '</span>' +
       (pct > 0 && !(p && p.done) ? '<span class="dl-pct">已播 ' + pct + '%</span>' : '') +
-      '<span class="dl-state' + (it.state === 'error' ? ' bad' : '') + '" data-rel="' + t.rel + '">' + dlStateText(it) + '</span>';
+      '<span class="dl-state' + (it.state === 'error' ? ' bad' : '') + '" data-rel="' + esc(t.rel) + '">' + dlStateText(it) + '</span>';
   }
 
   /* 下载管理：占了多少 / 还剩多少 + 有下载内容的专辑列表（至少下一集才算） */
@@ -1084,7 +1084,7 @@
           '<span>' + icon('clock') + (dur ? fmtT(dur) : '—') + '</span>' +
           '<span>' + icon('folder') + fmtS(it.size || t.size) + '</span>' +
           (pct > 0 ? '<span class="dl-pct">已播 ' + pct + '%</span>' : '') +
-          '<span class="dl-state' + (it.state === 'error' ? ' bad' : '') + '" data-rel="' + t.rel + '">' + dlStateText(it) + '</span>' +
+          '<span class="dl-state' + (it.state === 'error' ? ' bad' : '') + '" data-rel="' + esc(t.rel) + '">' + dlStateText(it) + '</span>' +
         '</div>' +
       '</div>' +
     '</li>';

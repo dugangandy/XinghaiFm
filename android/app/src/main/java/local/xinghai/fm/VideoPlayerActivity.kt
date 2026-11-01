@@ -55,6 +55,10 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class VideoPlayerActivity : Activity() {
+    private companion object {
+        const val KEY_FS = "videoFullscreen"
+    }
+
 
     private data class Track(val rel: String, val id: String, val title: String, val sub: String)
 
@@ -159,8 +163,15 @@ class VideoPlayerActivity : Activity() {
             .build()
         buildUi()
         if (audioOnly) videoFrame.visibility = View.GONE
+        /* 系统重建（改字体/深色模式等）后保持原来的全屏状态，别莫名其妙退回竖屏 */
+        if (!audioOnly && savedInstanceState?.getBoolean(KEY_FS) == true) setFullscreen(true)
         if (tracks.isEmpty()) { toast("没有可播放的视频"); finish(); return }
         playIndex(index, startFrom(intent), autoplay)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(KEY_FS, isFullscreen)
     }
 
     override fun onNewIntent(intent: Intent?) {

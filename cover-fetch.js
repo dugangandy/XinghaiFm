@@ -504,9 +504,10 @@ async function saveCoverForDir(root, dirName, opt) {
   if (opt.dataUrl) {
     const m = /^data:([^;]+);base64,(.*)$/.exec(String(opt.dataUrl));
     if (!m) throw new Error('无效的图片数据');
-    /* base64 会涨 4/3，留点余量按 1.4 倍卡 */
+    /* 先按 base64 长度粗筛（省得解一份几十 MB 的串），解码后再按真实字节数卡一遍 */
     if (m[2].length > MAX_IMAGE_BYTES * 1.4) throw new Error('图片太大（上限 2MB）');
     buf = Buffer.from(m[2], 'base64');
+    if (buf.length > MAX_IMAGE_BYTES) throw new Error('图片太大（上限 2MB）');
     ext = /png/i.test(m[1]) ? '.png' : /webp/i.test(m[1]) ? '.webp' : '.jpg';
   } else if (opt.url) {
     let dl = String(opt.url);
@@ -651,6 +652,8 @@ async function searchCandidates(title, maxN) {
 }
 
 module.exports = { run: run, auto: auto, pendingOf: pendingOf, titleOf: titleOf, cli: cli,
-  searchCandidates: searchCandidates, saveCoverForDir: saveCoverForDir, removeCover: removeCover };
+  searchCandidates: searchCandidates, saveCoverForDir: saveCoverForDir, removeCover: removeCover,
+  /* 给单测用：地址拦截规则和体积上限 */
+  isBlockedIp: isBlockedIp, assertPublicUrl: assertPublicUrl, MAX_IMAGE_BYTES: MAX_IMAGE_BYTES };
 
 if (require.main === module) cli();
