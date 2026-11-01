@@ -1,7 +1,7 @@
 {
   "name": "xinghai-fm",
   "productName": "星海FM",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "description": "本地有声书播放器 · 分类管理、倍速播放",
   "main": "main.js",
   "author": "local",
@@ -9,6 +9,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
+    "test": "node --test",
     "init-db": "node tools/init-db.js",
     "bump": "node tools/bump-version.js",
     "dist": "electron-builder --win",
