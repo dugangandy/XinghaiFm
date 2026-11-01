@@ -928,7 +928,9 @@ class VideoPlayerActivity : Activity() {
         p.setMediaItem(MediaItem.fromUri(url), startMs.coerceAtLeast(0))
         p.setPlaybackSpeed(rate)
         p.prepare()
+        /* playWhenReady 在部分机型上要等一次 play() 才真正落地，两个都设，避免打开后停在 0:00 */
         p.playWhenReady = auto
+        if (auto) p.play() else p.pause()
         player = p
         ui.removeCallbacks(ticker)
         ui.post(ticker)
