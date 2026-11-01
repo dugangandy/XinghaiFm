@@ -2310,6 +2310,8 @@
     refs.shSub.textContent = (a ? a.title : '') + ' · ' + (t.ext || '').toUpperCase();
     refs.vTitle.textContent = t.title;
     refs.vSub.textContent = videoSub(a, t);
+    /* 新曲目还没开始播：先把画面藏起来，露出封面海报（否则会看到上一条视频的残帧） */
+    refs.vStage.classList.add('v-pending');
     if (refs.pbKind) refs.pbKind.hidden = P.kind !== 'video';
     const fav = t && t.fav;
     refs.pbFav.classList.toggle('on', !!fav);
@@ -2325,10 +2327,17 @@
 
   /* 沉浸式渐变封面：有封面就整幅铺顶（再向下渐隐），没有用专辑配色兜底 */
   function paintSheetArt(album) {
-    const el = refs.sheetArt;
-    if (!el) return;
     const c = U.coverColors(album && album.seed != null ? album.seed : 0);
-    el.style.backgroundImage = 'linear-gradient(160deg,' + c[0] + ',' + c[1] + ')';
+    const cover = album && album.cover;
+    const el = refs.sheetArt;
+    if (el) el.style.backgroundImage = 'linear-gradient(160deg,' + c[0] + ',' + c[1] + ')';
+    /* 视频卡片的海报：没画面时先看到封面，点播放才出视频；没封面用专辑配色兜底 */
+    const st = refs.vStage;
+    if (st) {
+      st.style.backgroundImage = cover
+        ? 'url("' + String(cover).replace(/"/g, '%22') + '")'
+        : 'linear-gradient(160deg,' + c[0] + ',' + c[1] + ')';
+    }
     const img = refs.sheetArtImg;
     if (!img) return;
     if (album && album.cover) {
@@ -2368,6 +2377,7 @@
     refs.sheet.classList.toggle('playing', playing);
     refs.pbCover.classList.toggle('spin', playing);
     refs.vStage.classList.toggle('is-paused', !playing);
+    if (playing) refs.vStage.classList.remove('v-pending');
     applyPlayingState();
 
     /* 只要音频上下文建过就得保持 running，否则视频声音会走静音图 */
@@ -2600,7 +2610,12 @@
   function openSheet() {
     refs.sheet.classList.add('open');
     refs.sheet.setAttribute('aria-hidden', 'false');
-    if (P.kind === 'video') { if (FM.android) setCinema(true); wakeUi(); return; }
+    if (P.kind === 'video') {
+      /* 打开详情页不自动铺满：先给一张 16:9 的待播放卡片（有封面就用封面），
+         真要看满屏再点右上/底部的全屏按钮——否则竖屏一进来就是一整屏黑糊画面 */
+      wakeUi();
+      return;
+    }
     FM.viz.attach();
     FM.viz.resume();
     FM.viz.start();
