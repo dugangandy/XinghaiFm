@@ -81,9 +81,25 @@
     if (changed || dch) FM.ui.renderAll();
   }
 
+  /* 窗口失焦 / 切到后台时停掉背景的无限动画（见 base.css 的 body.bg-idle）。
+     macOS 上被别的窗口盖住时合成器不会自己省电，照样满帧重算，后台白烧一个核。
+     只影响背景装饰层，音频播放和界面交互都不受牵连。 */
+  function bindBgMotion() {
+    const body = document.body;
+    const idle = function () { body.classList.add('bg-idle'); };
+    const live = function () { body.classList.remove('bg-idle'); };
+    window.addEventListener('blur', idle);
+    window.addEventListener('focus', live);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden' || !document.hasFocus()) idle();
+      else live();
+    });
+  }
+
   function boot() {
     /* 兜底：初始化万一抛错，也不能让启动画面一直糊在屏幕上 */
     const guard = setTimeout(hideBoot, 8000);
+    bindBgMotion();
     /* 首屏真正有东西可看了才收启动画面，别让它闪一下就留个空壳 */
     function reveal() { clearTimeout(guard); hideBoot(); }
     const lastId = FM.store.read('lastLib', null);
