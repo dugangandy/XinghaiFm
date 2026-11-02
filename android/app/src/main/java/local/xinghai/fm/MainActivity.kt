@@ -202,6 +202,12 @@ class MainActivity : Activity() {
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
         }
+        /* 切后台时页面不可见，WebView 默认会被当成「可随手回收」的渲染进程（waivedWhenNotVisible）。
+           播放时渲染进程得一直活着，否则回来要重建画面和媒体管线，表现就是「黑一下 + 声音断一下」。
+           这里不让「不可见」成为降级理由：常驻一个渲染进程，内存代价很小。 */
+        if (Build.VERSION.SDK_INT >= 26) {
+            w.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+        }
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, false)
         w.addJavascriptInterface(Bridge(), "fmAndroid")

@@ -108,6 +108,15 @@ body.sheet-open .bg-aurora,
 body.sheet-open .bg-grid,
 body.sheet-open .bg-noise{display:none}
 
+/* 页面不可见时把这几层最贵的装饰从绘制里摘掉（js/app.js 的 bindBgMotion 负责增删）。
+   安卓壳切后台后 Chromium 会回收已栅格化的瓦片，回前台要整屏重画一遍，而这几层正是
+   重画里最贵的一块：两个 blur(90px) + 一个 inset:-40% 带遮罩的透视网格 + 噪点，
+   相当于 2.6 倍视口面积。先摘掉它们，恢复那一帧就便宜得多，「黑一下」的时间跟着变短；
+   主背景 .bg 的渐变仍然在，观感上只是少了光晕。 */
+body.bg-off .bg-aurora,
+body.bg-off .bg-grid,
+body.bg-off .bg-noise{display:none}
+
 /* 窗口失焦 / 切到别的应用：有硬件加速的那套特效也停掉，被别的窗口盖住时
    合成器不会自己省电。没加速的机器由 js/app.js 的 bindBgMotion 停定时器。 */
 body.bg-idle .bg-aurora,

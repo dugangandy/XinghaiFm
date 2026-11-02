@@ -149,16 +149,42 @@
   }
 
   /* 窗口失焦 / 切到后台时把这些装饰动画全停掉：被别的窗口盖住时合成器不会自己省电，
-     照样重算，等于后台白烧一个核。只影响装饰层，音频和交互都不受牵连。 */
+     照样重算，等于后台白烧一个核。只影响装饰层，音频和交互都不受牵连。
+     两个状态函数做成幂等的：切回前台时 visibilitychange 早于 focus，hasFocus() 还是 false，
+     老写法会先 idle() 再 live()，等于把三块 blur(90px) 的极光层停一下又立刻重启
+     （--drift 被重写、EQ 重新起跳）。
+     另外「不可见」时把最贵的几层装饰一起摘掉（bg-off，见 css 里的说明）：Chromium 在后台
+     会回收已栅格化的瓦片，回前台那一次整屏重画因此又慢又黑，先摘掉它们能明显缩短这一下。 */
   function bindBgMotion() {
     const body = document.body;
-    const idle = function () { body.classList.add('bg-idle'); stopDrift(); stopEq(); };
-    const live = function () { body.classList.remove('bg-idle'); startDrift(); startEq(); };
+    const idle = function () {
+      if (body.classList.contains('bg-idle')) return;
+      body.classList.add('bg-idle'); stopDrift(); stopEq();
+    };
+    const live = function () {
+      if (!body.classList.contains('bg-idle')) return;
+      body.classList.remove('bg-idle'); startDrift(); startEq();
+    };
+    /* 装饰层回挂要等恢复的那一帧过去：两帧之后再多给 300ms，别让它抢首帧的绘制预算 */
+    function restoreDecor() {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          setTimeout(function () { body.classList.remove('bg-off'); }, 300);
+        });
+      });
+    }
     window.addEventListener('blur', idle);
     window.addEventListener('focus', live);
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'hidden' || !document.hasFocus()) idle();
-      else live();
+      if (document.visibilityState === 'hidden') {
+        /* 只在真的不可见时摘：桌面上只是被别的窗口盖住时，背景不该突然少一块 */
+        body.classList.add('bg-off');
+        idle();
+        return;
+      }
+      restoreDecor();
+      if (document.hasFocus()) live();
+      else idle();
     });
     startDrift();
     startEq();
@@ -272,23 +298,34 @@
     if (now - libsAt < 20000) return;
     libsAt = now;
     const changed = await FM.fs.refreshLibs();
-    if (changed) {
-      FM.ui.renderAll();
-      FM.ui.toast('资源库列表已更新');
-    }
+    if (!changed) return;
+    /* 请求飞行期间又切走了：这次不重建，但 refreshLibs() 已经把 libs/activeId 换成新的了，
+       必须把节流时间戳清掉，否则 20 秒内界面还停在旧库列表上 */
+    if (document.visibilityState === 'hidden') { libsAt = 0; return; }
+    FM.ui.renderAll({ quiet: true });                     /* 恢复路径上别播入场动画 */
+    FM.ui.toast('资源库列表已更新');
   }
 
-  /* 回到窗口时补一次：手机上刚听的位置能接上 */
+  /* 回到窗口时补一次：手机上刚听的位置能接上。
+     统一延后 600ms 再做：一回来就发请求、解析、甚至整页重建，会和 WebView 重新出图
+     抢同一个主线程，那几帧正好是「切回来闪一下」的地方。 */
+  function deferResume(fn) {
+    setTimeout(function () {
+      if (document.visibilityState === 'hidden') return;   /* 期间又切走了就别做 */
+      try { fn(); } catch (e) { console.warn('[resume] 补数据失败', e); }
+    }, 600);
+  }
+
   let focusAt = 0;
   window.addEventListener('focus', function () {
     const now = Date.now();
     if (now - focusAt < 60000) return;
     focusAt = now;
-    if (FM.fs.native) pullMetaFromDisk();
-    else refreshServerLibs();
+    if (FM.fs.native) deferResume(pullMetaFromDisk);
+    else deferResume(refreshServerLibs);
   });
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible') refreshServerLibs();
+    if (document.visibilityState === 'visible') deferResume(refreshServerLibs);
   });
 
   /* 调试/自检用：手动触发一次元数据读写 */

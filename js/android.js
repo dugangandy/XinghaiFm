@@ -10,9 +10,26 @@
 
   let lastPush = 0;
   let queued = 0;
+  let lastPushKey = '';   /* 上次推给壳里的内容指纹，回前台时用来跳过没变化的重推 */
 
   function albumOf(track) {
     try { return track && track.albumId ? FM.lib.album(track.albumId) : null; } catch (e) { return null; }
+  }
+
+  /* 和下面 push() 推的内容一一对应：标题 / 专辑 / 封面 / 能否上下一集 / 是否在播 */
+  function stateKey() {
+    const p = FM.player;
+    const t = p.current;
+    const a = albumOf(t);
+    const q = p.queue || [];
+    return [
+      t ? t.title : '',
+      a ? a.title : '',
+      a && a.cover ? a.cover : '',
+      p.index > 0 ? 1 : 0,
+      p.index >= 0 && q.length > 0 && p.index < q.length - 1 ? 1 : 0,
+      p.nativeVideo ? 0 : (p.playing ? 1 : 0)
+    ].join('\u0000');
   }
 
   function push() {
@@ -20,10 +37,12 @@
     const t = p.current;
     const a = albumOf(t);
     const q = p.queue || [];
+    const key = stateKey();
     try {
       NATIVE.setTrack(t ? t.title : '', a ? a.title : '', a && a.cover ? a.cover : '');
       NATIVE.setNav(p.index > 0, p.index >= 0 && q.length > 0 && p.index < q.length - 1);
       NATIVE.setPlaying(p.nativeVideo ? false : !!p.playing);
+      lastPushKey = key;   /* 桥断了就走不到这里：下次回前台还会补推一次 */
     } catch (e) {
       /* 桥断了不影响播放 */
     }
@@ -237,8 +256,18 @@
   FM.player.on('state', function () { syncMedia(true); });
   FM.player.on('track', function () { syncMedia(true); });
   FM.player.on('stop', function () { syncMedia(true); });
+  /* 回前台补一次状态。每次 syncMedia(true) 都是三次跨 JNI 调用，Java 侧每个还会重发
+     一次通知栏，所以「秒切回来（瞄一眼通知）」这种内容没变就推的情况要省掉。
+     但也不能无限省：Bridge.setPlaying 在播放时会顺带 PlaybackService.start()，这条推送
+     同时是「服务被系统收掉后拉活」的心跳，离开够久就照旧推一次。
+     注意只在「这一侧」去重：Java 的 PlaybackService.onCreate 靠 FM.android.syncMedia(true)
+     强制重推来修首次推送丢失，那条路不能拦，所以 push() 本身不做去重。 */
+  const HEARTBEAT_MS = 30000;
+  let hiddenAt = 0;
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) syncMedia(true);
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (Date.now() - hiddenAt < HEARTBEAT_MS && stateKey() === lastPushKey) return;
+    syncMedia(true);
   });
 
   /* 首帧之后补一次，让通知栏在没播放时也有正确的标题 */
