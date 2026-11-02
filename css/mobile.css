@@ -370,3 +370,16 @@ body.app-fs .vstage{
   width:100vw;height:100dvh;aspect-ratio:auto;max-height:none;
   border-radius:0;box-shadow:none;
 }
+
+/* ── 移动端启动 / 回前台 slogan 页：换用深空星海插画背景 ──
+   图片放在 css/ 下（打包白名单只含 css/**，android/ 不进安装包）；
+   渐变作为兜底垫在图片下面，图没加载出来也不至于纯黑。 */
+@media (max-width:760px){
+  .boot,
+  .rc-gate{
+    background:
+      url(boot-bg.svg) center/cover no-repeat,
+      radial-gradient(880px 600px at 6% -10%,#0e2036 0%,transparent 62%),
+      linear-gradient(180deg,#050b1a 0%,#071426 62%,#030814 100%);
+  }
+}

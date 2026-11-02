@@ -127,12 +127,15 @@
 
   function stepEq() {
     if (!eqBars) {
-      eqBars = document.querySelectorAll('.brand-mark.eq-mark span');
+      /* 侧栏品牌 mark + 开屏大 logo 都一起跳 */
+      eqBars = document.querySelectorAll('.brand-mark.eq-mark span, .rc-logo.eq-mark span');
       if (!eqBars.length) return;
     }
     const now = Date.now();
     for (let i = 0; i < eqBars.length; i++) {
-      const phase = ((now - eqT0 - EQ_DELAY_MS[i]) / EQ_PERIOD_MS) * Math.PI * 2;
+      /* 每个标记 5 根柱子：按组取延迟，多处方标按同一节拍起跳 */
+      const delay = EQ_DELAY_MS[i % EQ_DELAY_MS.length];
+      const phase = ((now - eqT0 - delay) / EQ_PERIOD_MS) * Math.PI * 2;
       const v = 0.75 - 0.25 * Math.cos(phase);
       eqBars[i].style.transform = 'scaleY(' + v.toFixed(3) + ')';
     }

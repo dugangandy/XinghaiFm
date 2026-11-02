@@ -22,6 +22,7 @@ import android.webkit.CookieManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -138,19 +139,28 @@ class LoginActivity : Activity() {
             setPadding(dp(26), dp(26), dp(26), dp(26))
         }
         box.addView(TextView(this).apply {
-            text = "把夜色"; textSize = 32f; setTextColor(Color.WHITE)
+            text = "星海有声"; textSize = 32f; setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER_HORIZONTAL
             letterSpacing = 0.04f
         }, lp())
         box.addView(TextView(this).apply {
-            text = "调成声音"; textSize = 32f; setTextColor(0xFF22D3EE.toInt())
+            text = "万物可听"; textSize = 32f; setTextColor(0xFF22D3EE.toInt())
             typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER_HORIZONTAL
             letterSpacing = 0.04f; setPadding(0, dp(4), 0, 0)
         }, lp())
-        box.addView(TextView(this).apply {
-            text = "星海 FM"; textSize = 11.5f; setTextColor(DIM)
-            gravity = Gravity.CENTER_HORIZONTAL; letterSpacing = 0.26f
+        /* 底部品牌行：小 logo + 星海 FM（和网页开屏的 .rc-brand 对齐） */
+        box.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
             setPadding(0, dp(28), 0, 0)
+            addView(ImageView(this@LoginActivity).apply {
+                setImageResource(R.drawable.icon)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            }, LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(8) })
+            addView(TextView(this@LoginActivity).apply {
+                text = "星海 FM"; textSize = 11.5f; setTextColor(DIM)
+                gravity = Gravity.CENTER_VERTICAL; letterSpacing = 0.26f
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }, lp())
         root.addView(box, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(root)

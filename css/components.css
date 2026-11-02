@@ -369,6 +369,10 @@
 .rc-slogan b{font-weight:800;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:none}
 .rc-art{width:clamp(198px,55vw,268px);animation:rcFloat 3.6s var(--ease) infinite}
 .rc-art svg{display:block;width:100%;height:auto;filter:drop-shadow(0 16px 34px rgba(56,120,255,.32))}
+/* 开屏主视觉：大号声波品牌标记（替代原来的星球插画）。
+   .rc-art 给出上下浮动，这里只负责放大 + 一圈柔和光晕。 */
+.rc-art-logo{width:auto;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 26px rgba(34,211,238,.34)) drop-shadow(0 18px 40px rgba(56,120,255,.22))}
+.rc-logo{font-size:clamp(58px,15vw,84px)}
 .rc-spark{transform-box:fill-box;transform-origin:center;animation:rcTwinkle 3.8s ease-in-out infinite}
 .rc-spark.s2{animation-delay:1.3s}
 

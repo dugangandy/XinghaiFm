@@ -1,0 +1,149 @@
+<svg width="1080" height="1920" viewBox="0 0 1080 1920" fill="none"
+     xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- 深空背景渐变 -->
+    <linearGradient id="bg" x1="540" y1="0" x2="540" y2="1920" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#050B1A"/>
+      <stop offset="0.45" stop-color="#0A1D3A"/>
+      <stop offset="0.78" stop-color="#071426"/>
+      <stop offset="1" stop-color="#030814"/>
+    </linearGradient>
+
+    <!-- 银河弧线渐变 -->
+    <linearGradient id="galaxy" x1="0" y1="420" x2="1080" y2="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6EC8FF" stop-opacity="0"/>
+      <stop offset="0.35" stop-color="#6EC8FF" stop-opacity="0.55"/>
+      <stop offset="0.68" stop-color="#7FF3E1" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#F5C56B" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- 声波渐变 -->
+    <linearGradient id="wave" x1="180" y1="1560" x2="900" y2="1560" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6EC8FF" stop-opacity="0"/>
+      <stop offset="0.3" stop-color="#6EC8FF" stop-opacity="0.42"/>
+      <stop offset="0.55" stop-color="#7FF3E1" stop-opacity="0.55"/>
+      <stop offset="0.8" stop-color="#6EC8FF" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#6EC8FF" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- 书页渐变 -->
+    <linearGradient id="page" x1="300" y1="1220" x2="780" y2="1480" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6EC8FF" stop-opacity="0.02"/>
+      <stop offset="0.5" stop-color="#6EC8FF" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#7FF3E1" stop-opacity="0.02"/>
+    </linearGradient>
+
+    <!-- 底部光晕 -->
+    <radialGradient id="bottomGlow" cx="0" cy="0" r="1"
+      gradientUnits="userSpaceOnUse"
+      gradientTransform="translate(540 1540) rotate(90) scale(620 760)">
+      <stop stop-color="#6EC8FF" stop-opacity="0.20"/>
+      <stop offset="0.55" stop-color="#6EC8FF" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#6EC8FF" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 顶部光晕 -->
+    <radialGradient id="topGlow" cx="0" cy="0" r="1"
+      gradientUnits="userSpaceOnUse"
+      gradientTransform="translate(820 260) rotate(125) scale(520 420)">
+      <stop stop-color="#7FF3E1" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#7FF3E1" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 柔光滤镜 -->
+    <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <filter id="starGlow" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="1080" height="1920" fill="url(#bg)"/>
+  <rect width="1080" height="1920" fill="url(#topGlow)"/>
+  <rect width="1080" height="1920" fill="url(#bottomGlow)"/>
+
+  <!-- 银河弧线：主弧 -->
+  <path d="M-120 560C180 300 620 300 1200 720"
+        stroke="url(#galaxy)" stroke-width="3" opacity="0.9"/>
+  <path d="M-160 620C200 380 660 380 1220 800"
+        stroke="url(#galaxy)" stroke-width="1.2" opacity="0.55"/>
+
+  <!-- 银河柔光带 -->
+  <path d="M-120 560C180 300 620 300 1200 720"
+        stroke="#6EC8FF" stroke-width="28" stroke-opacity="0.08"
+        filter="url(#softGlow)"/>
+
+  <!-- 星点群：低对比散布 -->
+  <g fill="#DDF4FF">
+    <circle cx="90" cy="210" r="1.8" opacity="0.55"/>
+    <circle cx="168" cy="360" r="1.2" opacity="0.40"/>
+    <circle cx="260" cy="160" r="2.2" opacity="0.50"/>
+    <circle cx="360" cy="300" r="1.4" opacity="0.36"/>
+    <circle cx="470" cy="190" r="1.8" opacity="0.48"/>
+    <circle cx="560" cy="350" r="1.1" opacity="0.35"/>
+    <circle cx="690" cy="220" r="2.4" opacity="0.52"/>
+    <circle cx="780" cy="420" r="1.5" opacity="0.36"/>
+    <circle cx="900" cy="300" r="1.8" opacity="0.46"/>
+    <circle cx="990" cy="170" r="1.2" opacity="0.38"/>
+    <circle cx="1010" cy="520" r="2.0" opacity="0.42"/>
+    <circle cx="120" cy="620" r="1.4" opacity="0.32"/>
+    <circle cx="210" cy="760" r="2.2" opacity="0.38"/>
+    <circle cx="330" cy="690" r="1.2" opacity="0.30"/>
+    <circle cx="450" cy="820" r="1.7" opacity="0.34"/>
+    <circle cx="590" cy="720" r="1.3" opacity="0.30"/>
+    <circle cx="720" cy="900" r="2.0" opacity="0.34"/>
+    <circle cx="850" cy="760" r="1.2" opacity="0.28"/>
+    <circle cx="960" cy="880" r="1.8" opacity="0.32"/>
+    <circle cx="1040" cy="1040" r="1.3" opacity="0.26"/>
+    <circle cx="80" cy="980" r="1.5" opacity="0.26"/>
+    <circle cx="180" cy="1140" r="1.9" opacity="0.24"/>
+    <circle cx="300" cy="1060" r="1.2" opacity="0.22"/>
+    <circle cx="430" cy="1180" r="1.6" opacity="0.22"/>
+    <circle cx="760" cy="1120" r="1.4" opacity="0.22"/>
+    <circle cx="890" cy="1240" r="1.8" opacity="0.20"/>
+    <circle cx="1000" cy="1360" r="1.2" opacity="0.18"/>
+  </g>
+
+  <!-- 少量亮星 -->
+  <g fill="#F5C56B">
+    <circle cx="320" cy="420" r="2.8" opacity="0.65"/>
+    <circle cx="760" cy="540" r="2.2" opacity="0.55"/>
+    <circle cx="940" cy="700" r="1.8" opacity="0.45"/>
+    <circle cx="150" cy="860" r="1.6" opacity="0.38"/>
+  </g>
+  <g fill="#F5C56B" filter="url(#starGlow)">
+    <circle cx="320" cy="420" r="6" opacity="0.22"/>
+    <circle cx="760" cy="540" r="5" opacity="0.18"/>
+    <circle cx="940" cy="700" r="4" opacity="0.14"/>
+  </g>
+
+  <!-- 抽象书页轮廓：低对比，置于中心偏下 -->
+  <g opacity="0.55">
+    <path d="M540 1300
+             C455 1228 345 1218 268 1272
+             L268 1436
+             C345 1382 455 1392 540 1464
+             Z"
+          fill="url(#page)" stroke="#6EC8FF" stroke-opacity="0.16" stroke-width="1.5"/>
+    <path d="M540 1300
+             C625 1228 735 1218 812 1272
+             L812 1436
+             C735 1382 625 1392 540 1464
+             Z"
+          fill="url(#page)" stroke="#6EC8FF" stroke-opacity="0.16" stroke-width="1.5"/>
+    <path d="M540 1300V1464" stroke="#7FF3E1" stroke-opacity="0.12" stroke-width="1.2"/>
+  </g>
+
+  <!-- 底部声波：轻量同心弧线 -->
+  <g fill="none" stroke="url(#wave)" stroke-linecap="round">
+    <path d="M250 1580C360 1430 720 1430 830 1580" stroke-width="2.4" opacity="0.95"/>
+    <path d="M210 1620C345 1420 735 1420 870 1620" stroke-width="1.8" opacity="0.75"/>
+    <path d="M170 1660C330 1410 750 1410 910 1660" stroke-width="1.4" opacity="0.55"/>
+    <path d="M130 1700C315 1400 765 1400 950 1700" stroke-width="1.1" opacity="0.38"/>
+  </g>
+
+  <!-- 底部中央柔光点 -->
+  <circle cx="540" cy="1580" r="120" fill="#6EC8FF" opacity="0.06" filter="url(#softGlow)"/>
+</svg>
