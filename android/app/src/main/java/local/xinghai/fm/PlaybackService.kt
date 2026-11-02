@@ -52,6 +52,25 @@ class PlaybackService : Service() {
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, PlaybackService::class.java))
         }
+
+        /* 界面已经拆掉时，通知栏按下的指令没处可发：先存这儿，
+           等界面被拉起来、网页就绪（MainActivity.Bridge.ready）再补执行 */
+        @Volatile
+        private var pendingCmd: String? = null
+        private var pendingAt = 0L
+
+        private fun putPending(cmd: String) {
+            pendingCmd = cmd
+            pendingAt = SystemClock.elapsedRealtime()
+        }
+
+        /* 取一次就清空；超过 60 秒还没被消费（界面没起来）就作废，
+           免得下次正常打开时莫名其妙自己开始播 */
+        fun takePending(): String? {
+            val c = pendingCmd ?: return null
+            pendingCmd = null
+            return if (SystemClock.elapsedRealtime() - pendingAt < 60000) c else null
+        }
     }
 
     private var session: MediaSession? = null
@@ -167,12 +186,36 @@ class PlaybackService : Service() {
 
     /* ── 把指令送回网页里的播放器 ── */
     private fun act(cmd: String) {
+        /* 用户把通知栏这条划掉了（暂停态才可划）：服务跟着收掉，别留个没有入口的前台服务。
+           个别机型播放中也能划掉，那种先把声音停掉，否则又会变成「有声音没入口」 */
+        if (cmd == "dismiss") {
+            if (playing) MainActivity.current?.js("FM.android.mediaAction('pause')")
+            stopSelf()
+            return
+        }
         val js = when (cmd) {
             "toggle" -> if (playing) "FM.android.mediaAction('pause')" else "FM.android.mediaAction('play')"
             "play", "pause", "next", "prev" -> "FM.android.mediaAction('$cmd')"
             else -> return
         }
-        MainActivity.current?.js(js)
+        val host = MainActivity.current
+        if (host != null) {
+            host.js(js)
+            return
+        }
+        /* App 已经退出，只剩通知栏：把界面拉起来，指令等网页就绪后补发 */
+        putPending(cmd)
+        runCatching {
+            startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+    }
+
+    /* 从最近任务里划掉 = 真退出：连通知栏一起收掉。
+       （返回键退出不会走这里，那条路要保留通知栏，见 MainActivity.onDestroy） */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        pendingCmd = null
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     /* ── 锁屏封面：有封面用专辑图、无封面用 App logo ──
@@ -316,6 +359,8 @@ class PlaybackService : Service() {
             .setContentText(sub.ifEmpty { "点击回到播放界面" })
             .setContentIntent(open)
             .setOngoing(playing)
+            /* 暂停态可以被划掉：划掉就等于「不要这个播放器了」，服务一起收 */
+            .setDeleteIntent(cmd("dismiss", 4))
             .setShowWhen(false)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .addAction(android.R.drawable.ic_media_previous, "上一集", cmd("prev", 1))

@@ -522,15 +522,18 @@ class MainActivity : Activity() {
         Dl.unwatchProgress(onDlChanged)
         ui.removeCallbacks(pushDlState)
         if (isFinishing) {
-            /* 先把网页里的播放停掉再拆 WebView：停服务只是把通知收走，媒体还挂在渲染进程里，
-               会变成「App 已经退出但声音还在」 */
+            /* 先把网页里的播放停掉再拆 WebView：媒体挂在渲染进程里，不先停就会「App 已经退出声音还在」 */
             web?.let { w ->
                 runCatching { w.evaluateJavascript("window.FM && FM.player && FM.player.pause && FM.player.pause()", null) }
                 runCatching { w.loadUrl("about:blank") }
                 ui.postDelayed({ runCatching { w.destroy() } }, 150)
             }
             web = null
-            PlaybackService.stop(this)
+            /* 前台服务留着不 stop：退出后通知栏/锁屏还要显示上一集，点一下能接着播。
+               网页这时已经拆了，通知栏的指令由 PlaybackService 存下来、下次界面就绪后补发。
+               这里只把播放态改成暂停，别让通知栏还挂着「暂停」按钮。
+               真要收干净的是「从最近任务划掉」，那条路走 PlaybackService.onTaskRemoved。 */
+            runCatching { PlaybackService.current?.updatePlaying(false) }
         }
         super.onDestroy()
     }
@@ -550,7 +553,24 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun setTrack(title: String?, sub: String?, cover: String?) {
-            runOnUiThread { PlaybackService.current?.updateTrack(title ?: "", sub ?: "", cover ?: "") }
+            val t = title ?: ""
+            runOnUiThread {
+                /* 有曲目就把前台服务拉起来，哪怕没在播：冷启动后通知栏也要显示上一集，
+                   否则界面底部有节目、通知栏却是空的（以前只有 setPlaying(true) 才建服务）。
+                   后台起 FGS 会被系统拦，拦了就等下次真正播放时再说。 */
+                if (t.isNotEmpty() && PlaybackService.current == null) {
+                    runCatching { PlaybackService.start(this@MainActivity) }
+                }
+                PlaybackService.current?.updateTrack(t, sub ?: "", cover ?: "")
+            }
+        }
+
+        /* 网页脚本就绪（android.js 首次 syncMedia 之后调一次）：
+           通知栏在界面没起来时按下的播放/暂停先存在服务里，这里补发执行 */
+        @JavascriptInterface
+        fun ready() {
+            val cmd = PlaybackService.takePending() ?: return
+            this@MainActivity.js("window.FM && FM.android && FM.android.mediaAction && FM.android.mediaAction('" + cmd + "')")
         }
 
         @JavascriptInterface

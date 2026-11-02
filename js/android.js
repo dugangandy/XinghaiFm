@@ -270,8 +270,13 @@
     syncMedia(true);
   });
 
-  /* 首帧之后补一次，让通知栏在没播放时也有正确的标题 */
-  setTimeout(function () { syncMedia(true); }, 1200);
+  /* 首帧之后补一次，让通知栏在没播放时也有正确的标题；
+     补完再告诉壳「网页就绪」，壳会把「App 没起来时通知栏按下的播放/暂停」补执行
+     （旧 APK 没这个方法，typeof 挡一下） */
+  setTimeout(function () {
+    syncMedia(true);
+    try { if (typeof NATIVE.ready === 'function') NATIVE.ready(); } catch (e) {}
+  }, 1200);
   /* 已下载清单在首帧前拉一次，曲目列表第一眼就带标记 */
   refreshDownloads();
 })(window.FM);
