@@ -58,6 +58,31 @@
   <symbol id="i-cinema" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2.6" y="5.4" width="18.8" height="13.2" rx="2"/><path d="M7 8.6v6.8M17 8.6v6.8"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="m10 8-4 4 4 4"/><path d="M6 12h9"/></symbol>
   <symbol id="i-full" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V5.4A1.4 1.4 0 0 1 5.4 4H9M15 4h3.6A1.4 1.4 0 0 1 20 5.4V9M20 15v3.6a1.4 1.4 0 0 1-1.4 1.4H15M9 20H5.4A1.4 1.4 0 0 1 4 18.6V15"/></symbol>
+  <!-- 品牌页主视觉：启动画面和「回到前台」的过渡页共用（内联 SVG，不引位图） -->
+  <symbol id="i-stage" viewBox="0 0 220 200">
+    <defs>
+      <radialGradient id="i-stage-planet" cx="36%" cy="30%" r="76%">
+        <stop offset="0%" stop-color="#8ff2ff"/>
+        <stop offset="46%" stop-color="#3aa8ff"/>
+        <stop offset="100%" stop-color="#6b3df0"/>
+      </radialGradient>
+      <linearGradient id="i-stage-wave" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#22d3ee"/>
+        <stop offset="100%" stop-color="#a855f7"/>
+      </linearGradient>
+    </defs>
+    <ellipse cx="110" cy="104" rx="88" ry="30" transform="rotate(-16 110 104)" fill="none" stroke="rgba(150,200,255,.2)"/>
+    <ellipse cx="110" cy="104" rx="72" ry="24" transform="rotate(26 110 104)" fill="none" stroke="rgba(168,85,247,.2)"/>
+    <circle cx="110" cy="104" r="46" fill="url(#i-stage-planet)"/>
+    <circle cx="110" cy="104" r="46" fill="none" stroke="rgba(255,255,255,.22)"/>
+    <path d="M100 87.5 129 104l-29 16.5z" fill="#05070e" opacity=".85"/>
+    <path d="M164 86a26 26 0 0 1 0 36" fill="none" stroke="url(#i-stage-wave)" stroke-width="4" stroke-linecap="round"/>
+    <path d="M178 76a40 40 0 0 1 0 56" fill="none" stroke="url(#i-stage-wave)" stroke-width="4" stroke-linecap="round" opacity=".5"/>
+    <path class="rc-spark s1" d="M54 38l3.2 8.4 8.4 3.2-8.4 3.2L54 61.2l-3.2-8.4-8.4-3.2 8.4-3.2z" fill="#eaf7ff"/>
+    <path class="rc-spark s2" d="M176 44l2.4 6.4 6.4 2.4-6.4 2.4-2.4 6.4-2.4-6.4-6.4-2.4 6.4-2.4z" fill="#cfe6ff"/>
+    <circle cx="42" cy="148" r="2" fill="#22d3ee" opacity=".75"/>
+    <circle cx="188" cy="134" r="1.6" fill="#f472b6" opacity=".75"/>
+  </symbol>
 </svg>
 
 <!-- ── 背景氛围 ─────────────────────────────────────────── -->
@@ -271,24 +296,35 @@
 
     <div class="sheet-meta">
       <h2 id="shTitle">—</h2>
-      <p id="shSub">—</p>
+      <p id="shSub"><span id="shSubText">—</span><span class="fav-tag" id="shFavTag" hidden>已收藏</span></p>
+    </div>
+
+    <!-- 移动端操作行：下载 / 倍速 / 播放模式 / 收藏 / 更多（桌面端仍用下面的 .sheet-extra） -->
+    <div class="sheet-actions sm-only">
+      <button class="icon-btn" id="shmDownload" title="下载专辑"><svg class="i"><use href="#i-download"/></svg></button>
+      <button class="chip rate-chip" id="shmRate" title="倍速">1.0x</button>
+      <button class="icon-btn" id="shmLoop" title="播放模式"><svg class="i"><use href="#i-repeat"/></svg></button>
+      <button class="icon-btn" id="shmFav" title="收藏这一集"><svg class="i"><use href="#i-heart"/></svg></button>
+      <button class="icon-btn" id="shmMore" title="更多"><svg class="i"><use href="#i-more"/></svg></button>
     </div>
 
     <div class="sheet-scrub-row">
+      <button class="icon-btn skip-btn" id="shBack" title="后退 15 秒"><svg class="i"><use href="#i-back"/></svg></button>
       <span class="tnum" id="shCur">0:00</span>
       <div class="scrub big" id="shScrub" role="slider" aria-label="播放进度" tabindex="0">
         <div class="scrub-track"><div class="scrub-buf"></div><div class="scrub-fill"></div><div class="scrub-thumb"></div></div>
         <div class="scrub-tip" id="shTip">0:00</div>
       </div>
       <span class="tnum" id="shDur">0:00</span>
+      <button class="icon-btn skip-btn" id="shFwd" title="前进 15 秒"><svg class="i"><use href="#i-fwd"/></svg></button>
     </div>
 
     <div class="sheet-controls">
-      <button class="icon-btn" id="shBack" title="后退 15 秒"><svg class="i"><use href="#i-back"/></svg></button>
+      <button class="icon-btn sm-only" id="shmQueue" title="播放队列"><svg class="i"><use href="#i-list"/></svg></button>
       <button class="icon-btn big" id="shPrev" title="上一集"><svg class="i"><use href="#i-prev"/></svg></button>
       <button class="play-btn huge" id="shPlay"><svg class="i"><use href="#i-play"/></svg></button>
       <button class="icon-btn big" id="shNext" title="下一集"><svg class="i"><use href="#i-next"/></svg></button>
-      <button class="icon-btn" id="shFwd" title="前进 15 秒"><svg class="i"><use href="#i-fwd"/></svg></button>
+      <button class="icon-btn sm-only" id="shmSleep" title="定时关闭"><svg class="i"><use href="#i-moon"/></svg></button>
     </div>
 
     <div class="sheet-extra">
@@ -296,6 +332,16 @@
       <button class="chip" id="shLoop"><svg class="i"><use href="#i-repeat"/></svg><span>列表循环</span></button>
       <button class="chip" id="shSleep"><svg class="i"><use href="#i-moon"/></svg><span>定时关闭</span></button>
       <button class="chip" id="shFav"><svg class="i"><use href="#i-heart"/></svg><span>收藏</span></button>
+    </div>
+
+    <!-- 移动端底部专辑卡片：整卡可点，跳专辑详情 -->
+    <div class="sheet-album-card sm-only" id="shAlbumCard" role="button" tabindex="0" hidden>
+      <div class="ac-cover" id="shAlbumCover"><span></span></div>
+      <div class="ac-meta">
+        <div class="ac-title" id="shAlbumTitle">—</div>
+        <div class="ac-sub" id="shAlbumSub"></div>
+      </div>
+      <button class="icon-btn ac-fav" id="shAlbumFav" title="收藏专辑"><svg class="i"><use href="#i-heart"/></svg></button>
     </div>
   </div>
 
@@ -310,9 +356,34 @@
 </section>
 
 <div class="boot" id="boot">
-  <div class="boot-orb"><div class="eq-mark"><span></span><span></span><span></span><span></span><span></span></div></div>
-  <div class="boot-name">星海 <b>FM</b></div>
-  <div class="boot-bar"><i></i></div>
+  <div class="rc-glow a"></div>
+  <div class="rc-glow b"></div>
+  <div class="rc-body">
+    <p class="rc-slogan">把夜色<br><b>调成声音</b></p>
+    <div class="rc-art"><svg class="rc-svg" viewBox="0 0 220 200" aria-hidden="true"><use href="#i-stage"/></svg></div>
+    <div class="boot-bar"><i></i></div>
+  </div>
+  <div class="rc-brand">
+    <div class="eq-mark rc-mark"><span></span><span></span><span></span><span></span><span></span></div>
+    <b>星海 FM</b>
+  </div>
+</div>
+
+<!-- ── 回到前台的过渡页（只给安卓壳用，见 js/app.js 的 showResumeCover）──
+     切后台久了系统会回收窗口表面，回来先黑一下才出内容。这张页在恢复瞬间铺满，
+     把那段空白变成过场，等真实界面画好再淡出。刻意不用 blur/backdrop-filter：
+     它的首帧必须又快又便宜，否则就成了「黑完再白等」。 -->
+<div class="rc-gate" id="resumeCover" aria-hidden="true">
+  <div class="rc-glow a"></div>
+  <div class="rc-glow b"></div>
+  <div class="rc-body">
+    <p class="rc-slogan">把夜色<br><b>调成声音</b></p>
+    <div class="rc-art"><svg class="rc-svg" viewBox="0 0 220 200" aria-hidden="true"><use href="#i-stage"/></svg></div>
+  </div>
+  <div class="rc-brand">
+    <div class="eq-mark rc-mark"><span></span><span></span><span></span><span></span><span></span></div>
+    <b>星海 FM</b>
+  </div>
 </div>
 
 <div class="modal-root" id="modalRoot"></div>

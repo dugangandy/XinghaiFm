@@ -79,31 +79,7 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .icon-btn{width:38px;height:38px}
   .play-btn{width:40px;height:40px}
 
-  /* ── 全屏播放页 ── */
-  .sheet{background:radial-gradient(120% 80% at 50% 0%,#0c1526,#05070e 70%)}
-  .sheet-inner{
-    padding:calc(12px + var(--sat)) 18px calc(18px + var(--sab));
-    gap:12px;justify-content:flex-start;
-  }
-  .sheet-top{position:static;margin-bottom:calc(clamp(300px,60vh,460px) - 50px)}
-  .sheet-art{display:block;height:clamp(300px,60vh,460px)}
-  .sheet-art-veil{display:block}
-  .sheet-stage{flex:none;margin:10px 0 6px}
-  /* 音频模式用沉浸式封面，原封面卡片不再单独显示 */
-  .sheet:not(.is-video) .sheet-cover{display:none}
-  .sheet-cover{width:min(66vw,34vh);border-radius:20px}
-  /* 无封面：唱片定格在封面区正中，position:fixed 不占流式高度（不影响下方标题/进度/控制按钮） */
-  .sheet.no-cover:not(.is-video) .sheet-disc{
-    display:block;position:fixed;left:50%;top:calc(clamp(300px,60vh,460px) * .5);
-    transform:translate(-50%,-50%);width:min(66vw,34vh);z-index:1;
-  }
-  .sc-char{font-size:clamp(40px,9vh,64px)}
-  .sheet-meta h2{font-size:17px}
-  .sheet-meta p{font-size:11.5px;margin-top:4px}
-  .sheet-controls{gap:4px}
-  .sheet-controls .icon-btn{width:46px;height:46px}
-  .sheet-controls .play-btn.huge{width:64px;height:64px}
-  .sheet-extra{gap:6px}
+  /* ── 全屏播放页：新版布局见下方「竖屏 + 横屏共用」块 ── */
   .chip{height:28px;padding:0 10px;font-size:11px}
   .sheet .viz{height:24%;opacity:.3}
   .queue-panel{width:100%}
@@ -123,25 +99,232 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .track-toolbar{background:linear-gradient(180deg,rgba(6,9,16,.97),rgba(6,9,16,.88) 70%,transparent)}
 }
 
+/* ── 新版全屏播放页：竖屏手机 + 横屏手机共用（横屏靠「矮」识别，宽度常 >760） ── */
+@media (max-width:760px), (max-height:560px) and (max-width:980px){
+  .sheet{
+    --art-h:clamp(160px,36vh,330px);
+    background:radial-gradient(120% 80% at 50% 0%,#0c1526,#05070e 70%);
+  }
+  .sheet-inner{
+    padding:calc(12px + var(--sat)) 18px calc(16px + var(--sab));
+    gap:8px;justify-content:flex-start;
+  }
+  .sheet-top{position:static;margin-bottom:calc(var(--art-h) - 50px)}
+  .sheet-art{display:block;height:var(--art-h)}
+  .sheet-art-veil{display:block}
+  .sheet-stage{flex:none;margin:0}
+  /* 音频模式用沉浸式封面，原封面卡片不再单独显示 */
+  .sheet:not(.is-video) .sheet-cover{display:none}
+  .sheet-cover{width:min(66vw,34vh);border-radius:20px}
+  /* 无封面：唱片定格在封面区正中，position:fixed 不占流式高度（不影响下方标题/进度/控制按钮） */
+  .sheet.no-cover:not(.is-video) .sheet-disc{
+    display:block;position:fixed;left:50%;top:calc(var(--art-h) * .5);
+    transform:translate(-50%,-50%);width:min(66vw,34vh);z-index:1;
+  }
+  .sc-char{font-size:clamp(40px,9vh,64px)}
+
+  /* 标题区：屏幕中部、左对齐、字号加大 */
+  .sheet-meta{text-align:left;width:100%;padding:0 2px}
+  .sheet-meta h2{font-size:clamp(21px,5.6vw,25px);line-height:1.34;font-weight:700;letter-spacing:-.01em}
+  .sheet-meta p{
+    margin-top:7px;font-size:12px;color:var(--dim);
+    display:flex;align-items:center;gap:8px;
+    flex-wrap:nowrap;min-width:0;overflow:hidden;
+    /* 行高钉死：「已收藏」胶囊比正文高，若不固定这一行的高度，
+       收藏前后整行会高出来 2px，下面的进度条和控制区全跟着上下跳 */
+    height:20px;
+  }
+  /* 专辑名只占一行：省略号只吃名字本身，「已收藏」胶囊不收缩、位置始终留着 */
+  #shSubText{
+    flex:0 1 auto;min-width:0;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  /* 专辑已收藏：跟在专辑名后面的暖色小 tag。
+     未收藏时不真正脱流——只 visibility 隐藏，位置一直占着，
+     所以「收藏 / 取消收藏」前后这一行的高度和专辑名的省略位置都不变，页面不会抖 */
+  .fav-tag,
+  .fav-tag[hidden]{
+    display:inline-flex;align-items:center;height:18px;padding:0 7px;flex:none;
+    border-radius:99px;font-size:10px;font-weight:600;letter-spacing:.02em;
+    color:#f8cf8a;background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.34);
+  }
+  .fav-tag[hidden]{visibility:hidden}
+
+  /* 操作行：下载 / 倍速 / 播放模式 / 收藏 / 更多（位于进度条上方） */
+  .sheet-actions.sm-only{
+    display:flex;align-items:center;justify-content:space-between;
+    width:100%;gap:6px;
+    /* 标题到这一排的空档吃掉剩余高度：标题留在原处，按钮组和专辑卡沉到底部 */
+    margin-top:auto;padding:26px 4px 0;
+  }
+  .sheet-actions .icon-btn{width:52px;height:52px;color:var(--txt-2)}
+  .sheet-actions .icon-btn .i{width:24px;height:24px}
+  .sheet-actions .icon-btn.on{color:var(--pink)}
+  .sheet-actions .icon-btn.on .i{filter:drop-shadow(0 0 8px rgba(244,114,182,.7))}
+  .sheet-actions #shmLoop.on{color:var(--cyan)}
+  .sheet-actions #shmLoop.on .i{filter:drop-shadow(0 0 8px rgba(34,211,238,.65))}
+  .sheet-actions .icon-btn[hidden]{display:none}
+  .sheet-actions .rate-chip{height:38px;min-width:74px;font-size:13.5px;font-weight:600;padding:0 14px}
+
+  /* 进度条行：±15 秒在两侧，细轨道 + 浅色填充，时间贴在轨道两端下方 */
+  .sheet-scrub-row{
+    display:grid;width:100%;align-items:center;
+    grid-template-columns:auto minmax(0,1fr) auto;
+    grid-template-areas:"back bar fwd" ". times .";
+    column-gap:14px;row-gap:3px;
+  }
+  .sheet-scrub-row .tnum{min-width:0;font-size:11px;color:var(--dim);letter-spacing:.02em}
+  .sheet-scrub-row .tnum.cur{color:var(--txt-2)}
+  #shBack{grid-area:back}
+  #shFwd{grid-area:fwd}
+  #shScrub{grid-area:bar;height:22px}
+  #shCur{grid-area:times;justify-self:start}
+  #shDur{grid-area:times;justify-self:end}
+  .sheet-scrub-row .skip-btn{width:38px;height:38px;color:var(--txt-2)}
+  .sheet-scrub-row .skip-btn .i{width:24px;height:24px}
+  /* 轨道收细、去掉霓虹光晕，改成干净的浅色进度（参考主流播客播放页） */
+  #shScrub .scrub-track{height:4px;background:rgba(255,255,255,.15)}
+  #shScrub .scrub-buf{background:rgba(255,255,255,.22)}
+  #shScrub .scrub-fill{
+    background:linear-gradient(90deg,rgba(255,255,255,.72),#fff);
+    box-shadow:none;
+  }
+  #shScrub .scrub-fill::after{
+    width:10px;height:10px;background:#fff;
+    box-shadow:0 0 0 3px rgba(255,255,255,.14);
+  }
+
+  /* 控制行：队列 · 上一集 · 播放 · 下一集 · 定时 */
+  .sheet-controls{width:100%;justify-content:space-between;gap:0;padding:0 2px 10px}
+  .sheet-controls .icon-btn{width:44px;height:44px}
+  .sheet-controls .icon-btn.big{width:46px;height:46px}
+  .sheet-controls .play-btn.huge{width:64px;height:64px}
+  .sheet-controls .icon-btn.sm-only{display:grid;width:50px;height:50px;color:var(--txt-2)}
+  .sheet-controls .icon-btn.sm-only .i{width:23px;height:23px}
+  .sheet-controls .icon-btn.sm-only.on{color:var(--cyan)}
+  .sheet-controls .icon-btn.sm-only.on .i{filter:drop-shadow(0 0 8px rgba(34,211,238,.7))}
+
+  /* 桌面那套 chip 在手机上收起来（功能已移到操作行 / 控制行 / 更多菜单） */
+  .sheet-extra{display:none}
+  /* 队列入口已经在控制行最左，右上角这颗不再显示；
+     用 visibility 而不是 display: 留着占位，NOW PLAYING 才还是正中间 */
+  .sheet-top #btnSheetQueue{visibility:hidden;pointer-events:none}
+
+  /* 底部专辑卡：玻璃拟态面板，整卡可点进专辑详情 */
+  .sheet-album-card.sm-only:not([hidden]){
+    display:flex;align-items:center;gap:13px;
+    width:100%;margin-top:auto;padding:15px 14px;min-height:96px;
+    border-radius:18px;cursor:pointer;
+    background:rgba(255,255,255,.05);
+    border:1px solid rgba(255,255,255,.08);
+    box-shadow:0 14px 34px -22px #000,inset 0 1px 0 rgba(255,255,255,.05);
+    transition:background .2s var(--ease),transform .2s var(--ease);
+  }
+  .sheet-album-card.sm-only:not([hidden]):active{transform:scale(.985);background:rgba(255,255,255,.08)}
+  .ac-cover{
+    position:relative;width:56px;height:56px;flex:none;border-radius:14px;overflow:hidden;
+    display:grid;place-items:center;
+    background:linear-gradient(145deg,var(--c1,#1b2a44),var(--c2,#3b2a5a));
+    box-shadow:0 6px 16px -8px #000;
+  }
+  .ac-cover .cover-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1}
+  .ac-cover span{position:relative;z-index:2;font-size:21px;font-weight:800;color:rgba(255,255,255,.94)}
+  /* 有封面图就别再叠首字 */
+  .ac-cover.has-photo span{display:none}
+  .ac-meta{min-width:0;flex:1}
+  /* 专辑名最多两行：收藏心形常驻右侧，别把它挤成一个省略号 */
+  .ac-title{
+    font-size:16.5px;font-weight:600;line-height:1.36;color:var(--txt);
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+    word-break:break-word;
+  }
+  /* 第三行：分类 + 集数，小胶囊 */
+  .ac-sub{
+    display:flex;align-items:center;gap:6px;
+    margin-top:7px;min-width:0;overflow:hidden;
+  }
+  .ac-sub:empty{display:none}
+  .ac-pill{
+    flex:0 1 auto;min-width:0;
+    display:inline-flex;align-items:center;height:19px;padding:0 8px;
+    border-radius:99px;font-size:10.5px;font-weight:500;letter-spacing:.02em;
+    color:var(--dim);background:rgba(255,255,255,.055);
+    border:1px solid rgba(255,255,255,.1);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  /* 专辑收藏：常驻右侧的心形图标，收藏后变实心 */
+  .ac-fav{width:42px;height:42px;flex:none;color:var(--txt-2)}
+  .ac-fav .i{width:22px;height:22px}
+  .ac-fav.on{color:var(--pink)}
+  .ac-fav.on .i{filter:drop-shadow(0 0 8px rgba(244,114,182,.78))}
+  .ac-fav:active{transform:scale(.94)}
+
+  /* 播放队列：手机上从底部升起，占半屏 */
+  .queue-panel{
+    top:auto;left:0;right:0;bottom:0;width:100%;height:50%;
+    border-left:0;border-top:1px solid var(--line);
+    border-radius:20px 20px 0 0;
+    transform:translateY(101%);
+    background:linear-gradient(180deg,rgba(11,15,26,.985),rgba(6,9,16,.995));
+    box-shadow:0 -30px 60px -30px #000;
+  }
+  .queue-panel.open{transform:none}
+  .queue-panel::before{
+    content:"";position:absolute;top:8px;left:50%;transform:translateX(-50%);
+    width:40px;height:4px;border-radius:99px;background:rgba(255,255,255,.28);
+    z-index:1;
+  }
+  .queue-head{padding:22px 18px 14px}
+  .queue-body{padding-bottom:calc(10px + var(--sab))}
+  /* 抽屉占下半屏：视频画面让出下方而不是右侧 */
+  .sheet.is-video.queue-open .sheet-stage{right:0;bottom:50%}
+
+  /* 视频模式下播放页只剩画面，这些音频专属区块不出现 */
+  .sheet.is-video .sheet-actions,
+  .sheet.is-video .sheet-album-card{display:none}
+}
+
 /* ── 手机横屏：宽度常常 >760，靠「矮」识别（Electron 窗口最小高度 640，不会误伤） ── */
 @media (max-height:560px) and (max-width:980px){
   .sheet .viz{display:none}
   .sheet-inner{
     display:grid;max-width:none;justify-content:center;
     grid-template-columns:auto minmax(0,min(52vw,460px));
-    grid-template-rows:auto auto auto auto auto;
-    grid-template-areas:"top top" "stage meta" "stage scrub" "stage controls" "stage extra";
-    align-content:center;row-gap:10px;column-gap:clamp(16px,3vw,40px);
+    grid-template-rows:auto auto auto auto auto auto;
+    grid-template-areas:"top top" "stage meta" "stage actions" "stage scrub" "stage controls" "stage album";
+    align-content:center;row-gap:5px;column-gap:clamp(16px,3vw,40px);
     padding:calc(8px + var(--sat)) 20px calc(10px + var(--sab));
   }
-  .sheet-top{grid-area:top}
+  /* 选择器要跟共用块里的权重对齐，否则这些紧凑版会被盖掉 */
+  .sheet-actions.sm-only{grid-area:actions;margin-top:0;padding:6px 4px 0}
+  .sheet-album-card.sm-only:not([hidden]){
+    grid-area:album;margin-top:8px;padding:9px 12px;border-radius:15px;min-height:0;
+  }
+  .sheet-top{grid-area:top;margin-bottom:0}
   .sheet-stage{grid-area:stage;margin:0;flex:none}
   .sheet-cover{width:min(46vh,230px)}
   .sheet-meta{grid-area:meta;text-align:left}
+  .sheet-meta h2{font-size:clamp(18px,3.6vh,22px)}
+  .sheet-meta p{margin-top:4px;font-size:11px;height:18px}
   .sheet-scrub-row{grid-area:scrub}
-  .sheet-controls{grid-area:controls;justify-content:flex-start}
-  .sheet-extra{grid-area:extra;justify-content:flex-start;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}
-  .sheet-extra .chip{flex:none}
+  .sheet-controls{grid-area:controls;justify-content:space-between}
+  /* 横屏高度最紧：按钮与卡片整体收一圈，保证专辑卡不溢出屏幕 */
+  .sheet-actions .icon-btn{width:42px;height:42px}
+  .sheet-actions .icon-btn .i{width:21px;height:21px}
+  .sheet-actions .rate-chip{height:34px;min-width:64px;font-size:13px}
+  .sheet-scrub-row .skip-btn{width:32px;height:32px}
+  .sheet-controls .icon-btn,
+  .sheet-controls .icon-btn.big{width:40px;height:40px}
+  .sheet-controls .icon-btn.sm-only{width:44px;height:44px}
+  .sheet-controls .play-btn.huge{width:54px;height:54px}
+  .ac-cover{width:44px;height:44px;border-radius:11px}
+  .ac-cover span{font-size:17px}
+  /* 横屏高度最紧：标题收成一行，胶囊也压小一点，卡片不至于把画面顶出屏幕 */
+  .ac-title{font-size:14.5px;-webkit-line-clamp:1}
+  .ac-sub{margin-top:5px}
+  .ac-pill{height:17px;padding:0 7px;font-size:10px}
+  .ac-fav{width:34px;height:34px}
+  .ac-fav .i{width:18px;height:18px}
   .album-hero{flex-wrap:nowrap;grid-template-columns:96px minmax(0,1fr)}
   .hero-cover{width:96px;height:96px}
 }

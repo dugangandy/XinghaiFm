@@ -180,14 +180,58 @@
         /* 只在真的不可见时摘：桌面上只是被别的窗口盖住时，背景不该突然少一块 */
         body.classList.add('bg-off');
         idle();
+        hiddenAt = Date.now();
+        hideResumeCover();
         return;
       }
+      const away = hiddenAt ? Date.now() - hiddenAt : 0;
+      hiddenAt = 0;
       restoreDecor();
       if (document.hasFocus()) live();
       else idle();
+      /* 离开够久才铺过渡页：短暂切换本来就干净，不该每次回微信都糊一张图 */
+      if (away >= COVER_AFTER_MS) showResumeCover();
     });
     startDrift();
     startEq();
+  }
+
+  /* ── 回到前台的过渡页 ─────────────────────────────────────
+   * 安卓壳里切后台久了，系统会回收窗口表面 / 降级渲染进程，回来先黑一下才出内容。
+   * 这是平台行为，网页改不了；学喜马拉雅的做法：恢复瞬间先铺一张品牌页，把那段空白
+   * 变成过场，等真实界面画好再淡出。只给 APK 用 —— 桌面端切回来本来就是完整的。 */
+  const COVER_AFTER_MS = 6000;   /* 后台超过这么久才铺 */
+  const COVER_HOLD_MS = 1000;    /* 铺上之后停留多久（从可见起算）：给真实界面留足重绘时间，
+                                    太短会出现「slogan 一闪就没了」再接着闪一下的感觉 */
+  const COVER_FADE_MS = 240;     /* 淡出时长，必须和 css 里 .rc-gate 的 transition 一致 */
+  const COVER_ENABLED = !!(typeof window !== 'undefined' && window.fmAndroid);
+  let hiddenAt = 0;
+  let coverTimers = [];
+
+  function clearCoverTimers() {
+    for (let i = 0; i < coverTimers.length; i++) clearTimeout(coverTimers[i]);
+    coverTimers = [];
+  }
+
+  function showResumeCover() {
+    if (!COVER_ENABLED) return;
+    const node = document.getElementById('resumeCover');
+    if (!node) return;
+    clearCoverTimers();
+    node.classList.remove('out');
+    node.classList.add('on');          /* 立刻铺满：恢复后的第一帧就是它 */
+    coverTimers.push(setTimeout(function () {
+      node.classList.add('out');
+      coverTimers.push(setTimeout(function () {
+        node.classList.remove('on', 'out');   /* display:none 回去，别再占一层合成 */
+      }, COVER_FADE_MS));
+    }, COVER_HOLD_MS));
+  }
+
+  function hideResumeCover() {
+    clearCoverTimers();
+    const node = document.getElementById('resumeCover');
+    if (node) node.classList.remove('on', 'out');
   }
 
   function boot() {

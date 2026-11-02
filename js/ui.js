@@ -53,9 +53,15 @@
       volNum: $('volNum'), vVolNum: $('vVolNum'), btnLogout: $('btnLogout'),
       sheet: $('sheet'), sheetArt: $('sheetArt'), sheetArtImg: $('sheetArtImg'), btnCollapse: $('btnCollapse'),
       sheetCover: $('sheetCover'), sheetDisc: $('sheetDisc'), shTitle: $('shTitle'), shSub: $('shSub'),
+      shSubText: $('shSubText'), shFavTag: $('shFavTag'),
       shCur: $('shCur'), shDur: $('shDur'), shScrub: $('shScrub'), shTip: $('shTip'),
       shPlay: $('shPlay'), shPrev: $('shPrev'), shNext: $('shNext'), shBack: $('shBack'), shFwd: $('shFwd'),
       shRate: $('shRate'), shSleep: $('shSleep'), shLoop: $('shLoop'), shFav: $('shFav'),
+      /* 移动端专属：操作行 + 控制行队列/定时 + 底部专辑卡 */
+      shmDownload: $('shmDownload'), shmRate: $('shmRate'), shmFav: $('shmFav'), shmMore: $('shmMore'), shmLoop: $('shmLoop'),
+      shmQueue: $('shmQueue'), shmSleep: $('shmSleep'),
+      shAlbumCard: $('shAlbumCard'), shAlbumCover: $('shAlbumCover'),
+      shAlbumTitle: $('shAlbumTitle'), shAlbumSub: $('shAlbumSub'), shAlbumFav: $('shAlbumFav'),
       media: $('media'), vStage: $('vStage'), vUi: $('vUi'), vTitle: $('vTitle'), vSub: $('vSub'),
       vScrub: $('vScrub'), vTip: $('vTip'), vCur: $('vCur'), vDur: $('vDur'),
       vPlay: $('vPlay'), vPrev: $('vPrev'), vNext: $('vNext'), vRate: $('vRate'),
@@ -751,6 +757,11 @@
     try { return window.matchMedia('(max-width:979.98px)').matches; } catch (e) { return false; }
   }
 
+  /* 手机断点：跟 css/mobile.css 里 #sheet 的布局断点一致。点节目行直接进详情页只在这个宽度下做 */
+  function isPhone() {
+    try { return window.matchMedia('(max-width:760px)').matches; } catch (e) { return false; }
+  }
+
   /* 收藏页布局随宽度切换：跨过断点时重画一次（窗口拉宽回桌面卡片） */
   let favNarrow = isNarrow();
   window.addEventListener('resize', U.debounce(function () {
@@ -1305,22 +1316,25 @@
     '</div>';
   }
 
+  /* 专辑详情的曲目行：两行（标题 / 时长），不放播放按钮 —— 点整行就播（见 onViewClick 的 .track 分支）。
+     第二行：没听过的只显示时长；听过一部分的显示「已听位置 / 时长」，一眼能看出听到哪了。 */
   function trackRow(t) {
     const p = L.progressOf(t.id);
     const playing = P.current && P.current.id === t.id;
     const dur = t.duration || (p && p.d) || 0;
     const flag = p && p.done ? '<span class="tk-flag">已听</span>' : '';
     const vid = t.kind === 'video' ? '<span class="tk-flag vid">' + icon('video') + '视频</span>' : '';
-    const prog = (!p || !p.done) && p && p.p > 5 && dur
-      ? '<span class="tk-prog">' + fmtT(p.p) + ' / ' + fmtT(dur) + '</span>' : '';
+    /* 和以前一样只在「听过一点、又没听完」时显示进度；5 秒以内当作没听过 */
+    const pos = (!p || !p.done) && p && p.p > 5 && dur ? Math.min(p.p, dur) : 0;
+    const sub = pos ? '<span class="tk-cur">' + fmtT(pos) + '</span> / ' + fmtT(dur)
+      : (dur ? fmtT(dur) : '—');
     return '<li class="track' + (playing ? ' playing' : '') + '" data-id="' + t.id + '" data-album="' + t.albumId + '">' +
       '<span class="tk-idx">' + (t.order + 1) + '</span>' +
       '<span class="tk-eq"><i></i><i></i><i></i></span>' +
-      '<div class="tk-main">' + dlFlag(t) + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span>' + vid + flag + '</div>' +
-      prog +
-      '<button class="tk-play" data-act="row-play" data-id="' + t.id + '" title="' + (playing && P.playing ? '暂停' : '播放这一集') + '">' +
-        icon(playing && P.playing ? 'pause' : 'play') + '</button>' +
-      '<span class="tk-dur">' + (dur ? fmtT(dur) : '—') + '</span>' +
+      '<div class="tk-main tk-col">' +
+        '<span class="tk-title-row">' + dlFlag(t) + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span>' + vid + flag + '</span>' +
+        '<span class="tk-sub">' + icon('clock') + sub + '</span>' +
+      '</div>' +
       '<button class="tk-more" data-act="more-track" data-id="' + t.id + '">' + icon('more') + '</button>' +
     '</li>';
   }
@@ -1698,6 +1712,8 @@
           if (!t) break;
           if (P.current && P.current.id === id && P.media.src) P.toggle();
           else playDlTracks(t.albumId, id);
+          /* 手机端点下载好的这一集，同样直接进详情页 */
+          if (isPhone() && t.kind !== 'video') openSheet();
           break;
         }
         case 'dl-wait': toast('这集还在下载，下完才能播', 'warn'); break;
@@ -1838,7 +1854,11 @@
     const tr = e.target.closest('.track');
     if (tr) {
       const t = L.track(tr.dataset.id);
-      if (t) P.playTrack(t);
+      if (!t) return;
+      P.playTrack(t);
+      /* 手机上点节目（单集）行 = 进这一集的详情页（全屏播放页），跟喜马拉雅一致；
+         宽屏保持原来的「点了就播、不打断浏览」。视频集在壳内由原生播放器接管，这里不展开 */
+      if (isPhone() && t.kind !== 'video') openSheet();
     }
   }
 
@@ -2406,6 +2426,33 @@
     document.body.classList.toggle('has-player', !!on);
   }
 
+  /* 只刷「心」相关的节点：播放条/全屏页的收藏键、专辑的「已收藏」tag、底部专辑卡的心。
+     切收藏绝不能走整个 paintTrack —— 那里会重画封面、把进度条 paintTime(0,…) 归零，
+     看着就像进度条被刷了一遍。 */
+  function paintFavState(t) {
+    if (!t) return;
+    /* 收藏态以库里那份为准：播放队列可能还攥着重新扫描前的旧对象，只读 t.fav 会点了不刷新 */
+    const fresh = L.track(t.id) || t;
+    if (fresh !== t) t.fav = fresh.fav;
+    const fav = !!fresh.fav;
+    refs.pbFav.classList.toggle('on', fav);
+    refs.pbFav.innerHTML = icon(fav ? 'heart-fill' : 'heart');
+    refs.shFav.classList.toggle('on', fav);
+    refs.shFav.innerHTML = icon(fav ? 'heart-fill' : 'heart') + '<span>' + (fav ? '已收藏' : '收藏') + '</span>';
+    if (refs.shmFav) {
+      refs.shmFav.classList.toggle('on', fav);
+      refs.shmFav.innerHTML = icon(fav ? 'heart-fill' : 'heart');
+    }
+    const a = L.album(t.albumId);
+    const albumFav = !!(a && a.fav);
+    if (refs.shFavTag) refs.shFavTag.hidden = !albumFav;
+    if (refs.shAlbumFav) {
+      refs.shAlbumFav.classList.toggle('on', albumFav);
+      refs.shAlbumFav.innerHTML = icon(albumFav ? 'heart-fill' : 'heart');
+      refs.shAlbumFav.title = albumFav ? '已收藏，点击取消' : '收藏专辑';
+    }
+  }
+
   function paintTrack(t) {
     if (!t) return;
     const a = L.album(t.albumId);
@@ -2416,20 +2463,53 @@
     paintCover(refs.sheetCover, a, t);
     paintSheetArt(a);
     refs.shTitle.textContent = t.title;
-    refs.shSub.textContent = (a ? a.title : '') + ' · ' + (t.ext || '').toUpperCase();
+    const shSub = (a ? a.title : '') + ' · ' + (t.ext || '').toUpperCase();
+    if (refs.shSubText) refs.shSubText.textContent = shSub;
+    else refs.shSub.textContent = shSub;
     refs.vTitle.textContent = t.title;
     refs.vSub.textContent = videoSub(a, t);
     if (refs.pbKind) refs.pbKind.hidden = P.kind !== 'video';
-    const fav = t && t.fav;
-    refs.pbFav.classList.toggle('on', !!fav);
-    refs.pbFav.innerHTML = icon(fav ? 'heart-fill' : 'heart');
-    refs.shFav.classList.toggle('on', !!fav);
-    refs.shFav.innerHTML = icon(fav ? 'heart-fill' : 'heart') + '<span>' + (fav ? '已收藏' : '收藏') + '</span>';
+    /* 收藏态（单集心 + 专辑「已收藏」tag + 卡片上的心） */
+    paintFavState(t);
+    paintAlbumCard(a, t, !!(a && a.fav));
+    if (refs.shmDownload) refs.shmDownload.hidden = !canDownload();
     const p = L.progressOf(t.id);
     if (p && p.d && !t.duration) { t.duration = p.d; }
     paintTime(0, t.duration || (p && p.d) || 0);
     applyPlayingState();
     renderNav();
+  }
+
+  /* 专辑卡第三行：分类 + 集数，两枚小胶囊（没归过类就用目录名解析出的标签兜底） */
+  function albumCardMeta(a) {
+    const cats = L.cats().filter(function (c) { return (a.cats || []).indexOf(c.id) >= 0; })
+      .map(function (c) { return c.name; });
+    const tags = (a.tags && a.tags.length) ? a.tags : [];
+    const kind = cats.length ? cats.join(' / ') : (tags.length ? tags.join(' / ') : albumType(a));
+    const count = a.count ? (a.videoCount === a.count ? a.count + ' 视频' : a.count + ' 集') : '';
+    const pills = [];
+    if (kind) pills.push('<span class="ac-pill">' + esc(kind) + '</span>');
+    if (count) pills.push('<span class="ac-pill">' + esc(count) + '</span>');
+    return { html: pills.join(''), text: [kind, count].filter(Boolean).join(' · ') };
+  }
+
+  /* 移动端底部专辑卡：封面 + 专辑名（最多两行）+ 分类/集数胶囊 + 专辑收藏态，整卡可点进详情 */
+  function paintAlbumCard(a, t, fav) {
+    const card = refs.shAlbumCard;
+    if (!card) return;
+    card.hidden = !a;
+    if (!a) return;
+    paintCover(refs.shAlbumCover, a, t);
+    refs.shAlbumTitle.textContent = a.title || '';
+    refs.shAlbumTitle.title = a.title || '';
+    const meta = albumCardMeta(a);
+    refs.shAlbumSub.innerHTML = meta.html;
+    refs.shAlbumSub.title = meta.text;
+    if (refs.shAlbumFav) {
+      refs.shAlbumFav.classList.toggle('on', !!fav);
+      refs.shAlbumFav.innerHTML = icon(fav ? 'heart-fill' : 'heart');
+      refs.shAlbumFav.title = fav ? '已收藏，点击取消' : '收藏专辑';
+    }
   }
 
   /* 沉浸式渐变封面：有封面就整幅铺顶（再向下渐隐），没有用专辑配色兜底 */
@@ -2496,6 +2576,10 @@
     refs.vRate.textContent = txt;
     const b = refs.shRate.querySelector('b');
     if (b) b.textContent = txt;
+    if (refs.shmRate) {
+      refs.shmRate.textContent = txt;
+      refs.shmRate.classList.toggle('on', r !== 1);
+    }
     refs.btnRate.classList.toggle('on', r !== 1);
     refs.vRate.classList.toggle('on', r !== 1);
   }
@@ -2515,15 +2599,27 @@
     refs.btnLoop.innerHTML = icon(P.loopIcon);
     refs.btnLoop.classList.toggle('on', l !== 'all');
     refs.shLoop.innerHTML = icon(P.loopIcon) + '<span>' + P.loopLabel + '</span>';
+    if (refs.shmLoop) {
+      refs.shmLoop.innerHTML = icon(P.loopIcon);
+      refs.shmLoop.classList.toggle('on', l !== 'all');
+      refs.shmLoop.title = '播放模式：' + P.loopLabel;
+    }
   }
 
   function paintSleep(left, mode) {
     const label = refs.shSleep.querySelector('span');
-    if (!mode) { refs.shSleep.classList.remove('on'); if (label) label.textContent = '定时关闭'; return; }
+    const mBtn = refs.shmSleep;
+    if (!mode) {
+      refs.shSleep.classList.remove('on');
+      if (label) label.textContent = '定时关闭';
+      if (mBtn) { mBtn.classList.remove('on'); mBtn.title = '定时关闭'; }
+      return;
+    }
     refs.shSleep.classList.add('on');
-    if (mode === 'chapter') { if (label) label.textContent = '本集播完暂停'; return; }
     const min = Math.max(1, Math.ceil((left || 0) / 60000));
-    if (label) label.textContent = min + ' 分钟后关闭';
+    const txt = mode === 'chapter' ? '本集播完暂停' : min + ' 分钟后关闭';
+    if (mBtn) { mBtn.classList.add('on'); mBtn.title = txt; }
+    if (label) label.textContent = txt;
   }
 
   function bindPlayer() {
@@ -2609,11 +2705,75 @@
     refs.shRate.addEventListener('click', function (e) { rateMenu(e.currentTarget); });
     refs.shSleep.addEventListener('click', function (e) { sleepMenu(e.currentTarget); });
 
+    /* 移动端播放页专属：操作行（下载/倍速/收藏/更多）+ 控制行（队列/定时）+ 底部专辑卡 */
+    refs.shmQueue.addEventListener('click', toggleQueue);
+    refs.shmSleep.addEventListener('click', function (e) { sleepMenu(e.currentTarget); });
+    refs.shmRate.addEventListener('click', function (e) { rateMenu(e.currentTarget); });
+    refs.shmFav.addEventListener('click', toggleFavOfCurrent);
+    refs.shmLoop.addEventListener('click', function () { P.cycleLoop(); toast('播放模式：' + P.loopLabel); });
+    /* 下载整张专辑：进「批量下载」勾选页，比无提示地丢进队列清楚 */
+    refs.shmDownload.addEventListener('click', function () {
+      const t = P.current;
+      if (!t || !t.albumId) return;
+      closeSheet();
+      go('#/downloads/' + t.albumId + '/more');
+    });
+    refs.shmMore.addEventListener('click', function (e) { moreMenu(e.currentTarget); });
+
+    refs.shAlbumFav.addEventListener('click', function (e) {
+      e.stopPropagation();          /* 别冒泡到卡片，否则一边收藏一边跳走 */
+      if (P.current) toggleFavorite(P.current.albumId);
+    });
+    refs.shAlbumCard.addEventListener('click', openAlbumOfCurrent);
+    refs.shAlbumCard.addEventListener('keydown', function (e) {
+      if (e.target.closest('#shAlbumFav')) return;   /* 焦点在心形上时别把回车/空格抢走 */
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAlbumOfCurrent(); }
+    });
+
     paintRate(P.rate);
     paintVolume(P.volume, P.muted);
     paintLoop(P.loop);
     paintSleep(0);
     if (P.current) paintTrack(P.current);
+  }
+
+  /* 专辑收藏态的局部刷新：只改跟这张专辑有关的节点（卡片角标、详情页按钮、播放页 tag / 专辑卡）。
+     以前这里是整页 renderAll，收藏一下列表闪一遍、滚动位置也会被顶回去。 */
+  function paintAlbumFav(albumId) {
+    const a = L.album(albumId);
+    if (!a) return;
+    const on = !!a.fav;
+    U.$$('.card').forEach(function (card) {
+      if (card.dataset.id !== albumId) return;
+      card.classList.toggle('fav', on);
+      const cover = card.querySelector('.card-cover');
+      const badge = card.querySelector('.card-fav');
+      if (on && cover && !badge) {
+        const sp = document.createElement('span');
+        sp.className = 'card-fav';
+        sp.title = '已收藏';
+        sp.innerHTML = icon('heart-fill');
+        cover.appendChild(sp);
+      } else if (!on && badge) {
+        badge.remove();
+      }
+    });
+    /* 专辑详情页那一排按钮里的「收藏 / 已收藏」 */
+    U.$$('[data-act="fav"]').forEach(function (btn) {
+      if (btn.dataset.id !== albumId) return;
+      btn.classList.toggle('danger', on);
+      btn.innerHTML = icon(on ? 'heart-fill' : 'heart') + (on ? '已收藏' : '收藏');
+    });
+  }
+
+  /* 收藏变动后的收尾：侧栏计数、收藏页成员、播放条与播放页的心。
+     只有「按收藏筛出来的页面」才需要真的重画，其余全靠局部更新 */
+  function afterFavChange(albumId, trackId) {
+    renderNav();
+    if (state.view === 'fav' || state.view === 'favTracks') renderMainKeepScroll();
+    const cur = P.current;
+    /* 只刷心，不碰封面/进度/时长：整条 paintTrack 会把进度条归零重画 */
+    if (cur && ((albumId && cur.albumId === albumId) || (trackId && cur.id === trackId))) paintFavState(cur);
   }
 
   /* 收藏：跟数据库/用户走，先乐观更新，写失败再回滚；同专辑在途时忽略连点 */
@@ -2625,15 +2785,21 @@
     favPending.add(albumId);
     a.fav = next;
     toast(next ? '已加入收藏' : '已取消收藏');
-    renderAll();
-    if (P.current) paintTrack(P.current);
+    paintAlbumFav(albumId);
+    afterFavChange(albumId);
     FM.fs.setFav(albumId, next).then(function (ok) {
       if (ok) return;
       a.fav = !next;
       toast('收藏失败，请稍后重试', 'warn');
-      renderAll();
-      if (P.current) paintTrack(P.current);
+      paintAlbumFav(albumId);
+      afterFavChange(albumId);
     }).catch(function () {}).then(function () { favPending.delete(albumId); });
+  }
+
+  /* 播放器手里的曲目可能是重新扫描前的旧对象：一起改掉，播放条/播放页才不会各说各话 */
+  function syncTrackFav(trackId, fav) {
+    if (P.current && P.current.id === trackId) P.current.fav = fav;
+    P.queue.forEach(function (q) { if (q.id === trackId) q.fav = fav; });
   }
 
   /* 播放条/全屏页的心：收藏的是「这一集」，不是专辑 */
@@ -2644,15 +2810,17 @@
     const next = !t.fav;
     trackFavPending.add(trackId);
     t.fav = next;
+    syncTrackFav(trackId, next);
     toast(next ? '已收藏这一集' : '已取消收藏');
-    renderAll();
-    if (P.current) paintTrack(P.current);
-    FM.fs.setFavTrack(trackId, next).then(function (ok) {
+    /* 先发起写入：favTrackIds 在调用瞬间就同步更新了，侧栏「我的收藏」计数才对得上 */
+    const done = FM.fs.setFavTrack(trackId, next);
+    afterFavChange(null, trackId);
+    done.then(function (ok) {
       if (ok) return;
       t.fav = !next;
+      syncTrackFav(trackId, !next);
       toast('收藏失败，请稍后重试', 'warn');
-      renderAll();
-      if (P.current) paintTrack(P.current);
+      afterFavChange(null, trackId);
     }).catch(function () {}).then(function () { trackFavPending.delete(trackId); });
   }
 
@@ -2707,6 +2875,29 @@
     items.push({ sep: true });
     items.push({ label: '关闭定时', icon: 'close', onClick: function () { P.setSleep(0); toast('已关闭定时'); } });
     openMenu(anchor, items);
+  }
+
+  /* 播放页「更多」：播放模式已挪到操作行，这里只留加入队列 */
+  function moreMenu(anchor) {
+    const t = P.current;
+    openMenu(anchor, [
+      {
+        label: '加入队列', icon: 'list',
+        onClick: function () {
+          if (!t) return;
+          P.addToQueue([t]);
+          toast('已加入播放队列');
+        }
+      }
+    ]);
+  }
+
+  /* 底部专辑卡：收起播放页再跳专辑详情，否则详情页被播放页盖着 */
+  function openAlbumOfCurrent() {
+    const t = P.current;
+    if (!t || !t.albumId) return;
+    closeSheet();
+    go('#/album/' + t.albumId);
   }
 
   function openSheet() {

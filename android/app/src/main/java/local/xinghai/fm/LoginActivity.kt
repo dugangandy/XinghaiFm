@@ -2,12 +2,15 @@
  * 用户名 + 密码 → POST {base}/api/login → {token}；
  * 把 token 写成会话 cookie(fm_sess) 后进入 MainActivity(网页主页)。
  * 记住登录态：下次启动用 token 校验 /api/config，通过直接进主页。
+ * 已经登录过的用户不会看到登录表单：先铺 slogan 页（和网页启动页同一句），
+ * 校验通过就进主页，失败（token 失效）才把表单拿出来。
  */
 package local.xinghai.fm
 
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -43,6 +46,9 @@ class LoginActivity : Activity() {
     private lateinit var errorView: TextView
     private lateinit var progress: ProgressBar
     private var retryToken = ""
+    /* 登录表单是否已经建出来：已登录过的用户先看 slogan 页，表单可能一直不建，
+       所以 setBusy / err 这些碰控件的入口都要先问一句 */
+    private var hasForm = false
 
     private val ui = Handler(Looper.getMainLooper())
     private val client: OkHttpClient by lazy {
@@ -51,17 +57,29 @@ class LoginActivity : Activity() {
             .readTimeout(15, TimeUnit.SECONDS)
             .build()
     }
+    /* 校验「上次的 token 还能不能用」专用：连接不上时不能让人对着 slogan 页干等 8 秒，
+       超时就当连不上处理，直接进主页（离线页 / 已下载仍可播） */
+    private val probe: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(4, TimeUnit.SECONDS)
+            .build()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = BG
         window.navigationBarColor = BG
-        buildUi()
         val base = prefs().getString("base", "").orEmpty()
         val token = prefs().getString("token", "").orEmpty()
-        urlInput.setText(base)
-        userInput.setText(prefs().getString("username", "").orEmpty())
-        if (base.isNotEmpty() && token.isNotEmpty()) autoLogin(base, token)
+        /* 登录过：一进来就是 slogan 页，别让登录表单闪一下（原来先 buildUi 再校验，
+           校验那几十毫秒到几秒里用户看到的是登录框） */
+        if (base.isNotEmpty() && token.isNotEmpty()) {
+            buildSplash()
+            autoLogin(base, token)
+        } else {
+            showForm()
+        }
     }
 
     private fun prefs() = getSharedPreferences("fm", MODE_PRIVATE)
@@ -107,6 +125,43 @@ class LoginActivity : Activity() {
 
         root.addView(box, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(root)
+        hasForm = true
+    }
+
+    /* 已登录过的用户在这里等 token 校验：标题就是网页启动页那句 slogan，
+       校验通过后进主页（WebView 的启动页承接），失败再退回登录表单 */
+    private fun buildSplash() {
+        val root = FrameLayout(this).apply { setBackgroundColor(BG) }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(26), dp(26), dp(26), dp(26))
+        }
+        box.addView(TextView(this).apply {
+            text = "把夜色"; textSize = 32f; setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER_HORIZONTAL
+            letterSpacing = 0.04f
+        }, lp())
+        box.addView(TextView(this).apply {
+            text = "调成声音"; textSize = 32f; setTextColor(0xFF22D3EE.toInt())
+            typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER_HORIZONTAL
+            letterSpacing = 0.04f; setPadding(0, dp(4), 0, 0)
+        }, lp())
+        box.addView(TextView(this).apply {
+            text = "星海 FM"; textSize = 11.5f; setTextColor(DIM)
+            gravity = Gravity.CENTER_HORIZONTAL; letterSpacing = 0.26f
+            setPadding(0, dp(28), 0, 0)
+        }, lp())
+        root.addView(box, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        setContentView(root)
+    }
+
+    /* 首次使用 / token 失效：建登录表单（并把上次的地址、用户名带出来） */
+    private fun showForm() {
+        if (hasForm) return
+        buildUi()
+        urlInput.setText(prefs().getString("base", "").orEmpty())
+        userInput.setText(prefs().getString("username", "").orEmpty())
     }
 
     private fun lp(top: Int = 0) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -129,11 +184,13 @@ class LoginActivity : Activity() {
     }
 
     private fun setBusy(busy: Boolean) {
+        if (!hasForm) return
         loginBtn.isEnabled = !busy
         progress.visibility = if (busy) View.VISIBLE else View.GONE
     }
 
     private fun err(msg: String) {
+        if (!hasForm) return      /* slogan 页上没有错误位，失效时会先切到表单再显示 */
         errorView.text = msg
         errorView.visibility = if (msg.isEmpty()) View.GONE else View.VISIBLE
     }
@@ -182,17 +239,20 @@ class LoginActivity : Activity() {
     }
 
     private fun autoLogin(base: String, token: String) {
-        setBusy(true); err("")
         Thread {
             try {
                 val req = Request.Builder().url(base + "/api/config").header("Authorization", "Bearer " + token).build()
-                client.newCall(req).execute().use { r ->
+                probe.newCall(req).execute().use { r ->
                 if (r.code == 200) {
                     ui.post { onLoginOk(base, token, prefs().getString("uid", "").orEmpty(), prefs().getString("username", "").orEmpty()) }
                 } else {
+                    /* token 失效：这时候才把登录表单拿出来 */
                     prefs().edit().remove("token").apply()
                     retryToken = ""
-                    ui.post { setBusy(false); loginBtn.text = "登录"; err("登录已失效，请重新登录") }
+                    ui.post {
+                        showForm()
+                        setBusy(false); loginBtn.text = "登录"; err("登录已失效，请重新登录")
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -212,7 +272,7 @@ class LoginActivity : Activity() {
 
     private fun onLoginOk(base: String, token: String, uid: String, user: String) {
         retryToken = ""
-        loginBtn.text = "登录"
+        if (hasForm) loginBtn.text = "登录"
         prefs().edit().putString("base", base).putString("username", user)
             .putString("token", token).putString("uid", uid).apply()
         val cm = CookieManager.getInstance()
