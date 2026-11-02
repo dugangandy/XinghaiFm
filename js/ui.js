@@ -1296,9 +1296,73 @@
     return L.albumTracks(id);
   }
 
+  /* 页码窗口：总页数少就全列；否则「首页 + 当前页附近 5 个 + 末页」，缺的用 null 顶上（画成省略号） */
+  function pageSeq(page, pages) {
+    const WIN = 5;
+    const out = [];
+    if (pages <= WIN + 2) {
+      for (let i = 0; i < pages; i++) out.push(i);
+      return out;
+    }
+    let lo = page - 2, hi = page + 2;
+    if (lo < 0) { lo = 0; hi = WIN - 1; }
+    if (hi > pages - 1) { hi = pages - 1; lo = pages - WIN; }
+    if (lo > 0) {
+      out.push(0);
+      if (lo === 2) out.push(1);      /* 只差一个页码时补上，别用省略号占位 */
+      else if (lo > 2) out.push(null);
+    }
+    for (let i = lo; i <= hi; i++) out.push(i);
+    if (hi < pages - 1) {
+      if (hi === pages - 2) out.push(pages - 1);
+      else { out.push(null); out.push(pages - 1); }
+    }
+    return out;
+  }
+
+  /* 分页条：网页/桌面版按喜马拉雅那套排 —— 上一页、首页、省略号、当前页附近、
+     末页、下一页，右侧跟一个「输入页码 / 跳转」。手机端暂时沿用旧排版。 */
   function pagerHtml(total) {
     const pages = Math.max(1, Math.ceil(total / PAGE));
     if (pages <= 1) return '';
+    const page = state.page;
+    if (isPhone()) return pagerHtmlPhone(total, pages);
+
+    const from = page * PAGE + 1;
+    const to = Math.min(total, (page + 1) * PAGE);
+
+    /* 先排 token（箭头/页码/省略号），再按相邻关系给同一段里的按钮打圆角，缺口处自然断开 */
+    const seq = [{ arrow: 'prev', n: page - 1, off: page === 0 }];
+    pageSeq(page, pages).forEach(function (n) { seq.push(n === null ? { gap: true } : { n: n }); });
+    seq.push({ arrow: 'next', n: page + 1, off: page === pages - 1 });
+
+    const html = seq.map(function (tk, i) {
+      if (tk.gap) return '<span class="pg-gap">···</span>';
+      const prev = seq[i - 1], next = seq[i + 1];
+      const cls = ['page-btn'];
+      if (tk.arrow) cls.push('arrow', tk.arrow);
+      if (!tk.arrow && tk.n === page) cls.push('on');
+      if (!prev || prev.gap) cls.push('r1');
+      if (!next || next.gap) cls.push('r2');
+      const label = tk.arrow === 'prev' ? '上一页' : tk.arrow === 'next' ? '下一页' : '第 ' + (tk.n + 1) + ' 页';
+      return '<button class="' + cls.join(' ') + '" data-act="page" data-page="' + tk.n + '"' +
+        (tk.off ? ' disabled' : '') + (cls.indexOf('on') >= 0 ? ' aria-current="page"' : '') +
+        ' aria-label="' + label + '">' +
+        (tk.arrow ? icon('chevron') : (tk.n + 1)) + '</button>';
+    }).join('');
+
+    return '<div class="track-pager pg-bar">' +
+      '<span class="pg-info">第 ' + from + '–' + to + ' 集 · 共 ' + total + ' 集</span>' +
+      '<div class="pg-ctl">' + html + '</div>' +
+      '<div class="pg-jump">' +
+        '<input id="pageJump" type="text" inputmode="numeric" autocomplete="off" placeholder="请输入页码" aria-label="跳转到指定页">' +
+        '<button data-act="page-jump">跳转</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  /* 手机端旧版分页条：一行「‹ 页码 ›」，暂不改动 */
+  function pagerHtmlPhone(total, pages) {
     const page = state.page;
     const from = page * PAGE + 1;
     const to = Math.min(total, (page + 1) * PAGE);
@@ -1314,6 +1378,20 @@
       '<span class="pg-info">第 ' + from + '–' + to + ' 集 · 共 ' + total + ' 集</span>' +
       '<div class="pg-ctl">' + arrow(page - 1, '‹', page === 0) + nums.join('') + arrow(page + 1, '›', page === pages - 1) + '</div>' +
     '</div>';
+  }
+
+  /* 翻页统一入口：页码在这里收敛到有效范围，翻完把视口滚回列表顶部 */
+  function gotoPage(n) {
+    const a = L.album(state.albumId);
+    if (!a) return;
+    const pages = Math.max(1, Math.ceil(albumTracksFiltered(a).length / PAGE));
+    const p = Math.min(Math.max(0, isNaN(n) ? 0 : n), pages - 1);
+    if (p === state.page) return;
+    state.page = p;
+    renderMain();
+    /* 滚到工具栏（sticky），避免首行被它盖住 */
+    const anchor = refs.view.querySelector('.track-toolbar') || document.getElementById('trackList');
+    if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ block: 'start' });
   }
 
   /* 专辑详情的曲目行：两行（标题 / 时长），不放播放按钮 —— 点整行就播（见 onViewClick 的 .track 分支）。
@@ -1662,6 +1740,14 @@
         if (count) count.textContent = filtered.length + ' / ' + a.count + ' 集';
       }
     });
+    /* 跳转框里按回车等于点「跳转」 */
+    refs.view.addEventListener('keydown', function (e) {
+      if (e.target.id === 'pageJump' && e.key === 'Enter') {
+        e.preventDefault();
+        const btn = refs.view.querySelector('[data-act="page-jump"]');
+        if (btn) btn.click();
+      }
+    });
     refs.view.addEventListener('pointermove', function (e) {
       const card = e.target.closest('.card');
       if (!card) return;
@@ -1828,12 +1914,15 @@
         case 'sort': state.sortDesc = !state.sortDesc; state.page = 0; FM.db.setState(Object.assign(FM.db.state(), { sortDesc: state.sortDesc })); FM.store.touch('state'); renderMain(); break;
         case 'page': {
           const p = parseInt(actEl.dataset.page, 10);
-          if (isNaN(p) || p === state.page) break;
-          state.page = p;
-          renderMain();
-          /* 滚到工具栏（sticky），避免首行被它盖住 */
-          const anchor = refs.view.querySelector('.track-toolbar') || document.getElementById('trackList');
-          if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ block: 'start' });
+          if (!isNaN(p)) gotoPage(p);
+          break;
+        }
+        case 'page-jump': {
+          const box = refs.view.querySelector('#pageJump');
+          const p = parseInt(box ? box.value : '', 10);
+          if (box) box.value = '';
+          if (isNaN(p)) toast('请输入页码', 'warn');
+          else gotoPage(p - 1);          /* 用户输入的是 1 起的页码 */
           break;
         }
         case 'search-more': state.qMore = true; renderMain(); break;

@@ -401,6 +401,50 @@
 .page-btn.on{color:#04070d;background:var(--grad);border-color:transparent;font-weight:600}
 .page-btn:disabled{opacity:.3;cursor:default}
 
+/* 网页/桌面版分页条：参考喜马拉雅网页端 —— 上一页、首页、省略号、当前页附近、末页、下一页，
+   同一段里的按钮共用一条边框，右侧跟「输入页码 / 跳转」。手机端走 pagerHtmlPhone 的旧排版，
+   不改上面那几条 .page-btn 规则。 */
+.pg-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.pg-bar .pg-ctl{margin-left:auto;display:flex;align-items:center;gap:0}
+.pg-bar .page-btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:32px;height:30px;padding:0 9px;border-radius:0;cursor:pointer;
+  border:1px solid var(--line);background:rgba(255,255,255,.02);color:var(--dim);
+  font-size:12px;font-variant-numeric:tabular-nums;
+  transition:color .16s,border-color .16s,background .16s;
+}
+/* 相邻按钮叠掉一条边框，连起来像一整条；省略号处断开，两端自己收圆角 */
+.pg-bar .page-btn + .page-btn{margin-left:-1px}
+.pg-bar .page-btn.r1{border-radius:8px 0 0 8px;margin-left:0}
+.pg-bar .page-btn.r2{border-radius:0 8px 8px 0}
+.pg-bar .page-btn.r1.r2{border-radius:8px}
+.pg-bar .page-btn:hover:not(:disabled){color:#fff;border-color:var(--line-2);background:rgba(255,255,255,.07);position:relative;z-index:1}
+/* 当前页只高亮数字：按钮本身不填色、边框不变，只有数字换成主题青色并加粗
+   （连 hover 一起盖住，别被上面那条抢走） */
+.pg-bar .page-btn.on,
+.pg-bar .page-btn.on:hover{
+  color:var(--cyan);background:none;border-color:var(--line);font-weight:700;
+}
+.pg-bar .page-btn:disabled{opacity:.32;cursor:default}
+.pg-bar .page-btn.arrow{padding:0;min-width:30px}
+.pg-bar .page-btn.arrow .i{width:13px;height:13px}
+.pg-bar .page-btn.arrow.prev .i{transform:rotate(180deg)}
+.pg-bar .pg-gap{padding:0 8px;color:var(--dim-2);font-size:12px;letter-spacing:2px;user-select:none}
+.pg-bar .pg-jump{display:flex;align-items:stretch;height:30px}
+.pg-bar .pg-jump input{
+  width:126px;min-width:0;padding:0 10px;font-size:12px;color:var(--txt);
+  border:1px solid var(--line);border-right:0;border-radius:8px 0 0 8px;
+  background:rgba(255,255,255,.02);
+}
+.pg-bar .pg-jump input::placeholder{color:var(--dim-2)}
+.pg-bar .pg-jump input:focus{border-color:var(--line-2);background:rgba(255,255,255,.05)}
+.pg-bar .pg-jump button{
+  width:58px;border-radius:0 8px 8px 0;border:1px solid var(--line);
+  background:rgba(255,255,255,.08);color:var(--dim);font-size:12px;
+  transition:color .16s,background .16s;
+}
+.pg-bar .pg-jump button:hover{color:#fff;background:rgba(255,255,255,.14)}
+
 .track-list{display:flex;flex-direction:column}
 .track{
   position:relative;display:flex;align-items:center;gap:14px;
