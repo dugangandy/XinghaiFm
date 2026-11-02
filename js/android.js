@@ -32,6 +32,14 @@
     ].join('\u0000');
   }
 
+  /* 封面地址多半是站内相对路径（/api/cover/…）：壳里是原生直连下载，<img> 那套同源逻辑不生效，
+     先补成绝对地址，壳那边再去拿（会话 cookie 也在壳里，见 PlaybackService.loadArtwork） */
+  function coverUrl(a) {
+    const u = a && a.cover ? String(a.cover) : '';
+    if (!u) return '';
+    try { return new URL(u, location.href).href; } catch (e) { return u; }
+  }
+
   function push() {
     const p = FM.player;
     const t = p.current;
@@ -39,7 +47,7 @@
     const q = p.queue || [];
     const key = stateKey();
     try {
-      NATIVE.setTrack(t ? t.title : '', a ? a.title : '', a && a.cover ? a.cover : '');
+      NATIVE.setTrack(t ? t.title : '', a ? a.title : '', coverUrl(a));
       NATIVE.setNav(p.index > 0, p.index >= 0 && q.length > 0 && p.index < q.length - 1);
       NATIVE.setPlaying(p.nativeVideo ? false : !!p.playing);
       lastPushKey = key;   /* 桥断了就走不到这里：下次回前台还会补推一次 */

@@ -26,6 +26,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.os.Handler
 import android.os.Looper
+import android.webkit.CookieManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -219,12 +220,17 @@ class PlaybackService : Service() {
     }
 
     /* ── 锁屏封面：有封面用专辑图、无封面用 App logo ──
-     * 网页传进来的是封面 URL（服务器模式为带签名的 http 地址）。异步拉取、缩到 TARGET_ART，
-     * 再塞进 MediaSession 元数据给锁屏/通知栏；拉取失败或没有封面就回退到应用图标。 */
+     * 网页传进来的是封面 URL（服务器模式下多半是站内相对路径 + 会话 cookie）。
+     * 原生下载拿不到 WebView 的同源身份，所以这里要自己补绝对地址、带上 WebView 的 cookie；
+     * 拉取失败或没有封面就回退到应用图标。 */
     private fun loadArtwork(url: String) {
         if (url.isEmpty()) { artBitmap = null; return }
+        val full = absoluteCoverUrl(url)
+        if (full.isEmpty()) { artBitmap = null; return }
+        /* cookie 得在主线程取（CookieManager 要走 WebView 的线程） */
+        val cookie = runCatching { CookieManager.getInstance().getCookie(full) }.getOrNull().orEmpty()
         Thread {
-            val bmp = runCatching { downloadBitmap(url) }.getOrNull()
+            val bmp = runCatching { downloadBitmap(full, cookie) }.getOrNull()
             /* 回到主线程应用；期间可能已切了别的封面，只应用仍是最新的那次 */
             mainHandler.post {
                 if (url == coverUrl) {
@@ -235,12 +241,22 @@ class PlaybackService : Service() {
         }.apply { isDaemon = true }.start()
     }
 
-    private fun downloadBitmap(url: String): Bitmap? {
+    /* 网页给的是站内路径（/api/cover/…）时补上当前连的服务端。
+       界面已经拆掉的话拿不到 base，这时只能放弃（回退应用图标） */
+    private fun absoluteCoverUrl(url: String): String {
+        if (url.startsWith("http://") || url.startsWith("https://")) return url
+        val base = MainActivity.current?.serverBase().orEmpty()
+        if (base.isEmpty()) return ""
+        return base + if (url.startsWith("/")) url else "/" + url
+    }
+
+    private fun downloadBitmap(url: String, cookie: String): Bitmap? {
         val conn = (URL(url).openConnection() as? HttpURLConnection) ?: return null
         conn.connectTimeout = 5000
         conn.readTimeout = 8000
         conn.instanceFollowRedirects = true
         conn.setRequestProperty("User-Agent", "XinghaiFM")
+        if (cookie.isNotEmpty()) conn.setRequestProperty("Cookie", cookie)
         try {
             val bytes = conn.inputStream.use { it.readBytes() }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
