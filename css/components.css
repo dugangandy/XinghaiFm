@@ -485,6 +485,8 @@
 .tk-sub .i{width:11px;height:11px;opacity:.85}
 /* 听过一部分时的「已听位置」比总时长亮一档，看得出听到哪了 */
 .tk-sub .tk-cur{color:var(--dim)}
+/* 专辑详情行里的时长：复用 .tk-dur 便于探针就地刷新，但按副标题排版（不平铺 44px、不右对齐） */
+.tk-sub .tk-dur{min-width:0;text-align:left;font-size:inherit;flex:none}
 /* 「已听」跟在时长后面：压扁一点，别把第二行撑高 */
 .tk-sub .tk-flag{font-size:9px;line-height:1.5;padding:0 6px}
 /* 已下载标记：曲名前的下载图标 */

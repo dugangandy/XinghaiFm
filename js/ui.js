@@ -1423,8 +1423,10 @@
     const vid = t.kind === 'video' ? '<span class="tk-flag vid">' + icon('video') + '视频</span>' : '';
     /* 和以前一样只在「听过一点、又没听完」时显示进度；5 秒以内当作没听过 */
     const pos = (!p || !p.done) && p && p.p > 5 && dur ? Math.min(p.p, dur) : 0;
-    const sub = pos ? '<span class="tk-cur">' + fmtT(pos) + '</span> / ' + fmtT(dur)
-      : (dur ? fmtT(dur) : '—');
+    /* 时长单独包一层 .tk-dur：后台探到时长后 probeDurations 按这个类就地刷新，
+       滚动加载出来的行也能更新，不会一直显示「—」 */
+    const sub = pos ? '<span class="tk-cur">' + fmtT(pos) + '</span> / <span class="tk-dur">' + fmtT(dur) + '</span>'
+      : '<span class="tk-dur">' + (dur ? fmtT(dur) : '—') + '</span>';
     return '<li class="track' + (playing ? ' playing' : '') + '" data-id="' + t.id + '" data-album="' + t.albumId + '">' +
       '<span class="tk-idx">' + (t.order + 1) + '</span>' +
       '<span class="tk-eq"><i></i><i></i><i></i></span>' +

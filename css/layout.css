@@ -505,14 +505,18 @@ body.is-server #libSwitch .lib-caret{display:none}
   .view-head .head-actions{display:none}
   /* hero 里的「加入队列」收进更多菜单 */
   .hero-actions .hero-queue{display:none}
-  .pb-left{flex:0 1 auto;max-width:46%}
+  .pb-left{flex:0 1 auto;max-width:52%}
   .pb-center{position:static;flex:1;min-width:0}
   .pb-scrub-row{display:none}
   .pb-progress{display:block}
-  .pb-controls{gap:6px;justify-content:flex-end}
+  .pb-controls{gap:6px;justify-content:flex-end;width:100%}
   .pb-right .vol-wrap,.pb-right .loop-btn,.pb-fav{display:none}
-  .pb-title{max-width:30vw;font-size:12.5px}
-  .pb-sub{max-width:30vw;font-size:11px}
+  /* 移动端去掉播放条右下角的「展开」向上键（点左侧信息区即可打开播放页）；
+     .pb-right 不再占宽度，播放控制整体靠右对齐 */
+  #btnExpand{display:none}
+  .pb-right{flex:0 0 auto}
+  .pb-title{max-width:38vw;font-size:12.5px}
+  .pb-sub{max-width:38vw;font-size:11px}
   .pb-cover{width:44px;height:44px}
   .sheet-inner{padding:14px 18px 26px;justify-content:flex-start;padding-top:14px}
   .sheet-cover{width:min(58vw,230px)}

@@ -76,11 +76,13 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   /* ── 播放条：只留最关键的四颗 ── */
   .playerbar{height:var(--pb-h);padding:0 12px;gap:10px}
   .playerbar::before{opacity:.5}
-  .pb-left{gap:10px;max-width:52%}
+  .pb-left{gap:10px;max-width:58%}
   .pb-cover{width:42px;height:42px;border-radius:10px}
-  .pb-title{font-size:12.5px;max-width:38vw}
-  .pb-sub{font-size:10.5px;max-width:38vw}
-  .pb-controls{gap:2px}
+  .pb-title{font-size:12.5px;max-width:46vw}
+  .pb-sub{font-size:10.5px;max-width:46vw}
+  /* 播放控制占满中区，播放/上一首/下一首靠右对齐；右下角那组在手机上不再占位 */
+  .pb-controls{gap:2px;width:100%}
+  .pb-right{display:none}
   #btnBack15,#btnFwd15,.pb-right .rate-chip{display:none}
   .icon-btn{width:38px;height:38px}
   .play-btn{width:40px;height:40px}
