@@ -315,19 +315,8 @@
     }, 2400);
   }
 
-  /* 归类写的是桌面端本地的专辑元数据：只有「桌面端 + 本地资源库」能改 */
-  function assignBlocked() {
-    if (FM.fs.native && !FM.fs.server) return false;
-    toast('归类只能在桌面端本地资源库修改', 'warn');
-    return true;
-  }
-
-  /* 远端只读的其它整理动作（置顶/重命名/隐藏） */
-  function readonlyBlocked() {
-    if (!FM.fs.server) return false;
-    toast('远端只读：整理请在桌面端修改', 'warn');
-    return true;
-  }
+  /* 分类与专辑整理（归类/置顶/重命名/隐藏）已改为写 fm.db：桌面走 IPC、网页和手机走 /api/meta，
+     三端都能改，不再有读端拦截，所以下面的动作直接执行。 */
 
   function closeMenu() {
     if (menuOff) { menuOff(); menuOff = null; }
@@ -455,10 +444,8 @@
   function renderCats() {
     const cats = L.cats();
     if (!cats.length) {
-      /* 分类按资源库独立：非喜马拉雅库本来就是空的，只读端别提示去新建 */
-      const canEdit = FM.fs.native && !FM.fs.server;
-      refs.catList.innerHTML = '<div class="cat-empty">' +
-        (canEdit ? '还没有分类，点右上角 + 新建' : '这个资源库还没有分类') + '</div>';
+      /* 分类按资源库独立：非喜马拉雅库本来就是空的；三端都能新建 */
+      refs.catList.innerHTML = '<div class="cat-empty">还没有分类，点右上角 + 新建</div>';
       return;
     }
     refs.catList.innerHTML = cats.map(function (c) {
@@ -1235,9 +1222,8 @@
     const catTags = cats.map(c => '<span class="tag cat">' + esc(c.name) + '</span>').join('');
     const tagHtml = a.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join('');
     const done = a.count > 0 && st.doneCount >= a.count;
-    /* 归类只写桌面端本地元数据：非桌面/远端模式不渲染这个按钮（收藏不受限） */
-    const assignBtn = (FM.fs.native && !FM.fs.server) ?
-      '<button class="btn" data-act="assign" data-id="' + a.id + '">' + icon('folder') + '归类</button>' : '';
+    /* 归类写的是库元数据（fm.db）：三端都能改 */
+    const assignBtn = '<button class="btn" data-act="assign" data-id="' + a.id + '">' + icon('folder') + '归类</button>';
 
     const wrap = U.el('div');
     wrap.innerHTML =
@@ -1428,7 +1414,8 @@
   }
 
   /* 专辑详情的曲目行：两行（标题 / 时长），不放播放按钮 —— 点整行就播（见 onViewClick 的 .track 分支）。
-     第二行：没听过的只显示时长；听过一部分的显示「已听位置 / 时长」，一眼能看出听到哪了。 */
+     第二行：没听过的只显示时长；听过一部分的显示「已听位置 / 时长」，一眼能看出听到哪了；
+     听完的「已听」跟在时长后面，标题那行只留视频这类内容标记。 */
   function trackRow(t) {
     const p = L.progressOf(t.id);
     const playing = P.current && P.current.id === t.id;
@@ -1443,8 +1430,8 @@
       '<span class="tk-idx">' + (t.order + 1) + '</span>' +
       '<span class="tk-eq"><i></i><i></i><i></i></span>' +
       '<div class="tk-main tk-col">' +
-        '<span class="tk-title-row">' + dlFlag(t) + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span>' + vid + flag + '</span>' +
-        '<span class="tk-sub">' + icon('clock') + sub + '</span>' +
+        '<span class="tk-title-row">' + dlFlag(t) + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span>' + vid + '</span>' +
+        '<span class="tk-sub">' + icon('clock') + sub + flag + '</span>' +
       '</div>' +
       '<button class="tk-more" data-act="more-track" data-id="' + t.id + '">' + icon('more') + '</button>' +
     '</li>';
@@ -1660,7 +1647,7 @@
     if (refs.btnLogout) {
       refs.btnLogout.addEventListener('click', function () { location.href = '/__auth/logout'; });
     }
-    refs.btnAddCat.addEventListener('click', function () { if (!assignBlocked()) editCat(null); });
+    refs.btnAddCat.addEventListener('click', function () { editCat(null); });
     refs.btnMenu.addEventListener('click', function () {
       /* 窄屏：侧栏是抽屉，开/关；宽屏：整列折叠，状态记到本地 */
       if (window.matchMedia('(max-width:979.98px)').matches) {
@@ -1712,7 +1699,7 @@
       e.preventDefault();
       item.classList.remove('drop-target');
       const id = e.dataTransfer.getData('text/plain') || dragId;
-      if (id) { if (!assignBlocked()) assignCat(id, item.dataset.cat, true); }
+      if (id) { assignCat(id, item.dataset.cat, true); }
     });
 
     refs.searchInput.addEventListener('input', U.debounce(function () {
@@ -1930,10 +1917,10 @@
         }
         case 'queue-album': { const list = currentQueueTracks(id); if (!list.length) break; P.addToQueue(list); toast('已加入播放队列（' + list.length + ' 集）'); break; }
         case 'fav': toggleFavorite(id); break;
-        case 'assign': if (!assignBlocked()) assignModal(id); break;
+        case 'assign': assignModal(id); break;
         case 'more-album': albumMenu(id, actEl); break;
         case 'more-track': trackMenu(id, actEl); break;
-        case 'edit-cat': if (!assignBlocked()) editCat(id); break;
+        case 'edit-cat': editCat(id); break;
         case 'open-downloads': if (FM.android) FM.android.openDownloads(); break;
         case 'back': history.back(); break;
         case 'resume': { const t = L.track(id); if (t) P.playTrack(t); break; }
@@ -2036,10 +2023,9 @@
   function albumMenu(id, anchor) {
     const a = L.album(id);
     if (!a) return;
-    /* 权限：归类只在桌面原生本地库可用；置顶/重命名/隐藏在远端只读模式下无权限。
-       无权限的项直接不加入菜单（而非显示后点击才提示）。 */
-    const canAssign = FM.fs.native && !FM.fs.server;   // 归类…
-    const canModify = !FM.fs.server;                    // 置顶 / 重命名 / 隐藏
+    /* 权限：分类与整理已改成写数据库，三端都能改；封面只有能写 .fm-covers/ 的端（桌面 / 自有服务端）能给 */
+    const canAssign = true;                             // 归类…
+    const canModify = true;                             // 置顶 / 重命名 / 隐藏
     const canEditCover = FM.fs.native || FM.fs.server;  // 编辑封面（本地库 / 自有服务端都可写 .fm-covers/）
     /* 在专辑详情页点「更多」时，加入队列只排当前页；从卡片菜单进来才整张 */
     const queueTracks = currentQueueTracks(id);
@@ -2050,12 +2036,12 @@
     if (canDownload()) items.push({ label: '批量下载', icon: 'download', onClick: () => go('#/downloads/' + id + '/more') });
     items.push({ sep: true });
     items.push({ label: a.fav ? '取消收藏' : '收藏专辑', icon: 'heart', onClick: () => toggleFavorite(id) });
-    if (canModify) items.push({ label: a.pinned ? '取消置顶' : '置顶专辑', icon: 'up', onClick: () => { if (readonlyBlocked()) return; L.setMeta(id, { pinned: !a.pinned }); renderAll(); } });
-    if (canAssign) items.push({ label: '归类…', icon: 'folder', onClick: () => { if (!assignBlocked()) assignModal(id); } });
-    if (canModify) items.push({ label: '重命名…', icon: 'edit', onClick: () => { if (!readonlyBlocked()) renameAlbum(id); } });
+    if (canModify) items.push({ label: a.pinned ? '取消置顶' : '置顶专辑', icon: 'up', onClick: () => { L.setMeta(id, { pinned: !a.pinned }); renderAll(); } });
+    if (canAssign) items.push({ label: '归类…', icon: 'folder', onClick: () => assignModal(id) });
+    if (canModify) items.push({ label: '重命名…', icon: 'edit', onClick: () => renameAlbum(id) });
     if (canEditCover) items.push({ label: '编辑封面…', icon: 'image', onClick: () => coverEditModal(id) });
     items.push({ sep: true });
-    if (canModify) items.push({ label: a.hidden ? '取消隐藏' : '隐藏专辑', icon: 'close', danger: !a.hidden, onClick: () => { if (readonlyBlocked()) return; const next = !a.hidden; L.setMeta(id, { hidden: next }); toast(next ? '已隐藏，可在首页底部找回' : '已取消隐藏'); renderAll(); } });
+    if (canModify) items.push({ label: a.hidden ? '取消隐藏' : '隐藏专辑', icon: 'close', danger: !a.hidden, onClick: () => { const next = !a.hidden; L.setMeta(id, { hidden: next }); toast(next ? '已隐藏，可在首页底部找回' : '已取消隐藏'); renderAll(); } });
     if (window.fmNative && window.fmNative.isDesktop) {
       items.push({ sep: true },
         { label: '在文件夹中显示', icon: 'folder', onClick: () => { const t = L.albumTracks(id)[0]; nativeReveal(t && t.rel); } });
@@ -3601,8 +3587,8 @@
     const o = opts || {};
     const id = FM.fs.activeId;
     if (!id) { L.clear(); renderAll(); renderWelcome(); return; }
-    /* 服务器模式：先把桌面端整理的元数据拉下来，分类才带得出来 */
-    if (FM.fs.server) { try { await FM.fs.pullMeta(); } catch (e) {} }
+    /* 先把库里的元数据（分类 / 整理 / 进度）拉下来，分类才带得出来：桌面走 IPC、网页和手机走接口 */
+    if (FM.fs.canSyncMeta()) { try { await FM.fs.pullMeta(); } catch (e) {} }
     const cached = o.force ? null : FM.db.index(id);
     if (cached && cached.albums && cached.albums.length) {
       try { await FM.covers.load(); } catch (e) {}
@@ -3655,7 +3641,7 @@
     if (!FM.fs.hasSource) { addLibFlow(); return; }
     try {
       setScanBusy(true, '准备中…');
-      if (FM.fs.server) { try { await FM.fs.pullMeta(); } catch (e) {} }
+      if (FM.fs.canSyncMeta()) { try { await FM.fs.pullMeta(); } catch (e) {} }
       if (!FM.fs.granted) {
         const ok = await FM.fs.grant();
         if (!ok) throw new Error('目录授权被拒绝');

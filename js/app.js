@@ -17,7 +17,8 @@
     setTimeout(function () { node.remove(); }, 400);
   }
 
-  /* ── 元数据快照：写到每个库目录下的 .fm-meta.json（远程端读这份） ── */
+  /* ── 元数据导出快照：写到每个库目录下的 .fm-meta.json
+     真数据在 fm.db（网页/手机/桌面共用），这份只用于排查和回滚，程序不再读它 ── */
   let metaTimer = 0;
   let wantFull = true;     /* 启动后第一次、以及分类/元数据变化时写全部库 */
 
@@ -62,31 +63,15 @@
     }
   }
 
-  /* 反向：把文件里更新的进度（手机听出来的）合并回本地 */
+  /* 反向：把数据库里更新的数据（网页/手机改的分类、手机听出来的进度）拉回本地缓存。
+     名字沿用 pullMetaFromDisk：调用点（启动、回前台）不用改，数据源已经换成 fm.db。 */
   async function pullMetaFromDisk() {
-    if (!FM.fs.native) return;
-    const lib = FM.fs.active();
-    if (!lib || !lib.path) return;
-    let data = null;
-    try { data = await window.fmNative.loadMeta(lib.path); } catch (e) {}
-    if (!data) return;
-    let changed = false;
-    const prog = FM.db.progress();
-    Object.keys(data.progress || {}).forEach(function (k) {
-      const b = data.progress[k];
-      if (!b) return;
-      const a = prog[k];
-      if (!a || (Number(b.t) || 0) > (Number(a.t) || 0)) { prog[k] = b; changed = true; }
-    });
-    if (changed) { FM.db.setProgress(prog); FM.db.touch('progress'); }
-    const durs = FM.db.durations();
-    let dch = false;
-    Object.keys(data.durations || {}).forEach(function (k) {
-      const v = Number(data.durations[k]) || 0;
-      if (v > 0 && durs[k] !== v) { durs[k] = v; dch = true; }
-    });
-    if (dch) { FM.db.setDurations(durs); FM.db.touch('durations'); }
-    if (changed || dch) FM.ui.renderAll();
+    let touched = false;
+    try { touched = await FM.fs.pullMeta(); } catch (e) {}
+    if (!touched) return;
+    /* 拉到新数据就同步内存模型（分类/标题/置顶/隐藏），再重绘 */
+    try { FM.lib.refreshMeta(); } catch (e) {}
+    try { FM.ui.renderAll(); } catch (e) {}
   }
 
   /* ── 背景漂移 ──
@@ -359,6 +344,7 @@
       try { fn(); } catch (e) { console.warn('[resume] 补数据失败', e); }
     }, 600);
   }
+  let metaPullAt = 0;   /* 上次回前台补元数据的时间，用于节流 */
 
   let focusAt = 0;
   window.addEventListener('focus', function () {
@@ -369,7 +355,14 @@
     else deferResume(refreshServerLibs);
   });
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible') deferResume(refreshServerLibs);
+    if (document.visibilityState !== 'visible') return;
+    deferResume(refreshServerLibs);
+    /* 切回来再补一次分类/进度：别的端刚改过的东西能立刻看到。
+       整份快照不小，一分钟内只拉一次 */
+    const now = Date.now();
+    if (now - metaPullAt < 60000) return;
+    metaPullAt = now;
+    deferResume(pullMetaFromDisk);
   });
 
   /* 调试/自检用：手动触发一次元数据读写 */

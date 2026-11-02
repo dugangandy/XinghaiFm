@@ -485,6 +485,8 @@
 .tk-sub .i{width:11px;height:11px;opacity:.85}
 /* 听过一部分时的「已听位置」比总时长亮一档，看得出听到哪了 */
 .tk-sub .tk-cur{color:var(--dim)}
+/* 「已听」跟在时长后面：压扁一点，别把第二行撑高 */
+.tk-sub .tk-flag{font-size:9px;line-height:1.5;padding:0 6px}
 /* 已下载标记：曲名前的下载图标 */
 .tk-title-row{display:flex;align-items:center;gap:6px;min-width:0;max-width:100%}
 .tk-dl{

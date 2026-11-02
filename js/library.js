@@ -438,6 +438,7 @@
     all[trackId] = rec;
     db.setProgress(all);
     db.touch('progress');
+    /* 上报由 player.saveProgress 按 10 秒 / 强制点触发，这里只落本地缓存 */
   }
 
   function albumStat(album) {
@@ -483,6 +484,26 @@
     tracks.forEach(function (t) { t.fav = set.has(t.id); });
   }
 
+  /* ── 把改动推给数据库 ──
+     本地缓存已经改好了（界面读的是缓存），这里只负责告诉 fs 该写什么。
+     桌面本地库走 IPC、网页和手机走 HTTP，纯网页本地目录没有后端就直接忽略。 */
+  function pushMeta(patch) {
+    if (FM.fs && FM.fs.pushMeta) FM.fs.pushMeta(patch);
+  }
+  function albumPatch(key, meta) {
+    const o = {};
+    o[key] = meta || null;      /* null = 删掉这一行（取消归类 / 取消重命名） */
+    return o;
+  }
+
+  /* 元数据从库里拉回来之后，把内存模型里的整理状态（分类 / 标题 / 置顶 / 隐藏）同步一遍。
+     不重新扫描，只重算已有专辑，代价很小 */
+  function refreshMeta() {
+    ensureMetaKeys();
+    albums.forEach(function (a) { recomputeAlbum(a.id); });
+    albums.sort((a, b) => (b.pinned - a.pinned) || U.naturalCompare(a.dirName, b.dirName));
+  }
+
   function setMeta(albumId, patch) {
     ensureMetaKeys();
     const metas = db.albumMeta();
@@ -493,6 +514,7 @@
     if (patch && patch.cats) m.auto = false;
     db.setAlbumMeta(metas);
     db.touch('albumMeta');
+    pushMeta({ albumMeta: albumPatch(key, m) });
     recomputeAlbum(albumId);
     albums.sort((a, b) => (b.pinned - a.pinned) || U.naturalCompare(a.dirName, b.dirName));
     return m;
@@ -527,6 +549,7 @@
     list.push({ id, name: name || '新分类', color: color || '#22d3ee', order: list.length });
     db.setCatsFor(libId, list);
     db.touch('cats:' + libId);
+    pushMeta({ cats: list.sort((a, b) => a.order - b.order) });
     return id;
   }
 
@@ -534,26 +557,30 @@
     const list = cats().map(c => c.id === id ? Object.assign({}, c, patch) : c);
     db.setCatsFor(libId, list);
     db.touch('cats:' + libId);
+    pushMeta({ cats: list });
   }
 
   /* 删分类只清当前库的归属：别的库同名 id（内置种子跨库同 id）不能被误伤 */
   function removeCat(id) {
-    db.setCatsFor(libId, cats().filter(c => c.id !== id));
+    const rest = cats().filter(c => c.id !== id);
+    db.setCatsFor(libId, rest);
     db.touch('cats:' + libId);
     albums.forEach(function (a) { a.cats = a.cats.filter(x => x !== id); });
+    pushMeta({ cats: rest });
     /* rootKey 还没定就宁可不动元数据，空前缀会匹配到所有库 */
     const prefix = rootKey ? rootKey + '|' : '';
     if (!prefix) return;
     const metas = db.albumMeta();
-    let hit = false;
+    const touched = {};
     Object.keys(metas).forEach(function (k) {
       if (k.indexOf(prefix) !== 0) return;
       const m = metas[k];
-      if (m && m.cats && m.cats.indexOf(id) >= 0) { m.cats = m.cats.filter(x => x !== id); hit = true; }
+      if (m && m.cats && m.cats.indexOf(id) >= 0) { m.cats = m.cats.filter(x => x !== id); touched[k] = m; }
     });
-    if (!hit) return;
+    if (!Object.keys(touched).length) return;
     db.setAlbumMeta(metas);
     db.touch('albumMeta');
+    pushMeta({ albumMeta: touched });
   }
 
   /* 老版本只有一份全局分类：一次性挪到喜马拉雅库（按库名自动认）。
@@ -648,10 +675,11 @@
     search,
     stats,
     progressOf, setProgress, albumStat,
-    setMeta, recomputeAlbum, applyFavs, applyTrackFavs, catCount,
+    setMeta, recomputeAlbum, refreshMeta, applyFavs, applyTrackFavs, catCount,
     cats, addCat, updateCat, removeCat, migrateCats, repairCats,
     catsOf: id => db.catsFor(id) || [],
     get rootName() { return rootName; },
+    get rootKey() { return rootKey; },
     get libId() { return libId; },
     get scannedAt() { return scannedAt; },
     setDuration(trackId, dur) {
@@ -667,6 +695,9 @@
       durs[trackId] = dur;
       db.setDurations(durs);
       db.touch('durations');
+      const one = {};
+      one[trackId] = dur;
+      pushMeta({ durations: one });
     }
   };
 })(window.FM);

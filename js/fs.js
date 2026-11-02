@@ -500,33 +500,74 @@
     return activeLib;
   }
 
-  /* ── 元数据：从服务端拉、把进度推回去 ── */
-  async function pullMeta() {
-    if (!serverMode) return false;
-    let data = null;
-    try {
-      const r = await apiFetch('/api/meta', { cache: 'no-store' });
-      if (!r.ok) return false;
-      data = await r.json();
-    } catch (e) { return false; }
+  /* ── 库元数据（分类 / 专辑整理 / 进度 / 时长）：真数据在 fm.db ──
+     桌面本地库走 IPC（本机数据库），浏览器 / APK / 桌面远程走 /api/meta，
+     纯网页本地目录没有后端，继续只存本地缓存（不参与同步）。 */
+  const META_DEBOUNCE = 900;   // 攒 900ms 再发：连续拖动归类/连续上报进度合成一次
+  let metaQueue = null;        // 待发增量 { libId, cats?, albumMeta?, progress?, durations? }
+  let metaTimer = 0;
+  let metaSending = false;
+  let metaRetry = 0;
+
+  function metaChannel() {
+    if (DESKTOP_FS) return 'ipc';
+    return serverMode ? 'http' : 'local';
+  }
+
+  /* 有没有可写的后端：桌面本地库（IPC）和服务器模式（HTTP）都能写，
+     纯网页本地目录只能存本地缓存，不用白跑一趟 */
+  function canSyncMeta() { return metaChannel() !== 'local'; }
+
+  /* 比「有没有变化」用的归一化：座位顺序/多余字段（addedAt、root、auto）不算变化，
+     否则每次回前台都会白重绘一遍，列表滚动位置还会被重置 */
+  function normCats(list) {
+    return JSON.stringify((list || []).map(function (c) { return [c.id, c.name || '', c.color || '', Number(c.order) || 0]; }));
+  }
+  function normAlbum(m) {
+    return JSON.stringify([(m && m.cats) || [], (m && m.title) || '', m && m.pinned ? 1 : 0, m && m.hidden ? 1 : 0]);
+  }
+  function normAlbumOf(map, prefix) {
+    const out = [];
+    Object.keys(map || {}).forEach(function (k) {
+      if (prefix && k.indexOf(prefix) !== 0) return;
+      out.push([k, normAlbum(map[k])]);
+    });
+    out.sort();
+    return JSON.stringify(out);
+  }
+
+  /* 把快照灌进本地缓存（界面全读缓存，改这里就够了）。
+     专辑整理按当前库整段替换：库里删掉的条目（取消归类）本地也要跟着消失。 */
+  function applyMeta(data) {
     if (!data || data.empty) return false;
     let touched = false;
-
-    /* 分类也按库走：只认 v>=2 的快照（老文件里那份是当年的全局分类，不能拿来覆盖） */
     if (Array.isArray(data.cats) && Number(data.v) >= 2 && activeId) {
-      FM.db.setCatsFor(activeId, data.cats);
-      FM.store.touch('cats:' + activeId);
-      touched = true;
+      if (normCats(FM.db.catsFor(activeId)) !== normCats(data.cats)) {
+        FM.db.setCatsFor(activeId, data.cats);
+        FM.store.touch('cats:' + activeId);
+        touched = true;
+      }
     }
-    if (data.albumMeta && typeof data.albumMeta === 'object') {
+    if (data.albumMeta && typeof data.albumMeta === 'object' && FM.lib.rootKey) {
+      /* 用本地库的 rootKey 做前缀，而不是服务端返回的 data.root 原串：
+         两套路径字符串若归一化不一致（大小写 / 尾斜杠 / 分隔符），按 data.root 前缀匹配会
+         整段重建，本地缓存里还可能留下两份键让 library 读到旧数据。这里把入站条目统一
+         重新挂到本地 rootKey 下（album id 不变），彻底解耦两边的路径表示。 */
+      const prefix = FM.lib.rootKey + '|';
       const metas = FM.db.albumMeta();
-      let hit = 0;
+      const incoming = {};
       Object.keys(data.albumMeta).forEach(function (k) {
-        if (k.indexOf('|') < 0) return;
-        metas[k] = data.albumMeta[k];
-        hit++;
+        const cut = k.indexOf('|');
+        if (cut < 0) return;
+        incoming[prefix + k.slice(cut + 1)] = data.albumMeta[k];
       });
-      if (hit) { FM.db.setAlbumMeta(metas); FM.store.touch('albumMeta'); touched = true; }
+      if (normAlbumOf(metas, prefix) !== normAlbumOf(incoming, prefix)) {
+        Object.keys(metas).forEach(function (k) { if (k.indexOf(prefix) === 0) delete metas[k]; });
+        Object.keys(incoming).forEach(function (k) { metas[k] = incoming[k]; });
+        FM.db.setAlbumMeta(metas);
+        FM.store.touch('albumMeta');
+        touched = true;
+      }
     }
     if (data.durations && typeof data.durations === 'object') {
       const durs = FM.db.durations();
@@ -551,21 +592,98 @@
     return touched;
   }
 
-  async function pushProgress(rec) {
-    if (!serverMode || !rec || !rec.id) return false;
+  async function pullMeta() {
+    const ch = metaChannel();
+    if (ch === 'local') return false;
+    let data = null;
     try {
-      const r = await apiFetch('/api/progress', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(Object.assign({ libId: activeId }, rec))
-      });
-      /* 必须把响应体读掉：fetch 的 body 不消费，浏览器就认为这条请求还没结束，
-         一条连接被占着不还。进度每 10 秒报一次，一分钟就能把同一域名下的 6 条连接占满，
-         之后视频的 Range 请求排不上队——表现就是「播几秒卡几秒，反复」。
-         响应体只有 11 字节，读掉最省事。 */
-      try { await r.text(); } catch (e) {}
-      return r.ok;
+      if (ch === 'ipc') {
+        /* 老版本 preload 没有 meta：别把桌面端搞崩，退回只读文件快照 */
+        if (!window.fmNative.meta) return false;
+        data = await window.fmNative.meta(activeId);
+      } else {
+        const r = await apiFetch('/api/meta', { cache: 'no-store' });
+        if (!r.ok) return false;
+        data = await r.json();
+      }
     } catch (e) { return false; }
+    return applyMeta(data);
+  }
+
+  function mergePatch(base, add) {
+    if (!add) return base;
+    if (add.cats) base.cats = add.cats;
+    if (add.albumMeta) Object.assign(base.albumMeta || (base.albumMeta = {}), add.albumMeta);
+    if (add.progress) Object.assign(base.progress || (base.progress = {}), add.progress);
+    if (add.durations) Object.assign(base.durations || (base.durations = {}), add.durations);
+    return base;
+  }
+
+  /* 增量写回：本地缓存先改（乐观 UI），这里只负责把变化推给数据库 */
+  function pushMeta(patch) {
+    if (!patch || !activeId) return false;
+    if (metaChannel() === 'local') return false;
+    metaQueue = mergePatch(metaQueue || { libId: activeId }, patch);
+    clearTimeout(metaTimer);
+    metaTimer = setTimeout(flushMeta, META_DEBOUNCE);
+    return true;
+  }
+
+  async function flushMeta() {
+    if (!metaQueue) return false;
+    /* 上一发还在飞：稍后再发，别把这一批直接丢掉 */
+    if (metaSending) {
+      clearTimeout(metaTimer);
+      metaTimer = setTimeout(flushMeta, 300);
+      return false;
+    }
+    const patch = metaQueue;
+    metaQueue = null;
+    metaSending = true;
+    let ok = false;
+    try {
+      const ch = metaChannel();
+      if (ch === 'ipc') {
+        ok = !!(await window.fmNative.metaPatch(patch.libId, patch));
+      } else if (ch === 'http') {
+        const r = await apiFetch('/api/meta', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(patch)
+        });
+        /* 响应体必须读掉：不消费的话这条连接一直占着，进度每 10 秒一条，很快把同域 6 条连接占满 */
+        try { await r.text(); } catch (e) {}
+        ok = r.ok;
+      }
+    } catch (e) { ok = false; }
+    metaSending = false;
+    if (ok) { metaRetry = 0; return true; }
+    /* 失败重排一次；再失败就丢弃，下次 pullMeta 会把状态纠正回来（不阻塞播放） */
+    if (metaRetry < 1) {
+      metaRetry++;
+      metaQueue = mergePatch(patch, metaQueue);
+      clearTimeout(metaTimer);
+      metaTimer = setTimeout(flushMeta, 2000);
+    } else {
+      metaRetry = 0;
+      console.warn('[meta] 写入失败，已放弃本次改动');
+      /* 进度也走这个通道：只含进度时别报成「整理」，免得用户误以为分类丢了 */
+      try {
+        if (FM.ui && FM.ui.toast) {
+          const onlyProgress = !patch.cats && !patch.albumMeta;
+          FM.ui.toast(onlyProgress ? '播放进度没保存上，请检查连接后重试' : '整理没保存上，请检查连接后重试', 'warn');
+        }
+      } catch (e) {}
+    }
+    return false;
+  }
+
+  /* 进度上报：仍然每 10 秒一次，只是改走 meta 的增量通道 */
+  function pushProgress(rec) {
+    if (!rec || !rec.id) return false;
+    const one = {};
+    one[rec.id] = { p: rec.p, d: rec.d, t: rec.t, done: !!rec.done };
+    return pushMeta({ progress: one });
   }
 
   /* ── 收藏：跟用户绑定，存数据库 ──
@@ -848,7 +966,7 @@
   }
 
   FM.fs = {
-    load, add, activate, remove, rename, relocate, openLib, pullMeta, pushProgress, refreshLibs,
+    load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, canSyncMeta, pushProgress, refreshLibs,
     loadFavs, setFav, setFavTrack,
     scan, getFile, src, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,

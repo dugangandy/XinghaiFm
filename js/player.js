@@ -376,7 +376,7 @@
     saveAt = now;
     FM.lib.setProgress(cur.id, p, d, done);
     const pushNow = push == null ? !!force : push;
-    if (FM.fs.server && (pushNow || now - remoteSaveAt > 10000)) {
+    if (FM.fs.canSyncMeta() && (pushNow || now - remoteSaveAt > 10000)) {
       remoteSaveAt = now;
       FM.fs.pushProgress({ id: cur.id, p: p, d: d, t: now, done: done });
     }
@@ -710,7 +710,7 @@
       if (data.id && d > 0) {
         const done = p / d > 0.965;
         FM.lib.setProgress(data.id, p, d, done);
-        if (FM.fs.server) {
+        if (FM.fs.canSyncMeta()) {
           const now = Date.now();
           if (now - nativeRemoteAt > 10000) {
             nativeRemoteAt = now;
@@ -731,7 +731,7 @@
       if (data.id && d > 0) {
         const done = p / d > 0.965;
         FM.lib.setProgress(data.id, p, d, done);
-        if (FM.fs.server) FM.fs.pushProgress({ id: data.id, p: p, d: d, t: Date.now(), done: done });
+        if (FM.fs.canSyncMeta()) FM.fs.pushProgress({ id: data.id, p: p, d: d, t: Date.now(), done: done });
       }
       nativeVideo = false;
       nativePlaying = false;

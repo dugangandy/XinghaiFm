@@ -437,10 +437,13 @@ function bindIpc() {
     const cfg = getConfig();
     const i = cfg.libs.findIndex(l => l.id === id);
     if (i < 0) return { active: cfg.active };
+    const gone = cfg.libs[i];
     cfg.libs.splice(i, 1);
     if (cfg.active === id) cfg.active = cfg.libs[0] ? cfg.libs[0].id : null;
     saveConfig();
     DB.clearFavs(getDb(), adminUid(), id);
+    /* 元数据按库目录存：库被移除时顺手清掉，别留孤儿行 */
+    try { DB.clearLibMeta(getDb(), gone.path); } catch (err) {}
     return { active: cfg.active };
   });
 
@@ -487,13 +490,14 @@ function bindIpc() {
     } catch (e) { return null; }
   });
 
+  /* 导出快照：真数据在 fm.db，这里只是把当前状态写一份 .fm-meta.json 方便排查/回滚 */
   ipcMain.handle('fm:saveMeta', async function (e, libPath, json) {
     const root = knownLibPath(libPath);
     if (!root) return false;
     const file = path.join(root, META_FILE);
     try {
       const incoming = JSON.parse(String(json || '{}')) || {};
-      /* 手机上也在写同一个文件：写前确认这期间没人动过，动过就重来（乐观并发，最多 3 次） */
+      /* 老版本的另一端可能还在写这个文件：写前确认这期间没人动过，动过就重来（乐观并发，最多 3 次） */
       for (let attempt = 0; attempt < 3; attempt++) {
         const before = await statOrNull(file);
         let cur = null;
@@ -513,6 +517,7 @@ function bindIpc() {
     }
   });
 
+  /* 旧接口：只读 .fm-meta.json（现在它是导出快照，界面不再从这儿取数据） */
   ipcMain.handle('fm:loadMeta', async function (e, libPath) {
     const root = knownLibPath(libPath);
     if (!root) return null;
@@ -526,14 +531,31 @@ function bindIpc() {
     } catch (err) { return null; }
   });
 
+  /* ── 库元数据（分类 / 专辑整理 / 进度 / 时长）──
+     住 SQLite，和网页端、手机端共用同一份；按库目录共享，不区分用户。
+     升级后第一次读某个库时，把 .fm-meta.json 里的旧数据搬进库（每库一次，失败不影响读） */
+  ipcMain.handle('fm:meta', function (e, libId) {
+    const cfg = getConfig();
+    const id = libId || cfg.active;
+    const lib = id ? cfg.libs.find(l => l.id === id) : null;
+    if (!lib) return null;
+    try { DB.migrateLegacyMeta(getDb(), lib.path, lib.path); } catch (err) { console.warn('[meta] 迁移失败', err.message); }
+    return DB.metaSnapshot(getDb(), lib.path);
+  });
+  ipcMain.handle('fm:metaPatch', function (e, libId, patch) {
+    const cfg = getConfig();
+    const id = libId || cfg.active;
+    const lib = id ? cfg.libs.find(l => l.id === id) : null;
+    if (!lib) return null;
+    try { return DB.metaApply(getDb(), lib.path, patch || {}); }
+    catch (err) { console.warn('[meta] 写入失败', err.message); return null; }
+  });
+
   /* 收藏：跟用户绑定，落 SQLite（桌面端固定 admin 用户） */
   ipcMain.handle('fm:favs', function (e, libId) {
     const cfg = getConfig();
     const id = libId || cfg.active;
     if (!id) return [];
-    const lib = cfg.libs.find(l => l.id === id);
-    /* 升级后第一次读收藏：把 .fm-meta.json 里的旧收藏搬进库（每库一次） */
-    if (lib) DB.migrateLegacyFavs(getDb(), adminUid(), id, lib.path);
     return DB.listFavs(getDb(), adminUid(), id);
   });
   ipcMain.handle('fm:setFav', function (e, libId, albumId, on) {

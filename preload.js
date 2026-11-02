@@ -34,8 +34,11 @@ contextBridge.exposeInMainWorld('fmNative', {
   deleteCover: (dirName) => ipcRenderer.invoke('fm:deleteCover', dirName),
   openLib: (id) => ipcRenderer.invoke('fm:openLib', id),
   reveal: (rel) => ipcRenderer.invoke('fm:reveal', rel),
+  /* saveMeta 只用于导出 .fm-meta.json 快照；读写分类/进度一律走 meta / metaPatch */
   saveMeta: (libPath, json) => ipcRenderer.invoke('fm:saveMeta', libPath, json),
   loadMeta: (libPath) => ipcRenderer.invoke('fm:loadMeta', libPath),
+  meta: (libId) => ipcRenderer.invoke('fm:meta', libId),
+  metaPatch: (libId, patch) => ipcRenderer.invoke('fm:metaPatch', libId, patch),
   favs: (libId) => ipcRenderer.invoke('fm:favs', libId),
   setFav: (libId, albumId, on) => ipcRenderer.invoke('fm:setFav', libId, albumId, on),
   favTracks: (libId) => ipcRenderer.invoke('fm:favTracks', libId),

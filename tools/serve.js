@@ -12,8 +12,9 @@
  *   GET  /api/config            { server, rootName, multi }
  *   GET  /api/libs              资源库列表 { active, libs }
  *   GET  /api/activate?id=      切换当前资源库
- *   GET  /api/meta              当前库的 .fm-meta.json（桌面端整理的元数据）
- *   POST /api/progress          手机端回传播放进度，按时间戳合并进 .fm-meta.json
+ *   GET  /api/meta              当前库的元数据快照（分类 / 专辑整理 / 进度 / 时长，来自 fm.db）
+ *   POST /api/meta              增量写回元数据（网页端、手机端也能改分类）
+ *   POST /api/progress          手机端回传播放进度，按时间戳合并进 fm.db
  *   GET  /api/scan              目录列表（和主进程扫描结果同构）
  *   GET  /api/covers            封面索引（.fm-covers/covers.json）
  *   GET  /api/cover/<file>      封面图片
@@ -57,7 +58,6 @@ const MEDIA_EXT = new Set([
   'mp4', 'm4v', 'mov', 'webm', 'ogv'
 ]);
 const MAX_DEPTH = 3;
-const META_FILE = '.fm-meta.json';
 const SKIP_DIR = /^[._]|^(fm|dist|build|node_modules|[$]RECYCLE[.]BIN|System Volume Information)$/i;
 const SESSION_COOKIE = 'fm_sess';
 const SESSION_IDLE = 7 * 24 * 3600;   // 多久不用就失效（滑动）
@@ -130,125 +130,13 @@ function userActiveRoot(uid) { const l = userActiveLib(uid); return l ? l.path :
 /* fixed = 前端不给改（没开 --allow-lib-edit） */
 function libView(l) { return { id: l.id, name: l.name, missing: !fs.existsSync(l.path), fixed: !ALLOW_LIB_EDIT }; }
 
-/* ── 元数据文件（桌面端写、这里读；进度双向） ── */
-async function readMeta(root) {
-  if (!root) return null;
-  try { return JSON.parse(await fsp.readFile(path.join(root, META_FILE), 'utf8')) || {}; } catch (e) { return null; }
-}
-async function writeMeta(root, data) {
-  const file = path.join(root, META_FILE);
-  const tmp = file + '.' + process.pid + '.tmp';
-  await fsp.writeFile(tmp, JSON.stringify(data));
-  await fsp.rename(tmp, file);
-}
-
-const MAX_PROGRESS = 5000;
-
-function statOrNull(file) {
-  try { return fs.statSync(file); } catch (e) { return null; }
-}
-function stampOf(st) { return st ? st.mtimeMs + ':' + st.size : '0'; }
-
-/* 进度条数兜底：异常 id 刷进来时丢最老的，别让文件无限长 */
-function capProgress(prog) {
-  const keys = Object.keys(prog);
-  if (keys.length <= MAX_PROGRESS) return;
-  keys.sort((a, b) => (Number(prog[a] && prog[a].t) || 0) - (Number(prog[b] && prog[b].t) || 0));
-  for (let i = 0; i < keys.length - MAX_PROGRESS; i++) delete prog[keys[i]];
-}
-
-/* 同一份 .fm-meta.json 的读-改-写要排队：手机连续上报进度时并发进来会互相覆盖。
- * 但排队必须能中断：文件被杀软/别的进程锁住时一次写入可能卡很久，
- * 若一直等着，后面的进度请求会全堆在那里，浏览器对同一域名只有 6 条连接，
- * 堆满了连视频的 Range 请求都排不上队——表现就是「播几秒卡几秒」。
- * 所以超过 LOCK_WAIT 就让它失败返回（客户端下次再报），队列立刻放行。 */
-const LOCK_WAIT = 1500;
-const metaLocks = new Map();
-function withMetaLock(root, fn) {
-  const prev = metaLocks.get(root) || Promise.resolve();
-  const run = prev.then(fn, fn);              // 上一把失败了也继续排队，别把后面的卡死
-  let timer = 0;
-  const guard = new Promise(function (resolve, reject) {
-    timer = setTimeout(function () { reject(new Error('meta busy')); }, LOCK_WAIT);
-  });
-  const settled = Promise.race([run, guard]).finally(function () { clearTimeout(timer); });
-  /* 队列按「已结束」推进：超时后也放行，否则一次卡死会把后面的永久堵住 */
-  metaLocks.set(root, settled.then(function () {}, function () {}));
-  return settled;
-}
-
-
-/* 一次读改写可以写入多条：进度上报改成先攒着、隔一会儿合并落盘，
- * 既快（接口立即返回）又省（一次播放只写几回文件，不是十秒一回）。 */
-async function doMergeProgress(lib, recs) {
-  const file = path.join(lib.path, META_FILE);
-  for (let attempt = 0; attempt < 3; attempt++) {
-    /* 桌面端也在写这个文件：写前确认期间没人动过，动过就重来（乐观并发） */
-    const before = statOrNull(file);
-    const meta = (await readMeta(lib.path)) || {};
-    meta.progress = meta.progress || {};
-    recs.forEach(function (rec) {
-      const old = meta.progress[rec.id];
-      if (!old || (Number(rec.t) || 0) >= (Number(old.t) || 0)) {
-        meta.progress[rec.id] = { p: rec.p, d: rec.d, t: rec.t };
-        if (rec.done) meta.progress[rec.id].done = true;
-      }
-    });
-    capProgress(meta.progress);
-    meta.updatedAt = Date.now();
-    const after = statOrNull(file);
-    if (stampOf(before) !== stampOf(after) && attempt < 2) continue;
-    await writeMeta(lib.path, meta);
-    return true;
-  }
-  return false;
-}
-
-/* 攒着的进度：root -> Map(id -> rec)，同一个 id 只留最新的一条 */
-const progPending = new Map();
-const progTimers = new Map();
-
-function queueProgress(lib, rec) {
-  const root = lib.path;
-  let m = progPending.get(root);
-  if (!m) { m = new Map(); progPending.set(root, m); }
-  const old = m.get(rec.id);
-  if (!old || (Number(rec.t) || 0) >= (Number(old.t) || 0)) m.set(rec.id, rec);
-  if (!progTimers.has(root)) {
-    progTimers.set(root, setTimeout(function () { progTimers.delete(root); flushProgress(root); }, 900));
-  }
-}
-
-async function flushProgress(root) {
-  const m = progPending.get(root);
-  progPending.delete(root);
-  if (!m || !m.size) return;
-  const recs = Array.from(m.values());
-  const lib = { path: root };
-  try { await withMetaLock(root, function () { return doMergeProgress(lib, recs); }); }
-  catch (e) { console.log('[progress] 落盘失败：' + e.message); }
-}
-
-/* 退出前把攒着的写完，别丢最后一段进度 */
-function flushAllProgressSync() {
-  progTimers.forEach(function (t) { clearTimeout(t); });
-  progTimers.clear();
-  progPending.forEach(function (m, root) {
-    if (!m || !m.size) return;
-    const file = path.join(root, META_FILE);
-    try {
-      let meta = {};
-      try { meta = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (e) {}
-      meta.progress = meta.progress || {};
-      m.forEach(function (rec) {
-        const old = meta.progress[rec.id];
-        if (!old || (Number(rec.t) || 0) >= (Number(old.t) || 0)) meta.progress[rec.id] = { p: rec.p, d: rec.d, t: rec.t };
-      });
-      meta.updatedAt = Date.now();
-      fs.writeFileSync(file, JSON.stringify(meta));
-    } catch (e) {}
-  });
-  progPending.clear();
+/* ── 库元数据（分类 / 专辑整理 / 进度 / 时长）──
+ * 住 fm.db，和桌面端共用同一份：一次事务只写变化的部分，不再有「谁把谁覆盖」的问题。
+ * 库目录 .fm-meta.json 降级为导出快照（桌面端写，这里不读）。 */
+function ensureMetaMigrated(lib) {
+  if (!lib || !lib.path) return;
+  try { DB.migrateLegacyMeta(db, lib.path, lib.path); }
+  catch (e) { console.log('[meta] 迁移旧数据失败：' + e.message); }
 }
 
 /* ── 改资源库（加 / 改名 / 移除）：改数据库里该用户的库列表 ──
@@ -291,6 +179,8 @@ function mutateLibs(uid, body) {
     lib.name = name;
   } else if (act === 'remove') {
     DB.clearFavs(db, uid, id);
+    /* 元数据按库目录存：库移除时顺手清掉，别留孤儿行 */
+    if (lib.path) { try { DB.clearLibMeta(db, lib.path); } catch (e) {} }
     libs.splice(libs.findIndex(l => l.id === id), 1);
     if (active === id) active = libs[0] ? libs[0].id : null;
     console.log('[lib] 远程移除资源库：' + lib.name);
@@ -891,12 +781,34 @@ const server = http.createServer(async function (req, res) {
     return json(res, { active: a ? a.id : null, libs: userLibs(uid).map(libView) });
   }
   if (p === '/api/meta') {
-    const meta = await readMeta(userActiveRoot(uid));
-    return json(res, meta || { empty: true });
+    const lib = userActiveLib(uid);
+    /* GET：整份快照（分类 / 专辑整理 / 进度 / 时长），字段和老的 .fm-meta.json 对齐 */
+    if (req.method === 'GET') {
+      if (!lib) return json(res, { empty: true });
+      ensureMetaMigrated(lib);
+      return json(res, DB.metaSnapshot(db, lib.path));
+    }
+    if (req.method !== 'POST') return send(res, 405, 'GET or POST only');
+    /* 单独一档额度：拖拽归类 + 进度上报同时来的时候，别互相把额度吃掉 */
+    if (!writeAllowed(ip, 20, 'meta')) return send(res, 429, 'too many writes');
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > 512 * 1024) return send(res, 413, 'too large');
+    }
+    let patch = null;
+    try { patch = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    if (!patch || typeof patch !== 'object') return send(res, 400, 'bad json');
+    /* 只认自己名下的库；没带 libId 就落到当前库 */
+    const target = userLibs(uid).find(function (l) { return l.id === patch.libId; }) || lib;
+    if (!target) return send(res, 404, 'no library');
+    ensureMetaMigrated(target);
+    try { return json(res, { ok: true, counts: DB.metaApply(db, target.path, patch) }); }
+    catch (e) { console.log('[meta] 写入失败：' + e.message); return send(res, 500, 'write failed'); }
   }
   if (p === '/api/progress') {
     if (req.method !== 'POST') return send(res, 405, 'POST only');
-    if (!writeAllowed(ip)) return send(res, 429, 'too many writes');
+    if (!writeAllowed(ip, 10, 'progress')) return send(res, 429, 'too many writes');
     let body = '';
     for await (const chunk of req) {
       body += chunk;
@@ -909,15 +821,21 @@ const server = http.createServer(async function (req, res) {
     const p2 = Number(rec.p), d2 = Number(rec.d);
     if (!isFinite(p2) || p2 < 0) return send(res, 400, 'bad progress');
     if (!lib) return send(res, 404, 'no library');
-    /* 只入内存队列就返回：读改写 .fm-meta.json 要几十到几百毫秒，
-       让播放端为一条「进度」等这么久毫无意义（还会把连接和主线程都拴着）。 */
-    queueProgress(lib, {
-      id: String(rec.id),
+    /* 只是往库里 upsert 一行，几毫秒就完事，不用再攒批写文件 */
+    const one = {};
+    one[String(rec.id)] = {
       p: Math.round(p2 * 100) / 100,
       d: isFinite(d2) && d2 > 0 ? Math.round(d2 * 100) / 100 : 0,
       t: Number(rec.t) || Date.now(),
       done: !!rec.done
-    });
+    };
+    try {
+      ensureMetaMigrated(lib);
+      DB.metaApply(db, lib.path, { progress: one });
+    } catch (e) {
+      console.log('[progress] 写入失败：' + e.message);
+      return send(res, 500, 'write failed');
+    }
     return json(res, { ok: true });
   }
   if (p === '/api/favs') {
@@ -927,8 +845,6 @@ const server = http.createServer(async function (req, res) {
       if (!libId) return json(res, { ids: [] });
       const lib = userLibs(uid).find(function (l) { return l.id === libId; });
       if (!lib) return send(res, 403, 'unknown lib');
-      /* 升级后第一次读收藏：把 .fm-meta.json 里的旧收藏搬进库（每用户/库一次） */
-      await DB.migrateLegacyFavs(db, uid, libId, lib.path);
       return json(res, { libId: libId, ids: DB.listFavs(db, uid, libId), trackIds: DB.listFavTracks(db, uid, libId) });
     }
     if (req.method !== 'POST') return send(res, 405, 'GET/POST only');
@@ -1079,11 +995,12 @@ server.on('error', function (e) {
   process.exit(1);
 });
 
-/* 退出前把攒着的进度写完：Ctrl+C 关服务不该丢掉最后十几秒的进度 */
-['SIGINT', 'SIGTERM'].forEach(function (sig) {
-  process.on(sig, function () { flushAllProgressSync(); process.exit(0); });
-});
-process.on('exit', flushAllProgressSync);
+/* 进度现在是同步写库（一次事务），退出不用再补落盘；关掉数据库连接即可 */
+function shutdown() {
+  try { db.close(); } catch (e) {}
+  process.exit(0);
+}
+['SIGINT', 'SIGTERM'].forEach(function (sig) { process.on(sig, shutdown); });
 
 server.listen(port, host, function () {
   const users = DB.listUsers(db);

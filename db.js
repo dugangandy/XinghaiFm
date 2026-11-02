@@ -1,5 +1,6 @@
 /* ── db.js · SQLite 数据层（node:sqlite） ─────────────────
- * 单一 fm.db 存 users / libs / remote / settings。
+ * 单一 fm.db 存 users / libs / remote / settings / favs，以及「库元数据」
+ * （分类 cats、专辑整理 album_meta、播放进度 progress、时长 durations）。
  * Electron 主进程与 serve.js 共用本模块（各自独立连接，WAL + busy_timeout 保证并发）。
  * 注意：node:sqlite 是 Node 内置实验 API，首次 require 会打印 ExperimentalWarning，可忽略。
  */
@@ -9,7 +10,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const ITERATIONS = 600000;
 const ADMIN_ID = 'u_admin';
 
@@ -69,6 +70,43 @@ function ensureSchema(db) {
     '  created_at INTEGER NOT NULL,',
     '  PRIMARY KEY (user_id, lib_id, track_id),',
     '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE',
+    ');',
+    /* v5：库元数据（分类 / 专辑整理 / 进度 / 时长）。
+       键是「库目录路径」而不是 lib_id —— 同一个目录可能被不同用户登记成不同 lib_id，
+       而分类、置顶、进度是这个资源库的属性，按路径共享才符合预期。 */
+    'CREATE TABLE IF NOT EXISTS cats (',
+    '  lib_root TEXT NOT NULL,',
+    '  id TEXT NOT NULL,',
+    "  name TEXT NOT NULL DEFAULT '',",
+    "  color TEXT NOT NULL DEFAULT '',",
+    '  position INTEGER NOT NULL DEFAULT 0,',
+    '  created_at INTEGER NOT NULL,',
+    '  PRIMARY KEY (lib_root, id)',
+    ');',
+    'CREATE TABLE IF NOT EXISTS album_meta (',
+    '  lib_root TEXT NOT NULL,',
+    '  album_key TEXT NOT NULL,',
+    "  cats TEXT NOT NULL DEFAULT '[]',",
+    "  title TEXT NOT NULL DEFAULT '',",
+    '  pinned INTEGER NOT NULL DEFAULT 0,',
+    '  hidden INTEGER NOT NULL DEFAULT 0,',
+    '  updated_at INTEGER NOT NULL,',
+    '  PRIMARY KEY (lib_root, album_key)',
+    ');',
+    'CREATE TABLE IF NOT EXISTS progress (',
+    '  lib_root TEXT NOT NULL,',
+    '  track_id TEXT NOT NULL,',
+    '  p REAL NOT NULL DEFAULT 0,',
+    '  d REAL NOT NULL DEFAULT 0,',
+    '  done INTEGER NOT NULL DEFAULT 0,',
+    '  t INTEGER NOT NULL DEFAULT 0,',
+    '  PRIMARY KEY (lib_root, track_id)',
+    ');',
+    'CREATE TABLE IF NOT EXISTS durations (',
+    '  lib_root TEXT NOT NULL,',
+    '  track_id TEXT NOT NULL,',
+    '  dur REAL NOT NULL DEFAULT 0,',
+    '  PRIMARY KEY (lib_root, track_id)',
     ');'
   ].join('\n'));
   /* 旧库补列：token_version（改密码后让该用户旧 token 立即失效） */
@@ -168,6 +206,16 @@ function replaceLibs(db, uid, libs, activeId) {
     return { active: active };
   } catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} throw e; }
 }
+function getLib(db, uid, id) {
+  return db.prepare('SELECT id, name, path, added_at AS addedAt, active FROM libs WHERE user_id = ? AND id = ?')
+    .get(String(uid || ''), String(id || '')) || null;
+}
+/* 元数据是按库目录共享的：只要这个用户登记过同一个目录，就认同一个库
+   （换账号/换设备登记同一目录时，分类与进度不至于各存一份） */
+function libPath(db, id) {
+  const r = db.prepare('SELECT path FROM libs WHERE id = ? ORDER BY added_at LIMIT 1').get(String(id || ''));
+  return r && r.path ? r.path : null;
+}
 function setActiveLib(db, uid, id) {
   const has = db.prepare('SELECT 1 FROM libs WHERE user_id=? AND id=?').get(uid, id);
   if (!has) return false;
@@ -220,14 +268,6 @@ function clearFavTracks(db, uid, libId) {
   return db.prepare('DELETE FROM fav_tracks WHERE user_id = ? AND lib_id = ?').run(String(uid), String(libId)).changes || 0;
 }
 
-/* 旧版收藏存在库目录 .fm-meta.json 的 albumMeta[*].fav 里：每个用户/库只搬一次。
-   文件还没生成时返回 0 且不打标记，下次调用再试。 */
-function favsMigrated(db, uid, libId) {
-  return getSetting(db, 'favMig:' + uid + ':' + libId) === '1';
-}
-function markFavsMigrated(db, uid, libId) {
-  setSetting(db, 'favMig:' + uid + ':' + libId, '1');
-}
 /* 资源库被移除时顺手清掉它的收藏，避免残留孤儿行 */
 function clearFavs(db, uid, libId) {
   if (!uid || !libId) return 0;
@@ -235,24 +275,244 @@ function clearFavs(db, uid, libId) {
   clearFavTracks(db, uid, libId);
   return n;
 }
-function migrateLegacyFavs(db, uid, libId, dir) {
-  if (!uid || !libId || !dir) return 0;
-  if (favsMigrated(db, uid, libId)) return 0;
-  let meta = null;
-  try { meta = JSON.parse(fs.readFileSync(path.join(dir, '.fm-meta.json'), 'utf8')); } catch (e) { return 0; }
-  if (!meta) return 0;
-  const am = meta.albumMeta || {};
-  const prefix = String(meta.root || dir) + '|';
+
+/* ── 库元数据：分类 / 专辑整理 / 进度 / 时长 ──
+   以前存在库目录的 .fm-meta.json 里，两端各写整份快照、靠 mtime+size 乐观并发避免互相覆盖；
+   现在统一进 fm.db，一次事务只写变化的那部分，桌面端 / 网页端 / 手机端看到的是同一份。
+   .fm-meta.json 降级为「导出快照」（只写不读），方便排查和回滚。 */
+const META_VERSION = 3;
+const META_LIMIT = { cats: 200, albumMeta: 500, progress: 500, durations: 500 };
+
+/* 库目录规范化：Windows 大小写不敏感、反斜杠/正斜杠混用，不统一的话两端会各写一份 */
+function libRootKey(p) {
+  const s = String(p || '').trim();
+  if (!s) return '';
+  let out = s;
+  if (path.isAbsolute(s)) { try { out = path.resolve(s); } catch (e) {} }
+  out = out.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (process.platform === 'win32') out = out.toLowerCase();
+  return out;
+}
+
+function tx(db, fn) {
+  db.exec('BEGIN');
+  try { const r = fn(); db.exec('COMMIT'); return r; }
+  catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} throw e; }
+}
+
+/* ── 分类 ── */
+function catsList(db, root) {
+  const key = libRootKey(root);
+  if (!key) return [];
+  return db.prepare('SELECT id, name, color, position, created_at FROM cats WHERE lib_root = ? ORDER BY position, created_at')
+    .all(key).map(function (r) {
+      return { id: r.id, name: r.name, color: r.color || '', order: r.position };
+    });
+}
+function catsWrite(db, key, list) {
+  /* 按 id upsert，不做整份 DELETE：多端并发加分类时，后进的批次只会补上自己新增的，
+     不会把别端刚加的分类整份覆盖掉（albumMeta/progress 本来就是 key 级合并，这里对齐）。
+     代价：某一端主动删掉的分类不会跨端传播——对个人单用户多端「一次只在一端改」可接受，
+     需要的全量覆盖走 catsReplace。 */
+  const up = db.prepare('INSERT INTO cats(lib_root, id, name, color, position, created_at) VALUES(?,?,?,?,?,?) ' +
+    'ON CONFLICT(lib_root, id) DO UPDATE SET name=excluded.name, color=excluded.color, position=excluded.position, created_at=excluded.created_at');
+  const arr = (Array.isArray(list) ? list : []).filter(function (c) { return c && c.id; }).slice(0, META_LIMIT.cats);
+  arr.forEach(function (c, i) {
+    /* order 可能是 0（第一个分类），不能用 || 兜底 */
+    const ord = c.order === undefined || c.order === null || c.order === '' ? i : (Number(c.order) || 0);
+    up.run(key, String(c.id), String(c.name || ''), String(c.color || ''), ord, Number(c.createdAt) || Date.now());
+  });
+  return arr.length;
+}
+/* 分类整份替换：先清掉该库现有行再 upsert，用于迁移/显式全量覆盖场景 */
+function catsReplace(db, root, list) {
+  const key = libRootKey(root);
+  if (!key) return 0;
+  return tx(db, function () {
+    db.prepare('DELETE FROM cats WHERE lib_root = ?').run(key);
+    return catsWrite(db, key, list);
+  });
+}
+
+/* ── 专辑整理（归类 / 重命名 / 置顶 / 隐藏） ──
+   键沿用客户端的 "<库路径>|<专辑目录>"，入库只留 '|' 后面的专辑目录，
+   返回时再拼回同一个前缀，客户端的键规则不用改。 */
+function albumKeyOf(k) {
+  const s = String(k || '');
+  const i = s.indexOf('|');
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+function albumMetaMap(db, root) {
+  const key = libRootKey(root);
+  const out = {};
+  if (!key) return out;
+  const prefix = String(root || '') + '|';
+  db.prepare('SELECT album_key, cats, title, pinned, hidden FROM album_meta WHERE lib_root = ?').all(key).forEach(function (r) {
+    let cats = [];
+    try { cats = JSON.parse(r.cats || '[]'); } catch (e) { cats = []; }
+    const m = { cats: Array.isArray(cats) ? cats : [] };
+    if (r.title) m.title = r.title;
+    if (r.pinned) m.pinned = 1;
+    if (r.hidden) m.hidden = 1;
+    out[prefix + r.album_key] = m;
+  });
+  return out;
+}
+function albumMetaWrite(db, key, patch) {
+  if (!patch || typeof patch !== 'object') return 0;
+  const del = db.prepare('DELETE FROM album_meta WHERE lib_root = ? AND album_key = ?');
+  const up = db.prepare('INSERT INTO album_meta(lib_root, album_key, cats, title, pinned, hidden, updated_at) VALUES(?,?,?,?,?,?,?) ' +
+    'ON CONFLICT(lib_root, album_key) DO UPDATE SET cats=excluded.cats, title=excluded.title, pinned=excluded.pinned, hidden=excluded.hidden, updated_at=excluded.updated_at');
   let n = 0;
-  Object.keys(am).forEach(function (k) {
-    if (k.indexOf(prefix) !== 0) return;
-    const m = am[k];
-    if (!m || !m.fav) return;
-    setFav(db, uid, libId, k.slice(prefix.length), true);
+  Object.keys(patch).slice(0, META_LIMIT.albumMeta).forEach(function (k) {
+    const albumKey = albumKeyOf(k);
+    if (!albumKey) return;
+    const m = patch[k];
+    if (!m) { del.run(key, albumKey); n++; return; }   /* null = 删掉这一行（取消归类/取消重命名） */
+    const cats = Array.isArray(m.cats) ? m.cats.slice(0, 20) : [];
+    up.run(key, albumKey, JSON.stringify(cats), String(m.title || ''), m.pinned ? 1 : 0, m.hidden ? 1 : 0, Date.now());
     n++;
   });
-  markFavsMigrated(db, uid, libId);
   return n;
+}
+function albumMetaUpsert(db, root, patch) {
+  const key = libRootKey(root);
+  if (!key) return 0;
+  return tx(db, function () { return albumMetaWrite(db, key, patch); });
+}
+
+/* ── 播放进度：按 t 合并，晚到的旧上报不会把进度往回拨 ── */
+function progressMap(db, root) {
+  const key = libRootKey(root);
+  const out = {};
+  if (!key) return out;
+  db.prepare('SELECT track_id, p, d, done, t FROM progress WHERE lib_root = ?').all(key).forEach(function (r) {
+    out[r.track_id] = { p: r.p, d: r.d, done: !!r.done, t: r.t };
+  });
+  return out;
+}
+function progressWrite(db, key, patch) {
+  if (!patch || typeof patch !== 'object') return 0;
+  const up = db.prepare('INSERT INTO progress(lib_root, track_id, p, d, done, t) VALUES(?,?,?,?,?,?) ' +
+    'ON CONFLICT(lib_root, track_id) DO UPDATE SET p=excluded.p, d=excluded.d, done=excluded.done, t=excluded.t ' +
+    'WHERE excluded.t >= progress.t');
+  let n = 0;
+  Object.keys(patch).slice(0, META_LIMIT.progress).forEach(function (id) {
+    const b = patch[id];
+    if (!id || !b) return;
+    up.run(key, String(id), Number(b.p) || 0, Number(b.d) || 0, b.done ? 1 : 0, Number(b.t) || 0);
+    n++;
+  });
+  return n;
+}
+function progressUpsert(db, root, patch) {
+  const key = libRootKey(root);
+  if (!key) return 0;
+  return tx(db, function () { return progressWrite(db, key, patch); });
+}
+
+/* ── 时长 ── */
+function durationMap(db, root) {
+  const key = libRootKey(root);
+  const out = {};
+  if (!key) return out;
+  db.prepare('SELECT track_id, dur FROM durations WHERE lib_root = ?').all(key).forEach(function (r) {
+    if (r.dur > 0) out[r.track_id] = r.dur;
+  });
+  return out;
+}
+function durationWrite(db, key, patch) {
+  if (!patch || typeof patch !== 'object') return 0;
+  const up = db.prepare('INSERT INTO durations(lib_root, track_id, dur) VALUES(?,?,?) ' +
+    'ON CONFLICT(lib_root, track_id) DO UPDATE SET dur=excluded.dur');
+  let n = 0;
+  Object.keys(patch).slice(0, META_LIMIT.durations).forEach(function (id) {
+    const v = Number(patch[id]) || 0;
+    if (!id || v <= 0) return;
+    up.run(key, String(id), v);
+    n++;
+  });
+  return n;
+}
+function durationUpsert(db, root, patch) {
+  const key = libRootKey(root);
+  if (!key) return 0;
+  return tx(db, function () { return durationWrite(db, key, patch); });
+}
+
+/* ── 整份读取 / 增量写入（HTTP 与 IPC 都走这两个，保证口径一致） ── */
+function metaSnapshot(db, root) {
+  const r = String(root || '');
+  const key = libRootKey(r);
+  if (!key) return { v: META_VERSION, root: r, cats: [], albumMeta: {}, progress: {}, durations: {} };
+  return {
+    v: META_VERSION,
+    root: r,
+    cats: catsList(db, r),
+    albumMeta: albumMetaMap(db, r),
+    progress: progressMap(db, r),
+    durations: durationMap(db, r)
+  };
+}
+function metaApply(db, root, patch) {
+  const key = libRootKey(root);
+  const counts = { cats: 0, albumMeta: 0, progress: 0, durations: 0 };
+  if (!key || !patch || typeof patch !== 'object') return counts;
+  return tx(db, function () {
+    if (Array.isArray(patch.cats)) counts.cats = catsWrite(db, key, patch.cats);
+    if (patch.albumMeta && typeof patch.albumMeta === 'object') counts.albumMeta = albumMetaWrite(db, key, patch.albumMeta);
+    if (patch.progress && typeof patch.progress === 'object') counts.progress = progressWrite(db, key, patch.progress);
+    if (patch.durations && typeof patch.durations === 'object') counts.durations = durationWrite(db, key, patch.durations);
+    return counts;
+  });
+}
+
+/* ── 一次性迁移：把 .fm-meta.json 导入数据库（幂等，文件还没生成时不打标记，下次再试） ── */
+function metaMigrated(db, root) { return getSetting(db, 'metaMig:' + libRootKey(root)) === '1'; }
+function markMetaMigrated(db, root) { setSetting(db, 'metaMig:' + libRootKey(root), '1'); }
+function migrateLegacyMeta(db, root, dir) {
+  const key = libRootKey(root);
+  if (!key || !dir) return 0;
+  if (metaMigrated(db, root)) return 0;
+  let meta = null;
+  try { meta = JSON.parse(fs.readFileSync(path.join(String(dir), '.fm-meta.json'), 'utf8')); } catch (e) { return 0; }
+  if (!meta) return 0;
+  /* 库里已经有数据（别的端已经写过）就不再导入，避免把新数据盖回旧快照 */
+  const has = db.prepare('SELECT (SELECT COUNT(*) FROM cats WHERE lib_root = ?1) + (SELECT COUNT(*) FROM album_meta WHERE lib_root = ?1) + (SELECT COUNT(*) FROM progress WHERE lib_root = ?1) AS n')
+    .get(key).n || 0;
+  if (has > 0) { markMetaMigrated(db, root); return 0; }
+  const patch = {};
+  if (Array.isArray(meta.cats)) patch.cats = meta.cats;
+  const am = meta.albumMeta && typeof meta.albumMeta === 'object' ? meta.albumMeta : null;
+  if (am) {
+    const pick = {};
+    Object.keys(am).forEach(function (k) {
+      const i = k.indexOf('|');
+      if (i < 0) return;                                  /* 老格式没有库前缀，认不出归属就跳过 */
+      if (libRootKey(k.slice(0, i)) !== key) return;       /* 不是这个库的快照 */
+      pick[k] = am[k];
+    });
+    if (Object.keys(pick).length) patch.albumMeta = pick;
+  }
+  if (meta.progress && typeof meta.progress === 'object') patch.progress = meta.progress;
+  if (meta.durations && typeof meta.durations === 'object') patch.durations = meta.durations;
+  const counts = metaApply(db, root, patch);
+  markMetaMigrated(db, root);
+  return counts;
+}
+
+/* 资源库被移除时清掉它的元数据，避免留下孤儿行 */
+function clearLibMeta(db, root) {
+  const key = libRootKey(root);
+  if (!key) return 0;
+  return tx(db, function () {
+    let n = 0;
+    ['cats', 'album_meta', 'progress', 'durations'].forEach(function (t) {
+      n += db.prepare('DELETE FROM ' + t + ' WHERE lib_root = ?').run(key).changes || 0;
+    });
+    db.prepare('DELETE FROM settings WHERE key = ?').run('metaMig:' + key);
+    return n;
+  });
 }
 
 /* ── remote（设备级） ── */
@@ -311,8 +571,15 @@ module.exports = {
   derive, makePassword, checkPassword,
   listUsers, countUsers, findUser, getUser, adminUser, firstUserId, newUserId,
   addUser, setUserPassword, removeUser, touchLogin,
-  listLibs, activeLib, replaceLibs, setActiveLib,
-  listFavs, setFav, clearFavs, favsMigrated, markFavsMigrated, migrateLegacyFavs,
+  listLibs, activeLib, replaceLibs, setActiveLib, getLib, libPath,
+  listFavs, setFav, clearFavs,
   listFavTracks, setFavTrack, clearFavTracks,
+  META_VERSION, META_LIMIT, libRootKey,
+  catsList, catsReplace,
+  albumMetaMap, albumMetaUpsert,
+  progressMap, progressUpsert,
+  durationMap, durationUpsert,
+  metaSnapshot, metaApply,
+  metaMigrated, markMetaMigrated, migrateLegacyMeta, clearLibMeta,
   getRemote, setRemote, migrate
 };
