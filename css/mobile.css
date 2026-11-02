@@ -336,8 +336,11 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .ac-pill{height:17px;padding:0 7px;font-size:10px}
   .ac-fav{width:34px;height:34px}
   .ac-fav .i{width:18px;height:18px}
-  .album-hero{flex-wrap:nowrap;grid-template-columns:96px minmax(0,1fr)}
-  .hero-cover{width:96px;height:96px}
+  /* 竖屏手机弹出软键盘时视口被压成「宽 > 高」，orientation:landscape 也会命中，
+     所以页面这两条再叠一层 app.js 打的 html.orient-land（只认真实设备方向），
+     否则一点顶部搜索框，标题和封面就从 118 缩到 96。 */
+  html.orient-land .album-hero{flex-wrap:nowrap;grid-template-columns:96px minmax(0,1fr)}
+  html.orient-land .hero-cover{width:96px;height:96px}
 }
 
 /* ── 触屏：取消只在鼠标上成立的效果 ── */

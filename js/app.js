@@ -6,6 +6,21 @@
      原生合成路径最平滑，也不用 JS 每帧写样式。没加速的机器才用下面这套低频驱动。 */
   const HW = document.documentElement.classList.contains('hw');
 
+  /* 真实设备方向：软键盘弹出时视口被压矮、手机竖屏甚至会被压成「宽 > 高」，
+     于是 CSS 的 (orientation:landscape) 和 max-height:560px 会把键盘当成手机横屏，
+     横屏那套紧凑样式（专辑页封面 118 → 96、标题行数变少）就凭空生效，一点搜索框就抖。
+     screen.orientation 跟软键盘无关，用它给 html 打类，横屏专用样式一律挂 .orient-land 前缀。 */
+  function syncOrient() {
+    const o = window.screen && window.screen.orientation;
+    let land;
+    if (o && typeof o.type === 'string' && o.type) land = o.type.indexOf('landscape') === 0;
+    else land = Math.abs(Number(window.orientation) || 0) === 90;
+    document.documentElement.classList.toggle('orient-land', land);
+  }
+  syncOrient();
+  window.addEventListener('resize', syncOrient);
+  window.addEventListener('orientationchange', syncOrient);
+
   function hideBoot() {
     const node = document.getElementById('boot');
     if (!node) return;
