@@ -66,6 +66,12 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .tk-count{white-space:nowrap;font-size:10.5px}
   .tk-idx{width:22px;font-size:10.5px}
   .tk-name{font-size:13px}
+  /* 手机端不出分页条：滚到底给一句收尾，还有没画出来的就留空不占位 */
+  .track-end{
+    padding:20px 0 6px;
+    text-align:center;font-size:11.5px;color:var(--dim-2);letter-spacing:.08em;
+  }
+  .track-end:empty{display:none}
 
   /* ── 播放条：只留最关键的四颗 ── */
   .playerbar{height:var(--pb-h);padding:0 12px;gap:10px}

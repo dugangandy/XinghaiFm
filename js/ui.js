@@ -4,11 +4,12 @@
   const U = FM.util, L = FM.lib, P = FM.player;
   const esc = U.escape, icon = U.icon, fmtT = U.fmtTime, fmtS = U.fmtSize, fmtD = U.fmtDur;
 
-  const state = { view: 'home', cat: null, albumId: null, q: '', detailQ: '', sortDesc: false, showHidden: false, page: 0, qMore: false, gridShown: 0 };
-  const PAGE = 30;            // 专辑声音列表每页集数
+  const state = { view: 'home', cat: null, albumId: null, q: '', detailQ: '', sortDesc: false, showHidden: false, page: 0, trackShown: 0, qMore: false, gridShown: 0 };
+  const PAGE = 30;            // 专辑声音列表每页集数（手机端滚动加载也拿它当批大小）
   const SEARCH_ALBUMS = 24;   // 搜索结果首屏最多画多少张卡片（点「显示更多」才展开）
   const SEARCH_TRACKS = 40;   // 搜索结果首屏最多画多少行单集
   const GRID_BATCH = 60;      // 专辑网格每批画多少张卡（一次画几百张要几百毫秒）
+  const TRACK_END = '已经到底啦~';   // 手机端滚动加载到底时的收尾文案
   let refs = {};
   let dragId = null;
   let queueOpen = false;
@@ -16,6 +17,7 @@
   let menuEl = null;
   let menuOff = null;
   let gridTail = null;        // 还没画出来的专辑（滚动加载用）
+  let trackTail = null;       // 手机端还没画出来的曲目（滚动加载用）
 
   const CAT_COLORS = ['#22d3ee', '#a855f7', '#f472b6', '#34d399', '#fbbf24', '#ff8a65', '#60a5fa', '#c084fc'];
 
@@ -543,8 +545,10 @@
     }
     state.detailQ = '';
     state.page = 0;
+    state.trackShown = PAGE;        // 手机端回到「只画第一批」
     state.gridShown = GRID_BATCH;   // 换页回到「只画第一批」
     gridTail = null;
+    trackTail = null;
     if (bootVisible()) { bootPending = true; return; }   // 启动遮罩还在：等撤遮罩前再画
     renderMain();
     renderNav();
@@ -570,6 +574,7 @@
     const v = refs.view;
     v.innerHTML = '';
     gridTail = null;
+    trackTail = null;
     /* 批量下载/删除页：让页面铺满（没有播放条时不留底部空档） */
     if (!L.albums().length) { v.classList.remove('dl-view'); renderWelcome(); return; }
     v.classList.toggle('dl-view', state.view === 'dlMore' || state.view === 'dlRemove');
@@ -654,7 +659,7 @@
   function appendGridBatch() {
     if (!gridTail) return;
     const host = refs.view.querySelector('.grid');
-    if (!host) return;
+    if (!host) { gridTail = null; return; }
     const shown = host.children.length;
     const next = gridTail.slice(shown, shown + GRID_BATCH);
     if (!next.length) { gridTail = null; paintMoreLabel(); return; }
@@ -678,15 +683,19 @@
     if (btn) btn.textContent = '加载更多（还有 ' + rest + ' 个）';
   }
 
-  /* 滚到接近底部就自动加载下一批（手机上不必手动点） */
+  /* 滚到接近底部就自动加载下一批（手机上不必手动点）：专辑网格、手机端曲目列表共用 */
   let moreTick = 0;
   function maybeLoadMore() {
-    if (!gridTail || moreTick) return;
+    if (moreTick) return;
+    if (!gridTail && !trackTail) return;
     const v = refs.view;
     if (v.scrollTop + v.clientHeight < v.scrollHeight - 900) return;
     moreTick = requestAnimationFrame(function () {
       moreTick = 0;
-      appendGridBatch();
+      if (gridTail) appendGridBatch();
+      if (trackTail) appendTrackBatch();
+      /* 一批不够铺满（或机型很矮）时接着往下补，不然不会再触发 scroll 就卡住了 */
+      if (gridTail || trackTail) maybeLoadMore();
     });
   }
 
@@ -1221,7 +1230,7 @@
     if (!a) return viewGridPage('专辑不存在', '可能已被移除，请重新扫描资源库', L.albums());
     const st = L.albumStat(a);
     const filtered = albumTracksFiltered(a);
-    const pg = pageSlice(filtered);
+    const trackHtml = trackListHtml(filtered);
     const cats = L.cats().filter(c => a.cats.indexOf(c.id) >= 0);
     const catTags = cats.map(c => '<span class="tag cat">' + esc(c.name) + '</span>').join('');
     const tagHtml = a.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join('');
@@ -1261,8 +1270,10 @@
         '<button class="chip" data-act="sort">' + icon('sort') + (state.sortDesc ? '倒序' : '正序') + '</button>' +
         '<span class="tk-count">' + filtered.length + ' / ' + a.count + ' 集</span>' +
       '</div>' +
-      '<div class="track-list" id="trackList">' + pg.items.map(t => trackRow(t)).join('') + '</div>' +
-      '<div id="trackPager">' + pagerHtml(filtered.length) + '</div>';
+      '<div class="track-list" id="trackList">' + trackHtml + '</div>' +
+      '<div id="trackPager">' + pagerHtml(filtered.length) + '</div>' +
+      /* 手机端没有分页条，列表底部挂一条收尾提示，滚到底再填文案 */
+      (isPhone() ? '<div class="track-end" id="trackEnd">' + (trackTail ? '' : TRACK_END) + '</div>' : '');
 
     return wrap;
   }
@@ -1288,11 +1299,15 @@
     return { items: list.slice(from, from + PAGE), from: from, pages: pages };
   }
 
-  /* 「加入队列」用：在专辑详情页只排当前这一页，其它地方退回整张 */
+  /* 「加入队列」用：在专辑详情页只排当前这一页（手机端没有「页」，按已经滚出来的那些集），
+     其它地方退回整张 */
   function currentQueueTracks(id) {
     const a = L.album(id);
     if (!a) return [];
-    if (state.view === 'album' && state.albumId === id) return pageSlice(albumTracksFiltered(a)).items;
+    if (state.view === 'album' && state.albumId === id) {
+      const list = albumTracksFiltered(a);
+      return isPhone() ? list.slice(0, state.trackShown || PAGE) : pageSlice(list).items;
+    }
     return L.albumTracks(id);
   }
 
@@ -1321,12 +1336,12 @@
   }
 
   /* 分页条：网页/桌面版按喜马拉雅那套排 —— 上一页、首页、省略号、当前页附近、
-     末页、下一页，右侧跟一个「输入页码 / 跳转」。手机端暂时沿用旧排版。 */
+     末页、下一页，右侧跟一个「输入页码 / 跳转」。手机端不出分页条，改滚动加载 */
   function pagerHtml(total) {
+    if (isPhone()) return '';
     const pages = Math.max(1, Math.ceil(total / PAGE));
     if (pages <= 1) return '';
     const page = state.page;
-    if (isPhone()) return pagerHtmlPhone(total, pages);
 
     const from = page * PAGE + 1;
     const to = Math.min(total, (page + 1) * PAGE);
@@ -1361,23 +1376,41 @@
     '</div>';
   }
 
-  /* 手机端旧版分页条：一行「‹ 页码 ›」，暂不改动 */
-  function pagerHtmlPhone(total, pages) {
-    const page = state.page;
-    const from = page * PAGE + 1;
-    const to = Math.min(total, (page + 1) * PAGE);
-    const nums = [];
-    const lo = Math.max(0, page - 2), hi = Math.min(pages - 1, page + 2);
-    for (let i = lo; i <= hi; i++) {
-      nums.push('<button class="page-btn' + (i === page ? ' on' : '') + '" data-act="page" data-page="' + i + '">' + (i + 1) + '</button>');
+  /* 曲目列表的首屏内容：桌面按页切，手机先画一批、剩下的留在 trackTail 里等滚动加载 */
+  function trackListHtml(list) {
+    if (!isPhone()) {
+      trackTail = null;
+      return pageSlice(list).items.map(t => trackRow(t)).join('');
     }
-    const arrow = function (n, label, off) {
-      return '<button class="page-btn arrow" data-act="page" data-page="' + n + '"' + (off ? ' disabled' : '') + '>' + label + '</button>';
-    };
-    return '<div class="track-pager">' +
-      '<span class="pg-info">第 ' + from + '–' + to + ' 集 · 共 ' + total + ' 集</span>' +
-      '<div class="pg-ctl">' + arrow(page - 1, '‹', page === 0) + nums.join('') + arrow(page + 1, '›', page === pages - 1) + '</div>' +
-    '</div>';
+    const shown = Math.min(list.length, state.trackShown || PAGE);
+    trackTail = list.length > shown ? list : null;
+    return list.slice(0, shown).map(t => trackRow(t)).join('');
+  }
+
+  /* 手机端滚到底：往现有列表里追加下一批，画完最后一批就把「已经到底啦~」挂上 */
+  function appendTrackBatch() {
+    const host = document.getElementById('trackList');
+    if (!host) { trackTail = null; return; }   /* 已经换了页面：清掉尾巴，别让滚动加载空转 */
+    if (!trackTail) return;
+    const shown = host.children.length;
+    const next = trackTail.slice(shown, shown + PAGE);
+    if (next.length) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = next.map(t => trackRow(t)).join('');
+      const frag = document.createDocumentFragment();
+      while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+      host.appendChild(frag);
+      applyPlayingState(host);
+      state.trackShown = shown + next.length;
+    }
+    if (shown + next.length >= trackTail.length) trackTail = null;
+    paintTrackEnd();
+  }
+
+  /* 列表底部的收尾提示：还有没画出来的就留空（空元素在 css 里不占位） */
+  function paintTrackEnd() {
+    const el = document.getElementById('trackEnd');
+    if (el) el.textContent = trackTail ? '' : TRACK_END;
   }
 
   /* 翻页统一入口：页码在这里收敛到有效范围，翻完把视口滚回列表顶部 */
@@ -1725,14 +1758,15 @@
       if (e.target.id === 'tkSearch') {
         state.detailQ = e.target.value.trim();
         state.page = 0;
+        state.trackShown = PAGE;      /* 换了关键词就从第一批重新滚 */
         const a = L.album(state.albumId);
         if (!a) return;
         const filtered = albumTracksFiltered(a);
-        const pg = pageSlice(filtered);
         const box = document.getElementById('trackList');
         if (box) {
-          box.innerHTML = pg.items.map(t => trackRow(t)).join('');
+          box.innerHTML = trackListHtml(filtered);
           applyPlayingState(box);
+          paintTrackEnd();
         }
         const pager = document.getElementById('trackPager');
         if (pager) pager.innerHTML = pagerHtml(filtered.length);
@@ -1911,7 +1945,7 @@
           else P.playTrack(t);
           break;
         }
-        case 'sort': state.sortDesc = !state.sortDesc; state.page = 0; FM.db.setState(Object.assign(FM.db.state(), { sortDesc: state.sortDesc })); FM.store.touch('state'); renderMain(); break;
+        case 'sort': state.sortDesc = !state.sortDesc; state.page = 0; state.trackShown = PAGE; FM.db.setState(Object.assign(FM.db.state(), { sortDesc: state.sortDesc })); FM.store.touch('state'); renderMain(); break;
         case 'page': {
           const p = parseInt(actEl.dataset.page, 10);
           if (!isNaN(p)) gotoPage(p);
@@ -3587,7 +3621,7 @@
 
   function resetView() {
     state.view = 'home'; state.cat = null; state.albumId = null;
-    state.q = ''; state.detailQ = ''; state.page = 0;
+    state.q = ''; state.detailQ = ''; state.page = 0; state.trackShown = PAGE;
     if (refs.searchInput) refs.searchInput.value = '';
     if (refs.searchClear) refs.searchClear.hidden = true;
     if (location.hash && location.hash !== '#/' && location.hash !== '') location.hash = '#/';
