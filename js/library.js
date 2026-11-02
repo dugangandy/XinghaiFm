@@ -245,8 +245,10 @@
         meta = { cats: autoFor(dirName), auto: true, addedAt: Date.now(), root: rootKey };
         metas[mkey] = meta;
       }
-      /* 同名但属于别的库：不继承，切回去时元数据仍然完好 */
-      const own = meta.root === rootKey;
+      /* 同名但属于别的库：不继承，切回去时元数据仍然完好。
+         本地 albumMeta 条目可能不带 root（服务端拉回来的快照就是如此），按 restore() 同样用宽松判断，
+         否则重扫时 own 误判为 false，把分类 / 置顶 / 隐藏 / 重命名全清掉 */
+      const own = !meta.root || meta.root === rootKey;
 
       /* 只补空：已经有分类的专辑一律不动（人工整理过的不能被规则改掉）。
          空分类的大多是新专辑，或旧版本关键词没命中，扫描时补一次。

@@ -850,7 +850,7 @@
       '<div class="page-sub">' + list.length + ' 个专辑</div></div>' +
       '<div class="head-actions"><button class="btn btn-ghost" data-act="edit-cat" data-id="' + cat.id + '">' + icon('edit') + '编辑分类</button></div></div>' +
       (list.length ? gridHtml(list) : '<div class="empty"><div class="empty-art">' + icon('grid') + '</div>' +
-        '<h3>这个分类还没有专辑</h3><p>把首页的专辑卡片拖到这里，或点击专辑详情页的「归类」按钮。</p></div>');
+        '<h3>这个分类还没有专辑</h3><p>把首页的专辑卡片拖到这里，或点开专辑详情页右上角「更多」里的「归类…」。</p></div>');
     return wrap;
   }
 
@@ -1222,8 +1222,6 @@
     const catTags = cats.map(c => '<span class="tag cat">' + esc(c.name) + '</span>').join('');
     const tagHtml = a.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join('');
     const done = a.count > 0 && st.doneCount >= a.count;
-    /* 归类写的是库元数据（fm.db）：三端都能改 */
-    const assignBtn = '<button class="btn" data-act="assign" data-id="' + a.id + '">' + icon('folder') + '归类</button>';
 
     const wrap = U.el('div');
     wrap.innerHTML =
@@ -1247,7 +1245,6 @@
             '<button class="btn hero-queue" data-act="queue-album" data-id="' + a.id + '">' + icon('list') + '加入队列</button>' +
             '<button class="btn' + (a.fav ? ' danger' : '') + '" data-act="fav" data-id="' + a.id + '">' + icon(a.fav ? 'heart-fill' : 'heart') + (a.fav ? '已收藏' : '收藏') + '</button>' +
             '<button class="btn" data-act="more-album" data-id="' + a.id + '">' + icon('more') + '更多</button>' +
-            assignBtn +
           '</div>' +
         '</div>' +
       '</section>' +

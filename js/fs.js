@@ -559,7 +559,10 @@
       Object.keys(data.albumMeta).forEach(function (k) {
         const cut = k.indexOf('|');
         if (cut < 0) return;
-        incoming[prefix + k.slice(cut + 1)] = data.albumMeta[k];
+        /* 入站条目是服务端快照（不含 root），重新挂到本地 rootKey 时把 root 也补上，
+           否则 library.build() 用「meta.root === rootKey」判断归属会得到 false，
+           重扫时把 cats/pinned/hidden/title 全清掉（restore() 用宽松判断才没暴露） */
+        incoming[prefix + k.slice(cut + 1)] = Object.assign({ root: FM.lib.rootKey }, data.albumMeta[k]);
       });
       if (normAlbumOf(metas, prefix) !== normAlbumOf(incoming, prefix)) {
         Object.keys(metas).forEach(function (k) { if (k.indexOf(prefix) === 0) delete metas[k]; });
