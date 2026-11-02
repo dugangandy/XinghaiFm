@@ -512,6 +512,8 @@
   }
 
   function route() {
+    /* 手势返回 / 前进键切页时收起「更多」这类浮层，别让它盖在新页面上 */
+    closeMenu();
     const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
     const seg = h.split('/').filter(Boolean);
     state.q = '';
