@@ -1721,11 +1721,11 @@
     refs.brand.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goHome(); }
     });
-    /* 手机顶栏：左侧品牌回首页，右侧设置菜单 */
+    /* 手机顶栏：左侧品牌看/切资源库（居中弹窗），右侧设置菜单 */
     if (refs.tbBrand) {
-      refs.tbBrand.addEventListener('click', goHome);
+      refs.tbBrand.addEventListener('click', openLibSwitch);
       refs.tbBrand.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goHome(); }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openLibSwitch(); }
       });
     }
     if (refs.btnSettings) refs.btnSettings.addEventListener('click', openSettingsMenu);
@@ -3450,6 +3450,86 @@
     });
   }
 
+  /* 资源库行的两段副文案：路径（远程库不暴露真实路径）与规模（专辑/集/占用）。
+     选择弹窗和资源库设置抽屉共用，口径才不会漂 */
+  function libPathText(l) {
+    return (l.fixed || FM.fs.remote) ? '远程资源库' : String(l.path || '').replace(/\\/g, '/');
+  }
+
+  function libScaleText(l) {
+    if (l.missing) return '';
+    /* 当前库用内存里的索引（口径与其它页面一致），其它库读 localStorage 里按库缓存的索引快照；
+       从没打开过的库没有缓存，就不显示这一行 */
+    if (l.id === FM.fs.activeId && L.albums().length) {
+      const s = L.stats();
+      return s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size);
+    }
+    const idx = FM.db.index(l.id);
+    if (!idx || !idx.albums || !idx.albums.length) return '';
+    let size = 0;
+    idx.albums.forEach(function (a) { size += a.size || 0; });
+    const tracks = (idx.tracks || []).length;
+    return idx.albums.length + ' 个专辑' + (tracks ? ' · ' + tracks + ' 集' : '') + (size ? ' · ' + fmtS(size) : '');
+  }
+
+  /* 资源库单选行：选中态 / 缺失态 / 规模行都在这里画，弹窗与抽屉复用 */
+  function libRowHtml(l) {
+    const cur = l.id === FM.fs.activeId;
+    const scale = libScaleText(l);
+    return '<span class="lib-ico">' + icon(l.missing ? 'moon' : ((l.fixed || FM.fs.remote) ? 'library' : 'folder')) + '</span>' +
+      '<div class="lib-info"><b>' + esc(l.name) + '</b><small>' + esc(libPathText(l)) + '</small>' +
+      (scale ? '<span class="lib-stats">' + esc(scale) + '</span>' : '') +
+      (l.missing ? '<em>资源库目录不存在，需要重新定位</em>' : '') + '</div>' +
+      (cur ? '<span class="lib-cur">当前</span>' : '');
+  }
+
+  /* 换个资源库：手机首页点 logo 弹出，居中显示当前库 + 其余可选库 */
+  function openLibSwitch() {
+    const list = FM.fs.libs();
+    const body = U.el('div', { class: 'lib-pick' });
+    if (!list.length) {
+      body.innerHTML = '<div class="lib-empty">还没有资源库。点下面的「管理资源库」添加一个放音频的文件夹。</div>';
+      openModal({
+        title: '选择资源库',
+        body: body,
+        actions: [
+          { label: '管理资源库', cls: 'btn-ghost', onClick: function () { openLibDrawer(); } },
+          { label: '关闭', cls: 'btn-primary' }
+        ]
+      });
+      return;
+    }
+    /* 当前库排最前面，一眼就知道在听哪个库；其余按原顺序 */
+    const ordered = list.slice().sort(function (a, b) {
+      return (b.id === FM.fs.activeId ? 1 : 0) - (a.id === FM.fs.activeId ? 1 : 0);
+    });
+    body.innerHTML = '<p class="lib-pick-tip">点其它资源库即可切换' +
+      (FM.fs.remote ? '（远程模式，无法在手机上修改资源库）' : '') + '</p>' +
+      ordered.map(function (l) {
+        return '<div class="lib-row' + (l.id === FM.fs.activeId ? ' current' : '') + (l.missing ? ' missing' : '') +
+          '" data-lib="' + esc(l.id) + '">' + libRowHtml(l) + '</div>';
+      }).join('');
+    const m = openModal({
+      title: '选择资源库',
+      body: body,
+      actions: [
+        { label: '管理资源库', cls: 'btn-ghost', onClick: function () { openLibDrawer(); } },
+        { label: '关闭', cls: 'btn-primary' }
+      ]
+    });
+    body.addEventListener('click', function (e) {
+      const row = e.target.closest('.lib-row');
+      if (!row) return;
+      const id = row.dataset.lib;
+      if (!id || id === FM.fs.activeId) return;
+      const l = list.filter(function (x) { return x.id === id; })[0];
+      if (!l) return;
+      if (l.missing) { toast('资源库目录不存在，请先在「管理资源库」里重新定位', 'warn'); return; }
+      m.close();
+      switchLib(id);
+    });
+  }
+
   /* 资源库设置：右侧抽屉，不遮住主界面，切库的上下文还在 */
   function openLibDrawer() {
     const sub = U.el('small', { class: 'drawer-sub' });
@@ -3519,22 +3599,6 @@
 
     const handle = { close: close, panel: panel };
 
-    /* 每个库的规模行：当前库用内存里的索引（口径与首页/侧栏一致），
-       其它库读 localStorage 里按库缓存的索引快照；从没打开过的库没有缓存，就不显示这一行 */
-    function libScaleText(l) {
-      if (l.missing) return '';
-      if (l.id === FM.fs.activeId && L.albums().length) {
-        const s = L.stats();
-        return s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size);
-      }
-      const idx = FM.db.index(l.id);
-      if (!idx || !idx.albums || !idx.albums.length) return '';
-      let size = 0;
-      idx.albums.forEach(function (a) { size += a.size || 0; });
-      const tracks = (idx.tracks || []).length;
-      return idx.albums.length + ' 个专辑' + (tracks ? ' · ' + tracks + ' 集' : '') + (size ? ' · ' + fmtS(size) : '');
-    }
-
     function draw() {
       const list = FM.fs.libs();
       const curLib = list.filter(function (x) { return x.id === FM.fs.activeId; })[0];
@@ -3549,15 +3613,7 @@
       list.forEach(function (l) {
         const cur = l.id === FM.fs.activeId;
         const row = U.el('div', { class: 'lib-row' + (cur ? ' current' : '') + (l.missing ? ' missing' : '') });
-        const scale = libScaleText(l);
-        row.innerHTML =
-          '<span class="lib-ico">' + icon(l.missing ? 'moon' : ((l.fixed || FM.fs.remote) ? 'library' : 'folder')) + '</span>' +
-          '<div class="lib-info"><b>' + esc(l.name) + '</b><small>' +
-            esc((l.fixed || FM.fs.remote) ? '远程资源库' : String(l.path || '').replace(/\\/g, '/')) +
-          '</small>' +
-          (scale ? '<span class="lib-stats">' + esc(scale) + '</span>' : '') +
-          (l.missing ? '<em>资源库目录不存在，需要重新定位</em>' : '') + '</div>' +
-          (cur ? '<span class="lib-cur">当前</span>' : '') +
+        row.innerHTML = libRowHtml(l) +
           (l.fixed ? '' : '<button class="icon-btn lib-more" title="更多">' + icon('more') + '</button>');
         const more = row.querySelector('.lib-more');
         if (more) more.addEventListener('click', function (e) { e.stopPropagation(); libRowMenu(e.currentTarget, l, draw, handle); });
