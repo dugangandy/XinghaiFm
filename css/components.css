@@ -252,20 +252,14 @@
 .card-fav .i{width:13px;height:13px}
 
 .card-body{padding:8px 3px 0}
+/* 标题最多两行：短标题只占一行，但 min-height 一直留两行的高度，
+   同一行卡片不会因为标题长短而高低不齐 */
 .card-title{
   font-size:12.2px;font-weight:650;line-height:1.4;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  min-height:1.4em;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  overflow:hidden;word-break:break-word;
+  min-height:2.8em;
 }
-.card-tags{
-  margin-top:4px;font-size:10px;color:var(--dim);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:1.4em;
-}
-.card-foot{display:flex;align-items:center;gap:5px;margin-top:6px;overflow:hidden;font-size:9.5px;color:var(--dim-2);font-variant-numeric:tabular-nums}
-.card-foot span{flex:none;white-space:nowrap}
-.card-foot .dot{width:2px;height:2px;border-radius:50%;background:currentColor}
-.card-prog{height:2.5px;border-radius:99px;background:rgba(255,255,255,.09);margin-top:6px;overflow:hidden}
-.card-prog i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#22d3ee,#a855f7);box-shadow:0 0 10px rgba(34,211,238,.8)}
 .card.playing .card-cover{box-shadow:0 0 0 1.5px rgba(34,211,238,.85),0 0 34px -8px rgba(34,211,238,.85)}
 
 /* 专辑详情 */
@@ -931,6 +925,12 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .lib-info{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}
 .lib-info b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lib-info small{font-size:11px;color:var(--dim);word-break:break-all;line-height:1.35}
+/* 每个库的规模（专辑 / 集数 / 占用）：首页头部收掉后信息挪到这里 */
+.lib-info .lib-stats{
+  font-size:10.5px;color:var(--dim-2);letter-spacing:.02em;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
 .lib-info em{font-size:10.5px;font-style:normal;color:#ff8a65}
 .lib-cur{
   flex:none;font-size:10px;padding:2px 8px;border-radius:99px;letter-spacing:.04em;
@@ -960,3 +960,17 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .fav-more:hover{color:#fff;background:rgba(255,255,255,.08)}
 .fav-more .i{width:16px;height:16px}
 
+
+/* 关于弹窗：品牌 + 版本 + 运行形态 / 资源库 / 内容统计 */
+.about{display:flex;flex-direction:column;gap:14px;padding:2px 0 4px}
+.about-head{display:flex;align-items:center;gap:12px}
+.about-mark{font-size:26px}
+.about-name{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.about-name b{font-size:16px;font-weight:800;letter-spacing:.04em;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.about-name small{font-size:10px;letter-spacing:.2em;color:var(--dim-2)}
+.about-ver{flex:none;padding:3px 9px;border-radius:99px;font-size:10.5px;font-weight:700;letter-spacing:.02em;color:#bdf3ff;border:1px solid rgba(34,211,238,.32);background:rgba(34,211,238,.1)}
+.about-rows{display:flex;flex-direction:column;gap:1px;border-radius:12px;overflow:hidden;border:1px solid var(--line)}
+.about-row{display:flex;align-items:center;gap:12px;padding:9px 12px;background:rgba(255,255,255,.03);font-size:12px}
+.about-row span{flex:none;color:var(--dim);min-width:66px}
+.about-row b{flex:1;min-width:0;text-align:right;font-weight:600;color:var(--txt-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.about-note{margin:0;font-size:11px;line-height:1.8;color:var(--dim-2)}

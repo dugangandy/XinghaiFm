@@ -16,14 +16,30 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
 @media (max-width:760px){
   :root{--pb-h:62px}
 
-  /* ── 顶栏 ── */
+  /* ── 顶栏：品牌 + 搜索 + 设置，侧栏抽屉在手机上不再出现 ── */
+  /* 只隐藏不删节点：#sidebar / #drawerMask 仍被 route()、closeDrawer()、setMenuState() 直接引用 */
+  .sidebar,.drawer-mask,.menu-btn{display:none}
   .topbar{height:56px;padding:var(--sat) 12px 0;gap:8px}
   .topbar.scrolled{backdrop-filter:none;background:rgba(7,10,18,.96)}
+  .tb-brand.sm-only{display:flex;align-items:center;gap:7px;flex:none;cursor:pointer}
+  .tb-brand:active{opacity:.7}
+  .tb-brand .eq-mark{font-size:17px}
+  .tb-brand b{
+    font-size:13.5px;font-weight:800;letter-spacing:.01em;white-space:nowrap;
+    background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+  }
   .search{flex:1;width:auto;height:36px;padding:0 10px 0 11px;gap:8px}
   .search:focus-within{width:auto}
   .search input{font-size:13px}
   .menu-btn{width:34px;height:34px}
-  .scan-state,.link-state{font-size:10.5px}
+  /* 手机上右侧只留状态圆点：文字收进 title/aria-label，设置按钮接手退出登录 */
+  .top-right{gap:4px}
+  .scan-state,.link-state{font-size:0;gap:0;justify-content:center;width:14px;height:24px;padding:0;border:0;background:none;box-shadow:none}
+  .scan-state > span,.link-state > span{display:none}
+  .link-state.auth{border:0;background:none}
+  .topbar #btnLogout{display:none}
+  .topbar .icon-btn.sm-only{display:grid;width:34px;height:34px}
+  .topbar .icon-btn.sm-only .i{width:19px;height:19px}
 
   /* ── 内容区 ── */
   .view{padding:4px 12px calc(var(--pb-h) + var(--sab) + 18px)}
@@ -54,9 +70,68 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
 
   /* ── 卡片网格：两列半，滚动时按需渲染 ── */
   .grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px 8px}
-  .card{content-visibility:auto;contain-intrinsic-size:auto 200px}
+  /* 卡片只剩封面 + 两行标题，固有高度按实际算，滚动条长度才准 */
+  .card{content-visibility:auto;contain-intrinsic-size:auto 160px}
+  .card-body{padding:6px 3px 0}
   .card-title{font-size:11.8px}
-  .card-foot{font-size:9px}
+
+  /* ── 首页分类 tab：单行横向滑动，选中一条渐变下划线 ── */
+  .m-tabs{
+    /* .view 有 4px 上内边距，粘顶要抵掉它，否则标签上方会留一条滚动内容透出来的缝 */
+    position:sticky;top:-4px;z-index:3;
+    display:flex;align-items:center;gap:8px;
+    margin:0 -12px 14px;padding:4px 12px 6px;
+    /* 吸顶行背景要不透明：半透明会让滚动中的封面从标签后面透出来 */
+    background:#070a12;
+    box-shadow:0 8px 16px -12px rgba(0,0,0,.95);
+  }
+  .m-tabs-scroll{
+    flex:1;min-width:0;display:flex;align-items:center;gap:16px;
+    overflow-x:auto;overflow-y:hidden;
+    scrollbar-width:none;-webkit-overflow-scrolling:touch;
+    touch-action:pan-x;
+  }
+  .m-tabs-scroll::-webkit-scrollbar{display:none}
+  .m-tab{
+    position:relative;flex:none;height:30px;padding:0 1px;
+    font-size:14px;line-height:30px;color:var(--dim);
+    letter-spacing:.02em;white-space:nowrap;transition:color .2s var(--ease);
+  }
+  .m-tab.on{color:var(--txt);font-weight:700}
+  .m-tab.on::after{
+    content:"";position:absolute;left:50%;bottom:0;transform:translateX(-50%);
+    width:18px;height:2px;border-radius:99px;
+    background:var(--grad);box-shadow:0 0 10px rgba(34,211,238,.8);
+  }
+  .m-tab:active{color:var(--txt)}
+  .m-tabs-btn{
+    flex:none;width:28px;height:28px;display:grid;place-items:center;border-radius:50%;
+    color:var(--dim);border:1px solid var(--line);background:rgba(255,255,255,.04);
+    transition:.2s var(--ease);
+  }
+  .m-tabs-btn .i{width:14px;height:14px}
+  .m-tabs-btn:active{transform:scale(.92);color:#fff}
+  .m-tabs-add{color:var(--cyan);border-color:rgba(34,211,238,.4);background:rgba(34,211,238,.1)}
+  .m-tabs-add .i{width:15px;height:15px}
+
+  /* ── 快捷入口：原侧栏的四个整页入口 ── */
+  .m-quick{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 0 16px}
+  .m-quick-item{
+    position:relative;display:flex;flex-direction:column;align-items:center;gap:6px;
+    padding:12px 4px 10px;border-radius:14px;
+    border:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.04);
+    transition:transform .18s var(--ease),background .2s var(--ease);
+  }
+  .m-quick-item:active{transform:scale(.97);background:rgba(255,255,255,.08)}
+  .m-quick-item .i{width:20px;height:20px;color:var(--txt-2)}
+  .m-quick-item span{font-size:11.5px;color:var(--txt-2);letter-spacing:.02em;white-space:nowrap}
+  .m-quick-n{
+    position:absolute;top:6px;right:7px;min-width:15px;height:15px;padding:0 4px;
+    display:grid;place-items:center;border-radius:99px;
+    /* 标签是 <i>，默认会走斜体，数字必须正着写 */
+    font-size:9.5px;font-weight:700;font-style:normal;font-variant-numeric:tabular-nums;
+    color:#04121a;background:linear-gradient(140deg,#22d3ee,#a855f7);
+  }
 
   /* ── 曲目行 ── */
   .track{padding:8px;gap:10px;min-height:52px}
@@ -73,19 +148,60 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   }
   .track-end:empty{display:none}
 
-  /* ── 播放条：只留最关键的四颗 ── */
-  .playerbar{height:var(--pb-h);padding:0 12px;gap:10px}
-  .playerbar::before{opacity:.5}
-  .pb-left{gap:10px;max-width:58%}
-  .pb-cover{width:42px;height:42px;border-radius:10px}
-  .pb-title{font-size:12.5px;max-width:46vw}
-  .pb-sub{font-size:10.5px;max-width:46vw}
-  /* 播放控制占满中区，播放/上一首/下一首靠右对齐；右下角那组在手机上不再占位 */
-  .pb-controls{gap:2px;width:100%}
+  /* ── 播放条：封面 + 标题/时间 + 播放键 + 队列，单行布局 ── */
+  /* 毛玻璃保留，模糊半径比桌面收一档：滚动时这一条要跟着内容重算，手机上省一点 */
+  .playerbar{
+    height:var(--pb-h);padding:0 10px;gap:6px;
+    -webkit-backdrop-filter:blur(14px) saturate(135%);
+    backdrop-filter:blur(14px) saturate(135%);
+  }
+  /* 顶部那条霓虹分隔线让位给进度条，避免两层线叠在一起 */
+  .playerbar::before{display:none}
+
+  .pb-left{flex:1 1 auto;min-width:0;max-width:none;gap:10px;padding:4px 0}
+  /* 收藏键在手机上收进播放页：components.css 的 .icon-btn{display:grid} 会盖掉
+     layout.css 里的 .pb-fav{display:none}，所以这里要再显式关一次 */
+  .playerbar .pb-fav{display:none}
+  .pb-cover{width:40px;height:40px;border-radius:9px}
+  .pb-meta{flex:1;min-width:0;gap:2px}
+  .pb-line{width:100%}
+  /* 标题一行到底：省略号只吃标题本身，右侧按钮不跟着挤 */
+  .pb-title{flex:1 1 auto;min-width:0;max-width:none;font-size:13px;line-height:1.32}
+  /* 第二行换成时间，专辑名/集数留给播放页 */
+  .pb-sub{display:none}
+  .pb-time{
+    display:block;font-size:11px;line-height:1.25;
+    color:var(--dim);letter-spacing:.02em;
+    font-variant-numeric:tabular-nums;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+
+  /* 中区只留播放键，右下角那组在手机上不再占位 */
+  .pb-center{flex:0 0 auto;width:auto;min-width:0}
+  .pb-controls{gap:0;width:auto;justify-content:flex-end}
   .pb-right{display:none}
-  #btnBack15,#btnFwd15,.pb-right .rate-chip{display:none}
+  #btnPrev,#btnBack15,#btnFwd15,#btnNext{display:none}
+  /* 播放键改描边圆钮：跟播放页那套浅色处理（细轨道 + 白色填充）保持同一套视觉 */
+  .playerbar .play-btn{
+    width:42px;height:42px;
+    background:transparent;color:var(--txt);
+    border:1.5px solid rgba(255,255,255,.4);
+    box-shadow:none;
+  }
+  .playerbar .play-btn .i{width:18px;height:18px;transform:none}
+  .playerbar .play-btn:hover{transform:none;box-shadow:none;border-color:rgba(255,255,255,.62)}
+  .playerbar .play-btn:active{transform:scale(.94);background:rgba(255,255,255,.08)}
   .icon-btn{width:38px;height:38px}
-  .play-btn{width:40px;height:40px}
+  /* 队列入口（写在 .icon-btn 之后，尺寸才不被上一条盖掉） */
+  .playerbar .pb-queue{display:grid;width:40px;height:40px;margin-left:6px;color:var(--txt-2)}
+  .playerbar .pb-queue .i{width:22px;height:22px}
+
+  /* 顶部细进度线：颜色对齐播放页详情那条（浅色渐变、去掉霓虹光晕） */
+  .pb-progress{height:3px;background:rgba(255,255,255,.15)}
+  .pb-progress-fill{
+    background:linear-gradient(90deg,rgba(255,255,255,.72),#fff);
+    box-shadow:none;
+  }
 
   /* ── 全屏播放页：新版布局见下方「竖屏 + 横屏共用」块 ── */
   .chip{height:28px;padding:0 10px;font-size:11px}

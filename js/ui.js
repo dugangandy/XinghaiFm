@@ -41,12 +41,14 @@
     refs = {
       view: $('view'), nav: $('nav'), catList: $('catList'), libStat: $('libStat'),
       topbar: $('topbar'), sidebar: $('sidebar'), drawerMask: $('drawerMask'), btnMenu: $('btnMenu'), brand: $('brand'), brandVer: $('brandVer'),
+      tbBrand: $('tbBrand'), btnSettings: $('btnSettings'),
       libSwitch: $('libSwitch'), libName: $('libName'), libPath: $('libPath'), libBadge: $('libBadge'),
       btnSync: $('btnSync'), btnAddCat: $('btnAddCat'),
       searchInput: $('searchInput'), searchClear: $('searchClear'),
       scanState: $('scanState'), scanStateText: $('scanStateText'),
       linkState: $('linkState'), linkStateText: $('linkStateText'),
-      playerbar: $('playerbar'), pbCover: $('pbCover'), pbTitle: $('pbTitle'), pbSub: $('pbSub'), pbFav: $('pbFav'), pbKind: $('pbKind'),
+      playerbar: $('playerbar'), pbCover: $('pbCover'), pbTitle: $('pbTitle'), pbSub: $('pbSub'), pbTime: $('pbTime'), pbFav: $('pbFav'), pbKind: $('pbKind'),
+      pbQueue: $('pbQueue'),
       btnPrev: $('btnPrev'), btnPlay: $('btnPlay'), btnNext: $('btnNext'),
       btnBack15: $('btnBack15'), btnFwd15: $('btnFwd15'),
       pbCur: $('pbCur'), pbDur: $('pbDur'), pbScrub: $('pbScrub'), pbTip: $('pbTip'),
@@ -416,21 +418,27 @@
     });
   }
 
-  /* ── 侧栏 ── */
-  function renderNav() {
+  /* ── 导航 ── */
+  /* 导航唯一数据源：桌面侧栏和手机首页的快捷入口都吃这一份，避免两套计数逻辑漂移 */
+  function navItems() {
     const all = L.albums();
     const favCount = all.filter(a => a.fav && !a.hidden).length
       + (FM.fs.favTrackIds ? FM.fs.favTrackIds.size : 0);
-    const cont = continueList(999).length;
-    const recent = recentList(999).length;
     const items = [
       { key: 'home', hash: '#/', label: '首页', icon: 'home', count: all.filter(a => !a.hidden).length },
-      { key: 'continue', hash: '#/continue', label: '继续收听', icon: 'clock', count: cont },
-      { key: 'recent', hash: '#/recent', label: '最近播放', icon: 'headphones', count: recent },
+      { key: 'continue', hash: '#/continue', label: '继续收听', icon: 'clock', count: continueList(999).length },
+      { key: 'recent', hash: '#/recent', label: '最近播放', icon: 'headphones', count: recentList(999).length },
       { key: 'fav', hash: '#/fav', label: '我的收藏', icon: 'heart', count: favCount }
     ];
     /* 下载管理只存在于 APK：和「我的收藏」一样是个网页视图 */
     if (canDownload()) items.push({ key: 'downloads', hash: '#/downloads', label: '下载管理', icon: 'download', count: dlCount() });
+    return items;
+  }
+
+  function renderNav() {
+    /* 手机上侧栏整块不出现（导航改为首页快捷入口），这里省掉一次 progress() 全遍历 */
+    if (isPhone()) { refs.nav.innerHTML = ''; return; }
+    const items = navItems();
     refs.nav.innerHTML = items.map(function (it) {
       const on = (state.view === it.key
         || (it.key === 'downloads' && state.view.indexOf('dl') === 0)   /* dlAlbum / dlRemove */
@@ -587,6 +595,7 @@
     }
     observeCards(v, quiet);
     applyPlayingState(v);
+    centerActiveTab();
     if (state.view === 'album' && !state.q && state.albumId) {
       probeDurations(L.albumTracks(state.albumId));
     } else {
@@ -598,15 +607,10 @@
   function initialOf(a) { return U.initials(a.title, true); }
   function albumType(a) { return a.videoCount ? '视频' : '本地有声书'; }
 
+  /* 卡片只留封面 + 标题：集数 / 大小 / 进度等信息在专辑详情页展示（hero-meta），
+     列表页少一层文字更干净，也省掉每张卡的 albumStat 计算 */
   function albumCard(a) {
-    const st = L.albumStat(a);
-    const pct = st.pct;
-    const done = a.count > 0 && st.doneCount >= a.count;
-    const badges = [];
-    if (done) badges.push('<span class="card-badge done">已听完</span>');
-    const tags = (a.tags && a.tags.length) ? a.tags.join(' · ') : albumType(a);
     const initial = initialOf(a);
-    const countLabel = a.videoCount === a.count ? a.count + ' 视频' : a.count + ' 集' + (a.videoCount ? ' · ' + a.videoCount + ' 视频' : '');
     const art = a.cover
       ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">'
       : '<div class="rings"><i></i><i></i><i></i></div><span class="card-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span>';
@@ -615,14 +619,10 @@
       '<div class="card-cover' + (a.cover ? ' has-photo' : '') + '">' +
         art +
         (a.fav ? '<span class="card-fav" title="已收藏">' + icon('heart-fill') + '</span>' : '') +
-        badges.join('') +
         '<button class="card-play" data-act="play-album" data-id="' + a.id + '" title="播放全部">' + icon('play') + '</button>' +
       '</div>' +
       '<div class="card-body">' +
         '<h3 class="card-title" title="' + esc(a.title) + '">' + esc(a.title) + '</h3>' +
-        '<div class="card-tags">' + esc(tags) + '</div>' +
-        '<div class="card-foot"><span>' + countLabel + '</span><span class="dot"></span><span>' + fmtS(a.size) + '</span><span class="dot"></span><span>' + pct + '%</span></div>' +
-        '<div class="card-prog"><i style="width:' + pct + '%"></i></div>' +
       '</div>' +
     '</article>';
   }
@@ -695,20 +695,69 @@
     return (lib && lib.name) || L.rootName || '本地资源库';
   }
 
+  /* ── 手机端首页工具区：分类 tab 行 + 快捷入口 ── */
+  /* 单行分类 tab：全部 → 各分类 →（选中时）编辑 → + 新建。横向滑动，不折行 */
+  function mobileCatTabs(activeId) {
+    const tabs = [{ id: '', label: '全部' }].concat(L.cats().map(function (c) {
+      return { id: c.id, label: c.name };
+    }));
+    const btns = tabs.map(function (t) {
+      const on = (t.id || '') === (activeId || '');
+      return '<button class="m-tab' + (on ? ' on' : '') + '" data-act="tab-cat" data-id="' + esc(t.id || '') + '">' +
+        esc(t.label) + '</button>';
+    }).join('');
+    /* 手机上 .head-actions 被隐藏，分类的编辑入口挪到 tab 行里，紧跟「+」前面 */
+    const edit = activeId
+      ? '<button class="m-tabs-btn" data-act="edit-cat" data-id="' + esc(activeId) + '" title="编辑这个分类">' + icon('edit') + '</button>'
+      : '';
+    return '<div class="m-tabs">' +
+      '<div class="m-tabs-scroll" id="mTabsScroll">' + btns + '</div>' +
+      edit +
+      '<button class="m-tabs-btn m-tabs-add" data-act="edit-cat" title="新建分类">' + icon('plus') + '</button>' +
+      '</div>';
+  }
+
+  /* 手机首页的快捷入口：承接原侧栏里的整页导航（首页本身不用出现在这里） */
+  function mobileQuickRow() {
+    const items = navItems().filter(function (it) { return it.key !== 'home'; });
+    return '<div class="m-quick">' + items.map(function (it) {
+      return '<button class="m-quick-item" data-act="nav" data-hash="' + it.hash + '">' +
+        icon(it.icon) + '<span>' + it.label + '</span>' +
+        (it.count ? '<i class="m-quick-n">' + it.count + '</i>' : '') +
+        '</button>';
+    }).join('') + '</div>';
+  }
+
+  /* 选中的 tab 可能在横向滚动条外：画完把它滚到可视区中间 */
+  function centerActiveTab() {
+    const box = refs.view.querySelector('.m-tabs-scroll');
+    const on = box && box.querySelector('.m-tab.on');
+    if (!box || !on) return;
+    box.scrollLeft = Math.max(0, on.offsetLeft - box.clientWidth / 2 + on.offsetWidth / 2);
+  }
+
   function viewHome() {
     const all = L.allAlbums({ showHidden: state.showHidden });
-    const s = L.stats();
     const wrap = U.el('div');
     const hiddenCount = L.albums().filter(a => a.hidden).length;
+    const phone = isPhone();
 
-    const head = '<div class="view-head"><div>' +
-      '<div class="page-title">全部专辑<span class="accent"> · </span><span style="font-size:14px;color:var(--dim);font-weight:500">' + esc(libLabel()) + '</span></div>' +
-      '<div class="page-sub">' + s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size) +
-        (s.done ? ' · 已听完 ' + s.done + ' 集' : '') + '</div></div></div>';
+    /* 手机首页不出头部那一行（库名 / 专辑数 / 大小）：这些统计挪到「我的资源库」里看，
+       手机上一进来就是 tab 行 + 内容，省掉一次 stats() 全遍历 */
+    let head = '';
+    if (!phone) {
+      const s = L.stats();
+      const stats = s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size) +
+        (s.done ? ' · 已听完 ' + s.done + ' 集' : '');
+      head = '<div class="view-head"><div>' +
+        '<div class="page-title">全部专辑<span class="accent"> · </span><span style="font-size:14px;color:var(--dim);font-weight:500">' + esc(libLabel()) + '</span></div>' +
+        '<div class="page-sub">' + stats + '</div></div></div>';
+    }
 
 
     let resume = '';
-    const cont = continueList(1)[0];
+    /* 手机上不再有「继续播放」大卡：继续听走快捷入口 + 底部播放条 */
+    const cont = phone ? null : continueList(1)[0];
     if (cont) {
       const a = L.album(cont.albumId);
       const p = L.progressOf(cont.id) || {};
@@ -735,7 +784,9 @@
       ? '<div style="margin-top:22px;text-align:center"><button class="link-btn" data-act="toggle-hidden">' + (state.showHidden ? '隐藏 ' : '显示 ') + hiddenCount + ' 个已隐藏专辑</button></div>'
       : '';
 
-    wrap.innerHTML = head + resume +
+    wrap.innerHTML = head +
+      (phone ? mobileCatTabs('') + mobileQuickRow() : '') +
+      resume +
       (all.length ? gridHtml(all) : '') + hiddenLink;
     return wrap;
   }
@@ -762,12 +813,20 @@
 
   /* 收藏页布局随宽度切换：跨过断点时重画一次（窗口拉宽回桌面卡片） */
   let favNarrow = isNarrow();
+  /* 手机断点也记一份：跨过 760 时首页/分类页的结构（tab 行、快捷入口）要换一套 */
+  let phoneWide = isPhone();
   window.addEventListener('resize', U.debounce(function () {
-    const now = isNarrow();
-    if (now === favNarrow) return;
-    favNarrow = now;
     if (!refs || !refs.view) return;
-    if (state.view === 'fav') renderMain({ quiet: true });
+    const now = isNarrow();
+    if (now !== favNarrow) {
+      favNarrow = now;
+      if (state.view === 'fav') renderMain({ quiet: true });
+    }
+    const nowPhone = isPhone();
+    if (nowPhone !== phoneWide) {
+      phoneWide = nowPhone;
+      if (state.view === 'home' || state.view === 'cat') { renderNav(); renderMain({ quiet: true }); }
+    }
   }, 200));
 
   /* 收藏的曲目：按收藏时间倒序（Set 保持写入顺序，最后一条最新） */
@@ -847,7 +906,9 @@
     if (!cat) return viewGridPage('分类不存在', '该分类可能已被删除', L.albums());
     const list = L.allAlbums({ cat: catId, showHidden: state.showHidden });
     const wrap = U.el('div');
-    wrap.innerHTML = '<div class="view-head"><div>' +
+    /* 手机端把分类 tab 行带进分类页，点别的 tab 就地换页，不用先退回首页 */
+    wrap.innerHTML = (isPhone() ? mobileCatTabs(catId) : '') +
+      '<div class="view-head"><div>' +
       '<div class="page-title"><i style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + cat.color + ';box-shadow:0 0 14px ' + cat.color + '"></i>' + esc(cat.name) + '</div>' +
       '<div class="page-sub">' + list.length + ' 个专辑</div></div>' +
       '<div class="head-actions"><button class="btn btn-ghost" data-act="edit-cat" data-id="' + cat.id + '">' + icon('edit') + '编辑分类</button></div></div>' +
@@ -1643,6 +1704,14 @@
     refs.brand.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goHome(); }
     });
+    /* 手机顶栏：左侧品牌回首页，右侧设置菜单 */
+    if (refs.tbBrand) {
+      refs.tbBrand.addEventListener('click', goHome);
+      refs.tbBrand.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goHome(); }
+      });
+    }
+    if (refs.btnSettings) refs.btnSettings.addEventListener('click', openSettingsMenu);
     refs.libSwitch.addEventListener('click', function () { openLibMenu(refs.libSwitch); });
     refs.btnSync.addEventListener('click', function () { doScan(); });
     if (refs.btnLogout) {
@@ -1922,6 +1991,8 @@
         case 'more-album': albumMenu(id, actEl); break;
         case 'more-track': trackMenu(id, actEl); break;
         case 'edit-cat': editCat(id); break;
+        case 'tab-cat': if (id) go('#/cat/' + id); else go('#/'); break;
+        case 'nav': if (actEl.dataset.hash) go(actEl.dataset.hash); break;
         case 'open-downloads': if (FM.android) FM.android.openDownloads(); break;
         case 'back': history.back(); break;
         case 'resume': { const t = L.track(id); if (t) P.playTrack(t); break; }
@@ -2645,6 +2716,8 @@
     if (scrubbing) return;
     refs.pbCur.textContent = fmtT(cur);
     refs.pbDur.textContent = fmtT(dur);
+    /* 手机端播放条第二行：当前/总时长 */
+    refs.pbTime.textContent = fmtT(cur) + '/' + fmtT(dur);
     refs.shCur.textContent = fmtT(cur);
     refs.shDur.textContent = fmtT(dur);
     refs.vCur.textContent = fmtT(cur);
@@ -2810,6 +2883,12 @@
     refs.btnCollapse.addEventListener('click', closeSheet);
     refs.btnSheetQueue.addEventListener('click', toggleQueue);
     refs.btnQueueClose.addEventListener('click', toggleQueue);
+    /* 手机端播放条上的队列键：队列面板挂在播放页里，先确保播放页打开，
+       打开不了（壳内视频由原生播放器接管）就不动了 */
+    refs.pbQueue.addEventListener('click', function () {
+      if (!refs.sheet.classList.contains('open')) openSheet();
+      if (refs.sheet.classList.contains('open') && !queueOpen) toggleQueue();
+    });
 
     refs.btnRate.addEventListener('click', function (e) { rateMenu(e.currentTarget); });
     refs.shRate.addEventListener('click', function (e) { rateMenu(e.currentTarget); });
@@ -3271,6 +3350,64 @@
     openMenu(anchor, items);
   }
 
+  /* ── 设置（手机顶栏入口）──
+     侧栏在手机上不出现，原来的资源库 / 扫描 / 服务器入口全部收进这个菜单 */
+  function openSettingsMenu() {
+    const items = [
+      { label: '我的资源库', icon: 'library', onClick: openLibDrawer },
+      { label: '重新扫描', icon: 'refresh', onClick: doScan }
+    ];
+    if (FM.fs.desktop) {
+      items.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'chevron', onClick: openRemoteDialog });
+    } else if (FM.android) {
+      items.push({ label: '服务器设置…', icon: 'chevron', onClick: function () { FM.android.openSettings(); } });
+    }
+    items.push({ sep: true });
+    items.push({ label: '关于星海 FM', icon: 'headphones', onClick: openAbout });
+    /* 退出登录只对浏览器直连服务器有意义（与 syncMode() 的判定保持一致） */
+    if (!FM.fs.desktop && !FM.android && FM.fs.server) {
+      items.push({ label: '退出登录', icon: 'logout', danger: true, onClick: function () { location.href = '/__auth/logout'; } });
+    }
+    openMenu(refs.btnSettings, items);
+  }
+
+  /* 版本号来源三端不同：Electron 读 app 版本，APK 读壳版本，浏览器读服务端 package.json */
+  function appVersion() {
+    if (window.fmNative && window.fmNative.version) return String(window.fmNative.version);
+    if (FM.android && FM.android.native) { try { return String(FM.android.version() || ''); } catch (e) {} }
+    if (FM.fs.server) return String(FM.fs.version || '');
+    return '';
+  }
+
+  function openAbout() {
+    const s = L.stats();
+    const lib = FM.fs.active();
+    const v = appVersion();
+    const form = (FM.android && FM.android.native) ? '安卓 App'
+      : (FM.fs.desktop ? '桌面版'
+        : (FM.fs.server ? '网页版 · 直连服务器' : '网页版 · 本地目录'));
+    const libText = !lib ? '未选择'
+      : (lib.name + (FM.fs.remote ? ' · 远程 ' + remoteHost() : ''));
+    const body = U.el('div', { class: 'about' });
+    body.innerHTML =
+      '<div class="about-head">' +
+        '<div class="brand-mark eq-mark about-mark"><span></span><span></span><span></span><span></span><span></span></div>' +
+        '<div class="about-name"><b>星海 FM</b><small>你的私人资源库</small></div>' +
+        (v ? '<span class="about-ver">v' + esc(v) + '</span>' : '') +
+      '</div>' +
+      '<div class="about-rows">' +
+        '<div class="about-row"><span>运行形态</span><b>' + esc(form) + '</b></div>' +
+        '<div class="about-row"><span>资源库</span><b>' + esc(libText) + '</b></div>' +
+        '<div class="about-row"><span>内容</span><b>' + s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size) + '</b></div>' +
+      '</div>' +
+      '<p class="about-note">全部音频都留在你自己的磁盘或服务器上，星海 FM 不会上传任何内容。</p>';
+    openModal({
+      title: '关于',
+      body: body,
+      actions: [{ label: '关闭', cls: 'btn-primary' }]
+    });
+  }
+
   /* 资源库设置：右侧抽屉，不遮住主界面，切库的上下文还在 */
   function openLibDrawer() {
     const sub = U.el('small', { class: 'drawer-sub' });
@@ -3340,6 +3477,22 @@
 
     const handle = { close: close, panel: panel };
 
+    /* 每个库的规模行：当前库用内存里的索引（口径与首页/侧栏一致），
+       其它库读 localStorage 里按库缓存的索引快照；从没打开过的库没有缓存，就不显示这一行 */
+    function libScaleText(l) {
+      if (l.missing) return '';
+      if (l.id === FM.fs.activeId && L.albums().length) {
+        const s = L.stats();
+        return s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size);
+      }
+      const idx = FM.db.index(l.id);
+      if (!idx || !idx.albums || !idx.albums.length) return '';
+      let size = 0;
+      idx.albums.forEach(function (a) { size += a.size || 0; });
+      const tracks = (idx.tracks || []).length;
+      return idx.albums.length + ' 个专辑' + (tracks ? ' · ' + tracks + ' 集' : '') + (size ? ' · ' + fmtS(size) : '');
+    }
+
     function draw() {
       const list = FM.fs.libs();
       const curLib = list.filter(function (x) { return x.id === FM.fs.activeId; })[0];
@@ -3354,11 +3507,14 @@
       list.forEach(function (l) {
         const cur = l.id === FM.fs.activeId;
         const row = U.el('div', { class: 'lib-row' + (cur ? ' current' : '') + (l.missing ? ' missing' : '') });
+        const scale = libScaleText(l);
         row.innerHTML =
           '<span class="lib-ico">' + icon(l.missing ? 'moon' : ((l.fixed || FM.fs.remote) ? 'library' : 'folder')) + '</span>' +
           '<div class="lib-info"><b>' + esc(l.name) + '</b><small>' +
             esc((l.fixed || FM.fs.remote) ? '远程资源库' : String(l.path || '').replace(/\\/g, '/')) +
-          '</small>' + (l.missing ? '<em>资源库目录不存在，需要重新定位</em>' : '') + '</div>' +
+          '</small>' +
+          (scale ? '<span class="lib-stats">' + esc(scale) + '</span>' : '') +
+          (l.missing ? '<em>资源库目录不存在，需要重新定位</em>' : '') + '</div>' +
           (cur ? '<span class="lib-cur">当前</span>' : '') +
           (l.fixed ? '' : '<button class="icon-btn lib-more" title="更多">' + icon('more') + '</button>');
         const more = row.querySelector('.lib-more');
@@ -3747,10 +3903,7 @@
   function paintVersion() {
     const el = refs.brandVer;
     if (!el) return;
-    let v = '';
-    if (window.fmNative && window.fmNative.version) v = String(window.fmNative.version);
-    else if (FM.android && FM.android.native) { try { v = String(FM.android.version() || ''); } catch (e) {} }
-    else if (FM.fs.server) v = String(FM.fs.version || '');
+    const v = appVersion();
     el.textContent = v ? 'v' + v : '';
     el.hidden = !v;
   }
