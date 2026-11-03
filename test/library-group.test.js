@@ -162,6 +162,31 @@ test('自动检测：专辑 id 与对应旧口径一致（切档不丢整理数�
   assert.equal(U.uid('a', sub.key), U.uid('a', cat[0].key));
 });
 
+test('自动检测：分类下多一层分组（分类/分组/专辑）也能认出专辑', () => {
+  const groups = L.groupFiles([
+    f('管理/PMP/希赛PMP第七版/01.mp3'), f('管理/PMP/希赛PMP第七版/02.mp3'),
+    f('管理/PMP/希赛ACP敏捷/01.mp3'),
+    f('管理/领导力/01.mp3')                 // 同分类里另一本是「分类/专辑」
+  ], 'auto');
+  assert.deepEqual(keys(groups), [
+    '管理/PMP/希赛PMP第七版', '管理/PMP/希赛ACP敏捷', '管理/领导力'
+  ].sort());
+  groups.forEach(function (g) {
+    assert.equal(g.cat, '管理', '分类固定是一级目录');
+  });
+  assert.equal(groups.find(g => g.key === '管理/PMP/希赛PMP第七版').files.length, 2);
+});
+
+test('自动检测：音频放在 MP3 / 音频 这类容器目录里时不算专辑', () => {
+  const groups = L.groupFiles([
+    f('计算机/极客时间/Kubernetes入门实战课/MP3/01.mp3'),
+    f('计算机/极客时间/Kubernetes入门实战课/音频/02.mp3')
+  ], 'auto');
+  assert.deepEqual(keys(groups), ['计算机/极客时间/Kubernetes入门实战课']);
+  assert.equal(groups[0].cat, '计算机');
+  assert.equal(groups[0].dirName, 'Kubernetes入门实战课');
+});
+
 test('自动检测：根目录散落文件仍归「未分类单集」', () => {
   const groups = L.groupFiles([f('散集.mp3'), f('三体/01.mp3')], 'auto');
   const root = groups.find(g => g.key === '__root__');

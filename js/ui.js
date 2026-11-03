@@ -460,6 +460,11 @@
   }
 
   function renderCats() {
+    /* 没有加载资源库前，整块「分类」区域都不显示 */
+    const lib = FM.fs.active();
+    const section = refs.catList && refs.catList.closest('.side-section');
+    if (section) section.hidden = !lib;
+    if (!lib) return;
     const cats = L.cats();
     if (!cats.length) {
       /* 分类按资源库独立：非喜马拉雅库本来就是空的；三端都能新建 */
@@ -500,11 +505,18 @@
       return;
     }
     if (!L.albums().length) {
-      refs.libStat.textContent = lib ? '这个资源库里还没有音频' : '尚未载入资源库';
+      /* 没有选中任何资源库时不再显示「尚未载入资源库」这一行占位（卡片里已有「选择资源库 / 点这里添加资源库」） */
+      if (lib) {
+        refs.libStat.textContent = '这个资源库里还没有音频';
+        if (refs.libStat) refs.libStat.hidden = false;
+      } else if (refs.libStat) {
+        refs.libStat.hidden = true;
+      }
       return;
     }
     const s = L.stats();
     refs.libStat.innerHTML = s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size);
+    if (refs.libStat) refs.libStat.hidden = false;
   }
 
   /* 远程服务器去掉协议头的显示名，例如 192.168.1.8:8080 */
@@ -838,6 +850,12 @@
     if (FM.android) return false;
     if (FM.fs.desktop) return true;
     return !/Android|iPhone|iPod|iPad|Mobile/i.test(navigator.userAgent || '');
+  }
+  /* 网页端（连服务端、多用户）下只有管理员能管理资源库；普通用户禁用「资源库设置」页面。
+     以「连到了服务端」（serverReached）判定网页端，而不是 server（有资源库）——没有资源库的服务端用户同样算网页端。
+     桌面端 / 纯浏览器本地目录没有角色概念，始终放行。 */
+  function canManageLib() {
+    return !(FM.fs.serverReached && !FM.fs.isAdmin);
   }
 
   /* 收藏页布局随宽度切换：跨过断点时重画一次（窗口拉宽回桌面卡片） */
@@ -1711,12 +1729,15 @@
     const srv = !!FM.fs.server;
     const secure = FM.fs.supportsPicker();
     const app = !srv && !!FM.android;      /* 安卓壳里但没读到库 */
-    /* 三种空状态：远端有库 / 壳里读不到库 / 本机浏览器还没选目录 */
+    const web = !!FM.fs.serverReached && !FM.android && !FM.fs.desktop;  /* 连到服务端但还没资源库（网页端） */
+    /* 四种空状态：远端有库 / 壳里读不到库 / 网页端连到服务端但没库 / 本机浏览器还没选目录 */
     let text, steps, actions;
     if (srv) {
       text = FM.android
         ? '远端模式：资源库由主机上的目录「' + esc(FM.fs.rootName || '远程资源库') + '」提供。<br>加书请在主机上放进这个目录并重新扫描，手机这边会自动同步。'
-        : '远端模式：资源库由主机上的目录「' + esc(FM.fs.rootName || '远程资源库') + '」提供。<br>加书请在主机上放进这个目录，再点下面的重新扫描。';
+        : (canManageLib()
+          ? '远端模式：资源库由主机上的目录「' + esc(FM.fs.rootName || '远程资源库') + '」提供。<br>加书请在主机上放进这个目录，再点下面的重新扫描。'
+          : '远端模式：资源库由主机上的目录「' + esc(FM.fs.rootName || '远程资源库') + '」提供。<br>加书请在主机上放进这个目录，内容更新后会在你下次打开时自动同步。');
       steps = FM.android
         ? '<span class="step"><b>1</b>主机放入音频</span>' +
           '<span class="step"><b>2</b>主机重新扫描</span>' +
@@ -1724,10 +1745,12 @@
         : '<span class="step"><b>1</b>主机放入音频</span>' +
           '<span class="step"><b>2</b>重新扫描</span>' +
           '<span class="step"><b>3</b>分类、倍速、播放</span>';
-      /* 手机端不提供扫描入口，只留重试（连不上主机时用） */
+      /* 手机端不提供扫描入口，只留重试（连不上主机时用）；网页端普通用户也禁用扫描 */
       actions = FM.android
         ? '<button class="btn" data-act="retry" style="height:44px;padding:0 22px">' + icon('refresh') + '重试连接</button>'
-        : '<button class="btn btn-primary" data-act="rescan" style="height:44px;padding:0 26px">' + icon('refresh') + '重新扫描</button>';
+        : (canManageLib()
+          ? '<button class="btn btn-primary" data-act="rescan" style="height:44px;padding:0 26px">' + icon('refresh') + '重新扫描</button>'
+          : '');
     } else if (app) {
       text = '还没读到电脑上的资源库。<br>先在电脑端添加一个有声书目录，或确认服务是否在运行。';
       steps = '<span class="step"><b>1</b>电脑上运行服务</span>' +
@@ -1735,6 +1758,19 @@
         '<span class="step"><b>3</b>手机自动读到</span>';
       actions = '<button class="btn btn-primary" data-act="retry" style="height:44px;padding:0 26px">' + icon('refresh') + '重试连接</button>' +
         '<button class="btn" data-act="app-settings" style="height:44px;padding:0 20px">' + icon('edit') + '服务器地址</button>';
+    } else if (web) {
+      /* 连到服务端但还没资源库：管理员可以给服务器指定目录，普通用户只能等管理员加 */
+      if (FM.fs.isAdmin) {
+        text = '还没有资源库。点下面的「添加资源库」，在运行服务的那台机器上指定一个存放音频的目录。';
+        steps = '<span class="step"><b>1</b>指定服务器目录</span>' +
+          '<span class="step"><b>2</b>自动扫描</span>' +
+          '<span class="step"><b>3</b>分类、倍速、播放</span>';
+        actions = '<button class="btn btn-primary" data-act="scan" style="height:44px;padding:0 26px">' + icon('folder') + '添加资源库</button>';
+      } else {
+        text = '还没有资源库，请联系管理员添加。';
+        steps = '';
+        actions = '';
+      }
     } else {
       text = '选择一个存放有声书的文件夹，星海 FM 会自动扫描并整理成专辑。';
       steps = '<span class="step"><b>1</b>选择文件夹</span>' +
@@ -3421,7 +3457,7 @@
       };
     });
     if (list.length) items.push({ sep: true });
-    items.push({ label: '资源库设置…', icon: 'edit', onClick: openLibDrawer });
+    if (canManageLib()) items.push({ label: '资源库设置…', icon: 'edit', onClick: openLibDrawer });
     if (FM.android) {
       items.push({ label: '服务器地址…', icon: 'chevron', onClick: function () { FM.android.openSettings(); } });
     }
@@ -3434,9 +3470,8 @@
   /* ── 设置（手机顶栏入口）──
      侧栏在手机上不出现，原来的资源库 / 扫描 / 服务器入口全部收进这个菜单 */
   function openSettingsMenu() {
-    const items = [
-      { label: '我的资源库', icon: 'library', onClick: openLibDrawer }
-    ];
+    const items = [];
+    if (canManageLib()) items.push({ label: '我的资源库', icon: 'library', onClick: openLibDrawer });
     /* 这个菜单只出现在手机顶栏；目录结构只在桌面端改，这里不给入口 */
     const curLib = FM.fs.active();
     if (curLib && canEditGroup()) {
@@ -3444,8 +3479,9 @@
         .forEach(function (it) { items.push(it); });
     }
     /* 手机端不给扫描入口：整库扫描跑在主机上，手机点一次就是主机全盘 readdir + stat。
-       主机扫过之后手机这边会自动同步（见 syncScanIfNewer），不需要手动触发 */
-    if (!FM.android) items.push({ label: '重新扫描', icon: 'refresh', onClick: doScan });
+       主机扫过之后手机这边会自动同步（见 syncScanIfNewer），不需要手动触发。
+       网页端普通用户同样禁用扫描（只读）。 */
+    if (!FM.android && canManageLib()) items.push({ label: '重新扫描', icon: 'refresh', onClick: doScan });
     if (FM.fs.desktop) {
       items.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'chevron', onClick: openRemoteDialog });
     } else if (FM.android) {
@@ -3454,7 +3490,7 @@
     items.push({ sep: true });
     items.push({ label: '关于星海 FM', icon: 'headphones', onClick: openAbout });
     /* 退出登录只对浏览器直连服务器有意义（与 syncMode() 的判定保持一致） */
-    if (!FM.fs.desktop && !FM.android && FM.fs.server) {
+    if (!FM.fs.desktop && !FM.android && FM.fs.serverReached) {
       items.push({ label: '退出登录', icon: 'logout', danger: true, onClick: function () { location.href = '/__auth/logout'; } });
     }
     openMenu(refs.btnSettings, items);
@@ -3527,6 +3563,7 @@
       '<div class="lib-info"><b>' + esc(l.name) + '</b><small>' + esc(libPathText(l)) + '</small>' +
       (scale ? '<span class="lib-stats">' + esc(scale) + '</span>' : '') +
       (l.missing ? '<em>资源库目录不存在，需要重新定位</em>' : '') + '</div>' +
+      (l.shared ? '<span class="lib-share">共享</span>' : '') +
       (cur ? '<span class="lib-cur">当前</span>' : '');
   }
 
@@ -3535,14 +3572,15 @@
     const list = FM.fs.libs();
     const body = U.el('div', { class: 'lib-pick' });
     if (!list.length) {
-      body.innerHTML = '<div class="lib-empty">还没有资源库。点下面的「管理资源库」添加一个放音频的文件夹。</div>';
+      body.innerHTML = canManageLib()
+        ? '<div class="lib-empty">还没有资源库。点下面的「管理资源库」添加一个放音频的文件夹。</div>'
+        : '<div class="lib-empty">还没有资源库，请联系管理员添加。</div>';
       openModal({
         title: '选择资源库',
         body: body,
-        actions: [
-          { label: '管理资源库', cls: 'btn-ghost', onClick: function () { openLibDrawer(); } },
-          { label: '关闭', cls: 'btn-primary' }
-        ]
+        actions: (canManageLib()
+          ? [{ label: '管理资源库', cls: 'btn-ghost', onClick: function () { openLibDrawer(); } }]
+          : []).concat([{ label: '关闭', cls: 'btn-primary' }])
       });
       return;
     }
@@ -3559,10 +3597,9 @@
     const m = openModal({
       title: '选择资源库',
       body: body,
-      actions: [
-        { label: '管理资源库', cls: 'btn-ghost', onClick: function () { openLibDrawer(); } },
-        { label: '关闭', cls: 'btn-primary' }
-      ]
+      actions: (canManageLib()
+        ? [{ label: '管理资源库', cls: 'btn-ghost', onClick: function () { openLibDrawer(); } }]
+        : []).concat([{ label: '关闭', cls: 'btn-primary' }])
     });
     body.addEventListener('click', function (e) {
       const row = e.target.closest('.lib-row');
@@ -3579,6 +3616,8 @@
 
   /* 资源库设置：右侧抽屉，不遮住主界面，切库的上下文还在 */
   function openLibDrawer() {
+    /* 网页端普通用户：禁用资源库设置页（服务端已对写操作做管理员校验，这里前端再拦一道） */
+    if (!canManageLib()) { toast('只有管理员可以管理资源库', 'warn'); return; }
     const sub = U.el('small', { class: 'drawer-sub' });
     const list_ = U.el('div', { class: 'lib-list' });
     const mask = U.el('div', { class: 'lib-drawer-mask' });
@@ -3714,6 +3753,10 @@
       items.push({ label: '重新定位…', icon: 'folder', onClick: function () { relocateFlow(l, redraw); } });
       items.push({ label: '在文件夹中打开', icon: 'folder', onClick: function () { FM.fs.openLib(l.id); } });
     }
+    /* 共享：仅服务端多用户的管理员、且是自己名下可编辑的库才能指派给别人 */
+    if (FM.fs.isAdmin && FM.fs.server && !l.fixed) {
+      items.push({ label: '共享资源库', icon: 'share', onClick: function () { openShareDialog(l, redraw); } });
+    }
     items.push({ sep: true });
     items.push({
       label: '移除资源库', icon: 'trash', danger: true,
@@ -3729,13 +3772,92 @@
     openMenu(anchor, items);
   }
 
+  /* ── 共享资源库：把当前库指派给「所有人」或「指定用户」 ──
+     顶部只读展示库信息（和资源库设置页一致），下方选范围；选「指定用户」才展开多选。 */
+  function openShareDialog(l, redraw) {
+    /* 没共享过时默认「所有人」（与原型一致），共享过的按已有配置回填 */
+    const cur = l.shares || { targetAll: true, targets: [] };
+    const body = U.el('div', { class: 'share-dialog' });
+    const info = U.el('div', { class: 'lib-row share-lib' });
+    info.innerHTML = libRowHtml(l);
+    body.appendChild(info);
+
+    const scope = U.el('div', { class: 'share-scope' });
+    scope.innerHTML =
+      '<label class="share-opt"><input type="radio" name="share-scope" value="all"' + (cur.targetAll ? ' checked' : '') + '><span>所有人</span></label>' +
+      '<label class="share-opt"><input type="radio" name="share-scope" value="users"' + (cur.targetAll ? '' : ' checked') + '><span>指定用户</span></label>';
+    body.appendChild(scope);
+
+    const usersBox = U.el('div', { class: 'share-users' + (cur.targetAll ? '' : ' show') });
+    const search = U.el('input', { class: 'share-search', placeholder: '搜索用户…' });
+    const tools = U.el('div', { class: 'share-tools' });
+    tools.innerHTML = '<a data-act="all">全选</a><a data-act="none">清空</a>';
+    const userList = U.el('div', { class: 'share-user-list' });
+    usersBox.append(search, tools, userList);
+    body.appendChild(usersBox);
+
+    scope.addEventListener('change', function () {
+      const all = (scope.querySelector('input[value="all"]') || {}).checked;
+      usersBox.classList.toggle('show', !all);
+    });
+    search.addEventListener('input', function () {
+      const q = String(search.value || '').trim().toLowerCase();
+      userList.querySelectorAll('.share-user').forEach(function (row) {
+        row.style.display = row.textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
+      });
+    });
+    tools.addEventListener('click', function (e) {
+      const a = e.target.closest('a');
+      if (!a) return;
+      const on = a.dataset.act === 'all';
+      userList.querySelectorAll('input[type="checkbox"]').forEach(function (c) { c.checked = on; });
+    });
+
+    const m = openModal({
+      title: '共享资源库',
+      body: body,
+      actions: [
+        { label: '取消', cls: 'btn-ghost' },
+        {
+          label: '保存', cls: 'btn-primary',
+          onClick: function () {
+            const targetAll = !!(scope.querySelector('input[value="all"]') || {}).checked;
+            const ids = [];
+            userList.querySelectorAll('input[type="checkbox"]').forEach(function (c) { if (c.checked) ids.push(c.value); });
+            if (!targetAll && !ids.length) { toast('请至少选择一个用户', 'warn'); return false; }
+            FM.fs.share(l.id, targetAll, ids).then(function () {
+              toast(targetAll ? '已共享给所有人' : '已共享给 ' + ids.length + ' 位用户');
+              if (redraw) redraw();
+              m.close();
+            }, function (e) { toast((e && e.message) || '共享失败', 'warn'); });
+            return false;      /* 不自动关，等请求回来再关 */
+          }
+        }
+      ]
+    });
+
+    (async function () {
+      let users = [];
+      try {
+        const r = await FM.fs.apiFetch('/api/users', { cache: 'no-store' });
+        if (r.ok) users = await r.json();
+      } catch (e) {}
+      const pre = cur.targets || [];
+      userList.innerHTML = users.map(function (u) {
+        const on = pre.indexOf(u.id) >= 0;
+        return '<label class="share-user"><input type="checkbox" value="' + esc(u.id) + '"' + (on ? ' checked' : '') + '>' +
+          '<span>' + esc(u.username) + (u.role === 'admin' ? '<i class="share-role">管理员</i>' : '') + '</span></label>';
+      }).join('') || '<div class="share-empty">没有可选的用户</div>';
+    })();
+  }
+
   /* ── 目录结构三档：默认 / 二级目录 / 自动检测 ──
      只改分组口径，扫描缓存里的文件列表与口径无关，所以静默重扫一遍（读缓存、不走盘）就够。
      手机端不给入口（见 canEditGroup）：改口径会影响所有端看到的专辑数。 */
   const DIR_MODE_LABEL = {
     flat: ['默认', '每个文件夹是专辑', 'folder'],
     cat: ['二级目录', '一级文件夹是分类，二级是专辑', 'grid'],
-    auto: ['自动检测', '一级文件夹=分类，自动检测专辑', 'refresh']
+    auto: ['自动检测', '自动识别分类和专辑', 'refresh']
   };
   function libDirMode(l) {
     const m = l && l.dirMode;
@@ -3844,7 +3966,10 @@
   }
 
   function addLibFlow() {
-    if (FM.fs.server) { addLibByPath(); return; }
+    /* 网页端普通用户：禁用「添加资源库」（服务端已对写操作做管理员校验，这里前端再拦一道） */
+    if (!canManageLib()) { toast('只有管理员可以添加资源库', 'warn'); return; }
+    /* 连到服务端一律用「填路径」的方式添加——浏览器弹不出服务器那边的目录选择框 */
+    if (FM.fs.serverReached) { addLibByPath(); return; }
     runAddLib('');
   }
 
@@ -4109,7 +4234,13 @@
   /* 手动扫描只允许一个在跑：连点会把整库 readdir + stat 叠成好几份，进度条也会互相掐 */
   let doScanBusy = false;
   async function doScan() {
-    if (!FM.fs.hasSource) { addLibFlow(); return; }
+    /* 没有资源库时「扫描」其实是引导去添加：普通用户这里也要拦（不能添加） */
+    if (!FM.fs.hasSource) {
+      if (!canManageLib()) { toast('只有管理员可以添加资源库', 'warn'); return; }
+      addLibFlow(); return;
+    }
+    /* 网页端普通用户：禁用整库扫描（扫描是主机操作，普通用户只读） */
+    if (!canManageLib()) { toast('只有管理员可以扫描资源库', 'warn'); return; }
     if (doScanBusy || navLocked()) { toast('正在扫描资源库，请稍候'); return; }
     doScanBusy = true;
     try {
@@ -4250,9 +4381,18 @@
 
   function syncMode() {
     document.body.classList.toggle('is-server', !!FM.fs.server);
-    /* 退出登录只对浏览器直连服务器有意义：Electron 界面没有登录态 */
+    /* 退出登录只对浏览器直连服务器有意义：Electron 界面没有登录态。
+       用 serverReached（是否连到服务端）而不是 server（是否有资源库）——没加库的网页用户也要能登出 */
     if (refs.btnLogout) {
-      refs.btnLogout.hidden = !(!FM.fs.desktop && !FM.android && !!FM.fs.server);
+      refs.btnLogout.hidden = !(!!FM.fs.serverReached && !FM.fs.desktop && !FM.android);
+    }
+    /* 网页端普通用户禁用扫描（只读）：侧栏同步按钮直接隐藏（连同 disabled / 置灰样式兜底） */
+    if (refs.btnSync) {
+      const canScan = canManageLib();
+      refs.btnSync.hidden = !canScan;
+      refs.btnSync.disabled = !canScan;
+      refs.btnSync.classList.toggle('is-disabled', !canScan);
+      refs.btnSync.title = canScan ? (refs.btnSync.title || '重新扫描当前资源库') : '只有管理员可以扫描资源库';
     }
     paintVersion();
   }

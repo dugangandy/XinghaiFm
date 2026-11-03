@@ -307,7 +307,7 @@
       : (prev && prev.dirMode ? prev.dirMode : (l.dirGroup ? 'cat' : 'flat'));
     /* 其余字段（temp / fixed …）原样带着：纯网页的临时目录靠 temp 走 files 模式 */
     return Object.assign({}, l, {
-      id: l.id, name: l.name, path: l.path || '', missing: !!l.missing, fixed: !!l.fixed,
+      id: l.id, name: l.name, path: l.path || '', missing: !!l.missing, fixed: !!l.fixed, shared: !!l.shared,
       dirMode: dirMode, dirGroup: dirMode !== 'flat'
     });
   }
@@ -471,6 +471,11 @@
     syncActive();
     applyMode();
     return activeLib;
+  }
+
+  /* 共享：把某个库指派给所有人或指定用户（仅服务端多用户的管理员用） */
+  async function share(id, targetAll, userIds) {
+    return libMutate('share', { id: id, targetAll: !!targetAll, userIds: userIds || [] });
   }
 
   /* 「目录结构」三档（flat / cat / auto）
@@ -1261,7 +1266,7 @@
 
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, canSyncMeta, pushProgress, refreshLibs,
-    setDirGroup, setDirMode,
+    setDirGroup, setDirMode, share,
     loadFavs, setFav, setFavTrack,
     scan, scanStamp, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,

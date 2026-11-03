@@ -100,6 +100,8 @@
   border:1px solid var(--line);color:var(--txt-2);transition:.22s;
 }
 .side-ghost-btn:hover{color:var(--cyan);border-color:rgba(34,211,238,.4);background:rgba(34,211,238,.07)}
+/* 网页端普通用户（只读）禁用扫描：直接隐藏同步按钮（.side-ghost-btn 的 display:grid 会盖掉 [hidden]，这里用更高优先级收回） */
+.side-ghost-btn[hidden]{display:none}
 
 /* 远端（服务器）模式：目录由主机 mediaRoot 决定，浏览器加不了库，隐藏同步按钮就够了 */
 body.is-server #libSwitch .lib-caret{display:none}
@@ -127,6 +129,8 @@ body.is-server #libSwitch .lib-caret{display:none}
 .side-scroll{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:18px;
   overflow-y:auto;overflow-x:hidden;padding-right:2px}
 .side-section{display:flex;flex-direction:column;gap:8px}
+/* 没有加载资源库时隐藏「分类」区域（display:flex 会盖掉 [hidden]，这里高优先级收回） */
+.side-section[hidden]{display:none}
 .side-title{display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:10.5px;letter-spacing:.2em;color:var(--dim-2);text-transform:uppercase}
 .mini-btn{width:22px;height:22px;display:grid;place-items:center;border-radius:6px;color:var(--dim);transition:.2s}
 .mini-btn .i{width:14px;height:14px}

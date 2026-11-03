@@ -200,6 +200,54 @@ test('remote：空配置读回 null，写完去掉尾斜杠，传 null 删除', 
   assert.equal(DB.getRemote(db), null);
 });
 
+test('共享：指派给指定用户 / 所有人、物化只读行、撤销与清理', () => {
+  const db = fresh();
+  const admin = user(db, 'admin', { role: 'admin' });
+  const bob = user(db, 'bob');
+  const eve = user(db, 'eve');
+  DB.replaceLibs(db, admin.id, [{ id: 'src1', name: '共享库', path: '/media/shared' }], 'src1');
+  /* bob 自己已经有一个库：共享来的副本不应抢走 active */
+  DB.replaceLibs(db, bob.id, [{ id: 'b1', name: 'B', path: '/media/b' }], 'b1');
+
+  assert.equal(DB.listShares(db, 'src1'), null, '默认没有共享配置');
+  assert.equal(DB.setLibShare(db, 'src1', false, [bob.id]), true);
+  assert.deepEqual(DB.listShares(db, 'src1'), { targetAll: false, targets: [bob.id] });
+
+  DB.syncUserSharedLibs(db, bob.id);
+  const bl = DB.listLibs(db, bob.id);
+  assert.equal(bl.length, 2);
+  const sh = bl.find(function (l) { return l.shared_id === 'src1'; });
+  assert.ok(sh, '目标用户应看到共享副本');
+  assert.equal(sh.path, '/media/shared');
+  assert.equal(sh.active, 0, '自己已有 active 库时，共享副本不抢激活');
+
+  DB.syncUserSharedLibs(db, admin.id);
+  assert.equal(DB.listLibs(db, admin.id).length, 1, '源库所有者本人不会被物化出重复行');
+
+  /* 撤销指派：非 active 的副本应被清掉 */
+  DB.setLibShare(db, 'src1', false, []);
+  DB.syncUserSharedLibs(db, bob.id);
+  assert.equal(DB.listLibs(db, bob.id).filter(function (l) { return l.shared_id; }).length, 0);
+
+  /* 所有人：bob 和 eve 都能看到；源库所有者不重复 */
+  DB.setLibShare(db, 'src1', true, []);
+  DB.syncUserSharedLibs(db, bob.id);
+  DB.syncUserSharedLibs(db, eve.id);
+  assert.equal(DB.listLibs(db, bob.id).filter(function (l) { return l.shared_id === 'src1'; }).length, 1);
+  assert.equal(DB.listLibs(db, eve.id).filter(function (l) { return l.shared_id === 'src1'; }).length, 1);
+  assert.equal(DB.listLibs(db, admin.id).length, 1);
+
+  /* replaceLibs 只重排自己的库，不误删共享副本 */
+  DB.replaceLibs(db, bob.id, [{ id: 'b1', name: 'B', path: '/media/b' }], 'b1');
+  assert.equal(DB.listLibs(db, bob.id).filter(function (l) { return l.shared_id; }).length, 1, '私有库替换不能删掉共享行');
+
+  /* 源库被删：removeLibShare 连带清掉所有副本 */
+  DB.removeLibShare(db, 'src1');
+  assert.equal(DB.listShares(db, 'src1'), null);
+  assert.equal(DB.listLibs(db, bob.id).filter(function (l) { return l.shared_id; }).length, 0);
+  assert.equal(DB.listLibs(db, eve.id).filter(function (l) { return l.shared_id; }).length, 0);
+});
+
 test('migrate：迁移旧配置文件、已有用户时跳过', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-mig-'));
   try {

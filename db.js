@@ -45,9 +45,21 @@ function ensureSchema(db) {
     '  added_at INTEGER NOT NULL,',
     '  active INTEGER NOT NULL DEFAULT 0,',
     '  position INTEGER NOT NULL DEFAULT 0,',
+    /* 共享：NULL = 用户自己的库；非 NULL = 由别人共享来的只读副本，值是源库 id */
+    '  shared_id TEXT,',
     '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE',
     ');',
     'CREATE INDEX IF NOT EXISTS idx_libs_user ON libs(user_id, position);',
+    /* 共享配置挂在「源库」上：target_all=1 表示所有人，否则看 lib_share_targets */
+    'CREATE TABLE IF NOT EXISTS lib_shares (',
+    '  lib_id TEXT PRIMARY KEY,',
+    '  target_all INTEGER NOT NULL DEFAULT 0',
+    ');',
+    'CREATE TABLE IF NOT EXISTS lib_share_targets (',
+    '  lib_id TEXT NOT NULL,',
+    '  user_id TEXT NOT NULL,',
+    '  PRIMARY KEY (lib_id, user_id)',
+    ');',
     'CREATE TABLE IF NOT EXISTS remote (',
     '  id INTEGER PRIMARY KEY CHECK (id = 1),',
     '  base TEXT, token TEXT, uid TEXT',
@@ -114,6 +126,11 @@ function ensureSchema(db) {
   if (!cols.some(function (c) { return c.name === 'token_version'; })) {
     db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
   }
+  /* 旧库补列：libs.shared_id（共享来的只读库副本；老行为 NULL = 私有） */
+  const libCols = db.prepare('PRAGMA table_info(libs)').all();
+  if (!libCols.some(function (c) { return c.name === 'shared_id'; })) {
+    db.exec('ALTER TABLE libs ADD COLUMN shared_id TEXT');
+  }
   if (!getSetting(db, 'secret')) setSetting(db, 'secret', crypto.randomBytes(32).toString('base64'));
   /* v4：favs 的主键已经覆盖 (user_id, lib_id)，早期的冗余索引清掉 */
   const uv = (db.prepare('PRAGMA user_version').get() || {}).user_version || 0;
@@ -179,16 +196,28 @@ function setUserPassword(db, id, password) {
   /* token_version 自增：该用户此前签发的 token 立即失效（其它用户不受影响） */
   db.prepare('UPDATE users SET algo=?, iterations=?, salt=?, hash=?, token_version = token_version + 1 WHERE id=?').run(pw.algo, pw.iterations, pw.salt, pw.hash, id);
 }
-function removeUser(db, id) { db.prepare('DELETE FROM users WHERE id = ?').run(id); }
+function removeUser(db, id) {
+  const u = String(id || '');
+  /* 先清与该用户相关的共享关系：他名下源库的指派、别人派给他的物化行，别留孤儿 */
+  const owned = db.prepare('SELECT id FROM libs WHERE user_id = ? AND shared_id IS NULL').all(u);
+  owned.forEach(function (r) {
+    db.prepare('DELETE FROM lib_shares WHERE lib_id = ?').run(r.id);
+    db.prepare('DELETE FROM lib_share_targets WHERE lib_id = ?').run(r.id);
+    db.prepare('DELETE FROM libs WHERE shared_id = ?').run(r.id);
+  });
+  db.prepare('DELETE FROM lib_share_targets WHERE user_id = ?').run(u);
+  db.prepare('DELETE FROM libs WHERE user_id = ?').run(u);
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+}
 function touchLogin(db, id) { db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), id); }
 
 /* ── libs（按用户） ── */
 function listLibs(db, uid) {
-  return db.prepare('SELECT id, name, path, added_at AS addedAt, active FROM libs WHERE user_id = ? ORDER BY position, added_at').all(uid);
+  return db.prepare('SELECT id, name, path, added_at AS addedAt, active, shared_id FROM libs WHERE user_id = ? ORDER BY position, added_at').all(uid);
 }
 function activeLib(db, uid) {
-  return db.prepare('SELECT id, name, path, added_at AS addedAt FROM libs WHERE user_id = ? AND active = 1 LIMIT 1').get(uid)
-    || db.prepare('SELECT id, name, path, added_at AS addedAt FROM libs WHERE user_id = ? ORDER BY position, added_at LIMIT 1').get(uid)
+  return db.prepare('SELECT id, name, path, added_at AS addedAt, shared_id FROM libs WHERE user_id = ? AND active = 1 LIMIT 1').get(uid)
+    || db.prepare('SELECT id, name, path, added_at AS addedAt, shared_id FROM libs WHERE user_id = ? ORDER BY position, added_at LIMIT 1').get(uid)
     || null;
 }
 function replaceLibs(db, uid, libs, activeId) {
@@ -197,7 +226,8 @@ function replaceLibs(db, uid, libs, activeId) {
   if (!list.some(function (l) { return l.id === active; })) active = list[0] ? list[0].id : null;
   db.exec('BEGIN');
   try {
-    db.prepare('DELETE FROM libs WHERE user_id = ?').run(uid);
+    /* 只替换用户自己的库；共享来的只读副本（shared_id 非空）不归这里的增删逻辑管 */
+    db.prepare('DELETE FROM libs WHERE user_id = ? AND shared_id IS NULL').run(uid);
     const ins = db.prepare('INSERT INTO libs(id, user_id, name, path, added_at, active, position) VALUES(?,?,?,?,?,?,?)');
     list.forEach(function (l, i) {
       ins.run(l.id || ('l' + Date.now().toString(36) + i), uid, l.name || path.basename(l.path) || '资源库', l.path, l.addedAt || Date.now(), l.id === active ? 1 : 0, i);
@@ -207,7 +237,7 @@ function replaceLibs(db, uid, libs, activeId) {
   } catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} throw e; }
 }
 function getLib(db, uid, id) {
-  return db.prepare('SELECT id, name, path, added_at AS addedAt, active FROM libs WHERE user_id = ? AND id = ?')
+  return db.prepare('SELECT id, name, path, added_at AS addedAt, active, shared_id FROM libs WHERE user_id = ? AND id = ?')
     .get(String(uid || ''), String(id || '')) || null;
 }
 /* 元数据是按库目录共享的：只要这个用户登记过同一个目录，就认同一个库
@@ -226,6 +256,81 @@ function setActiveLib(db, uid, id) {
     db.exec('COMMIT');
     return true;
   } catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} return false; }
+}
+
+/* ── 共享：把某个库指派给其它用户（配置挂在源库上） ──
+   目标用户看到的是本表里一条 shared_id=源库id 的只读副本，由 syncUserSharedLibs 物化。 */
+function listShares(db, libId) {
+  const id = String(libId || '');
+  if (!id) return null;
+  const row = db.prepare('SELECT target_all FROM lib_shares WHERE lib_id = ?').get(id);
+  if (!row) return null;
+  const targets = db.prepare('SELECT user_id FROM lib_share_targets WHERE lib_id = ?').all(id)
+    .map(function (r) { return r.user_id; });
+  return { targetAll: !!row.target_all, targets: targets };
+}
+function setLibShare(db, libId, targetAll, userIds) {
+  const id = String(libId || '');
+  if (!id) return false;
+  const all = !!targetAll;
+  db.exec('BEGIN');
+  try {
+    db.prepare('INSERT INTO lib_shares(lib_id, target_all) VALUES(?,?) ON CONFLICT(lib_id) DO UPDATE SET target_all = excluded.target_all')
+      .run(id, all ? 1 : 0);
+    db.prepare('DELETE FROM lib_share_targets WHERE lib_id = ?').run(id);
+    if (!all) {
+      const ins = db.prepare('INSERT OR IGNORE INTO lib_share_targets(lib_id, user_id) VALUES(?,?)');
+      (userIds || []).forEach(function (u) { if (u && String(u) !== '') ins.run(id, String(u)); });
+    }
+    db.exec('COMMIT');
+    return true;
+  } catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} throw e; }
+}
+/* 取消共享 / 源库被删：连带清掉所有目标用户手里的只读副本 */
+function removeLibShare(db, libId) {
+  const id = String(libId || '');
+  if (!id) return 0;
+  db.prepare('DELETE FROM lib_shares WHERE lib_id = ?').run(id);
+  db.prepare('DELETE FROM lib_share_targets WHERE lib_id = ?').run(id);
+  return db.prepare('DELETE FROM libs WHERE shared_id = ?').run(id).changes || 0;
+}
+/* 把「指派给该用户」的源库物化进他的 libs（只读副本），并清理已撤销的副本。
+   幂等；O(共享库数)，每个请求跑一次开销可忽略。 */
+function syncUserSharedLibs(db, uid) {
+  const u = String(uid || '');
+  if (!u) return;
+  const shared = db.prepare(
+    'SELECT lib_id FROM lib_shares WHERE target_all = 1 ' +
+    'UNION SELECT lib_id FROM lib_share_targets WHERE user_id = ?'
+  ).all(u).map(function (r) { return r.lib_id; });
+
+  const keep = {};
+  shared.forEach(function (libId) {
+    const src = db.prepare('SELECT id, user_id, name, path FROM libs WHERE id = ? AND shared_id IS NULL').get(libId);
+    if (!src) return;
+    if (src.user_id === u) return;            /* 源库所有者本人：已有可编辑行，不再复制一份 */
+    keep[libId] = true;
+    const row = db.prepare('SELECT id, name, path FROM libs WHERE user_id = ? AND shared_id = ? LIMIT 1').get(u, libId);
+    if (row) {
+      if (row.name !== src.name || row.path !== src.path) {
+        db.prepare('UPDATE libs SET name = ?, path = ? WHERE id = ?').run(src.name, src.path, row.id);
+      }
+      return;
+    }
+    const anyActive = db.prepare('SELECT 1 FROM libs WHERE user_id = ? AND active = 1 LIMIT 1').get(u);
+    const pos = (db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM libs WHERE user_id = ?').get(u) || {}).p || 0;
+    const rid = 'sh' + libId + u;
+    /* OR IGNORE：同一用户并发请求可能同时物化同一条，id 是确定的，靠主键去重即可 */
+    db.prepare('INSERT OR IGNORE INTO libs(id, user_id, name, path, added_at, active, position, shared_id) VALUES(?,?,?,?,?,?,?,?)')
+      .run(rid, u, src.name, src.path, Date.now(), anyActive ? 0 : 1, pos, libId);
+  });
+
+  /* 撤销指派：删掉不再被指派、且非当前激活的副本（正在听的那条留到切走再清，别中途抽走） */
+  db.prepare('SELECT id, shared_id, active FROM libs WHERE user_id = ? AND shared_id IS NOT NULL').all(u).forEach(function (r) {
+    if (keep[r.shared_id]) return;
+    if (r.active) return;
+    db.prepare('DELETE FROM libs WHERE id = ?').run(r.id);
+  });
 }
 
 /* ── 收藏（按用户 + 资源库） ──
@@ -604,6 +709,7 @@ module.exports = {
   listUsers, countUsers, findUser, getUser, adminUser, firstUserId, newUserId,
   addUser, setUserPassword, removeUser, touchLogin,
   listLibs, activeLib, replaceLibs, setActiveLib, getLib, libPath,
+  listShares, setLibShare, removeLibShare, syncUserSharedLibs,
   listFavs, setFav, clearFavs,
   listFavTracks, setFavTrack, clearFavTracks,
   META_VERSION, META_LIMIT, libRootKey,

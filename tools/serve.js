@@ -131,17 +131,28 @@ DB.ensureSchema(db);
 
 const MULTI = true;   // 每个用户都可以有多个资源库
 
-function userLibs(uid) { return DB.listLibs(db, uid); }
-function userActiveLib(uid) { return DB.activeLib(db, uid); }
+/* 读库前先同步「别人共享给我的库」：物化成只读副本，后面的读路径就无需再关心共享 */
+function userLibs(uid) { DB.syncUserSharedLibs(db, uid); return DB.listLibs(db, uid); }
+function userActiveLib(uid) { DB.syncUserSharedLibs(db, uid); return DB.activeLib(db, uid); }
 function userActiveRoot(uid) { const l = userActiveLib(uid); return l ? l.path : ''; }
-/* fixed = 前端不给改（没开 --allow-lib-edit） */
+/* fixed = 前端不给改（没开 --allow-lib-edit，或者是别人共享来的只读库） */
 function libView(l) {
   return {
-    id: l.id, name: l.name, missing: !fs.existsSync(l.path), fixed: !ALLOW_LIB_EDIT,
+    id: l.id, name: l.name, missing: !fs.existsSync(l.path),
+    fixed: !ALLOW_LIB_EDIT || !!l.shared_id,
+    shared: !!l.shared_id,
     /* 目录结构三档：flat / cat / auto；dirGroup 是老字段，只为兼容旧客户端 */
     dirMode: DB.libDirMode(db, l.path),
     dirGroup: DB.libDirGroup(db, l.path)
   };
+}
+/* 库列表响应：管理员看自己可编辑的库时附带共享配置（供弹窗预填） */
+function libsView(uid, isAdmin) {
+  return userLibs(uid).map(function (l) {
+    const v = libView(l);
+    if (isAdmin && !l.shared_id) v.shares = DB.listShares(db, l.id) || { targetAll: false, targets: [] };
+    return v;
+  });
 }
 
 /* ── 库元数据（分类 / 专辑整理 / 进度 / 时长）──
@@ -196,6 +207,8 @@ function mutateLibs(uid, body) {
     /* 元数据、扫描缓存都按库目录存：库移除时顺手清掉，别留孤儿行 */
     if (lib.path) { try { DB.clearLibMeta(db, lib.path); } catch (e) {} }
     dropScanCache(lib.path);
+    /* 源库被删：连带撤掉共享关系和别人手里的只读副本 */
+    DB.removeLibShare(db, id);
     libs.splice(libs.findIndex(l => l.id === id), 1);
     if (active === id) active = libs[0] ? libs[0].id : null;
     console.log('[lib] 远程移除资源库：' + lib.name);
@@ -991,6 +1004,11 @@ const server = http.createServer(async function (req, res) {
     const scope = u.searchParams.get('scope') === 'cover' ? 'cover' : 'media';
     return json(res, { t: makeTicket(uid, scope, me ? me.token_version : 0), exp: Math.floor(Date.now() / 1000) + TICKET_TTL[scope], scope: scope });
   }
+  if (p === '/api/users') {
+    /* 共享弹窗的用户多选：仅管理员可见 */
+    if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以查看用户');
+    return json(res, DB.listUsers(db).map(function (x) { return { id: x.id, username: x.username, role: x.role }; }));
+  }
   if (p === '/api/config') {
     const libs = userLibs(uid);
     const lib = userActiveLib(uid);
@@ -1002,13 +1020,13 @@ const server = http.createServer(async function (req, res) {
   }
   if (p === '/api/libs') {
     const a = userActiveLib(uid);
-    return json(res, { active: a ? a.id : null, multi: MULTI, libs: userLibs(uid).map(libView) });
+    return json(res, { active: a ? a.id : null, multi: MULTI, libs: libsView(uid, me && me.role === 'admin') });
   }
   if (p === '/api/activate') {
     const id = u.searchParams.get('id') || '';
     if (!DB.setActiveLib(db, uid, id)) return send(res, 400, 'unknown lib');
     const a = userActiveLib(uid);
-    return json(res, { active: a ? a.id : null, libs: userLibs(uid).map(libView) });
+    return json(res, { active: a ? a.id : null, libs: libsView(uid, me && me.role === 'admin') });
   }
   if (p === '/api/meta') {
     const lib = userActiveLib(uid);
@@ -1095,7 +1113,6 @@ const server = http.createServer(async function (req, res) {
   }
   if (p === '/api/lib') {
     if (req.method !== 'POST') return send(res, 405, 'POST only');
-    if (!ALLOW_LIB_EDIT) return send(res, 403, '服务端未开启资源库编辑（启动时加 --allow-lib-edit）');
     /* 多用户时只有管理员能改资源库：add 接受任意绝对路径，不能让普通用户随便挂服务器目录 */
     if (MULTI && (!me || me.role !== 'admin')) return send(res, 403, '只有管理员能修改资源库');
     if (!writeAllowed(ip)) return send(res, 429, 'too many writes');
@@ -1106,10 +1123,29 @@ const server = http.createServer(async function (req, res) {
     }
     let payload = null;
     try { payload = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    const act = String((payload && payload.action) || '');
+    /* 共享：把自己名下可编辑的库指派给「所有人 / 指定用户」。
+       只写共享关系、不碰主机目录，所以不受 --allow-lib-edit 限制。 */
+    if (act === 'share') {
+      const libId = String((payload && payload.id) || '');
+      const lib = DB.getLib(db, uid, libId);
+      if (!lib || lib.shared_id) return send(res, 400, '资源库不存在');
+      const targetAll = !!(payload && payload.targetAll);
+      /* 去掉自己（源库所有者不需要「共享给自己」）并去重 */
+      const userIds = ((payload && Array.isArray(payload.userIds)) ? payload.userIds : [])
+        .filter(function (x) { return typeof x === 'string' && x && x !== uid; })
+        .filter(function (x, i, arr) { return arr.indexOf(x) === i; });
+      DB.setLibShare(db, libId, targetAll, userIds);
+      DB.syncUserSharedLibs(db, uid);
+      console.log('[lib] 共享「' + lib.name + '」→ ' + (targetAll ? '所有人' : userIds.length + ' 位用户'));
+      const a = userActiveLib(uid);
+      return json(res, { active: a ? a.id : null, multi: MULTI, libs: libsView(uid, true) });
+    }
+    if (!ALLOW_LIB_EDIT) return send(res, 403, '服务端未开启资源库编辑（启动时加 --allow-lib-edit）');
     const r = mutateLibs(uid, payload || {});
     if (r.code !== 200) return send(res, r.code, r.msg);
     const a = userActiveLib(uid);
-    return json(res, { active: a ? a.id : null, multi: MULTI, libs: userLibs(uid).map(libView) });
+    return json(res, { active: a ? a.id : null, multi: MULTI, libs: libsView(uid, me && me.role === 'admin') });
   }
   /* 「目录结构」三档开关：只改 fm.db 里的一条元数据，不碰主机目录，
      所以不受 --allow-lib-edit 限制；登录用户只能改自己名下的库。

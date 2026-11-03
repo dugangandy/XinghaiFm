@@ -162,62 +162,66 @@
      flat 默认：一层子目录 = 专辑，根目录散落文件单独成一张。
      cat 二级目录：1 段（根目录散落文件）→ 单独一张；2 段（分类目录里直接放的音频）
        → 该分类下的散集专辑；3 段及以上（分类/专辑/子目录/a.mp3）→ 并入最近的二级专辑。
-     auto 自动检测：不假设整个库层数一致，每个一级目录自己判断——
-       一级目录里直接有音频（专辑/1.mp3，或专辑/CD1/1.mp3）→ 它是一张专辑；
-       一级目录里没有直接音频、子目录名又是 CD1/上部/第X卷 这种分卷 → 还是一张专辑；
-       否则一级目录当分类，专辑取二级目录（再深并进二级专辑）。
+     auto 自动检测：不假设整个库层数一致，每个一级目录自己判断。
+       从一级目录往下走，找到「第一个直接躺着音频的目录」，它就是专辑：
+         专辑/1.mp3                  → 一级自己含音频，它是一张专辑（2 层的库，没有分类）
+         分类/专辑/1.mp3              → 专辑是二级
+         分类/中间分组/专辑/1.mp3      → 专辑是三级，中间分组不影响
+         分类/专辑/CD1/1.mp3          → CD1 是分卷目录，往回收一层，专辑仍是二级
+       专辑不是一级目录时，分类就是一级目录。
      三档都在同一份扫描结果上算，切口径不用重新走盘。
      第二参数同时接受老布尔（false=flat，true=cat）。
      返回 [{ key, dirName, cat, files }]，dirName 为空时由调用方按 key 兜底。 */
-  const VOLUME_RE = /^(cd|disc|disk|dvd|part|pt|vol|volume)\s*[-_.]?\s*\d{1,3}$|^\d{1,3}$|^(上|中|下)(卷|册|部|篇|集)?$|^第\s*[0-9一二三四五六七八九十百]{1,3}\s*[部卷册集辑篇章]/i;
+     /* 分卷 / 容器目录名：这些层不单独成专辑，音频要往上收一层。
+        MP3 / 音频 这种是「装音频的文件夹」，md / reader / 资料 是配套资料目录，和 CD1 一样属于容器 */
+     const VOLUME_RE = /^(cd|disc|disk|dvd|part|pt|vol|volume)\s*[-_.]?\s*\d{1,3}$|^\d{1,3}$|^(上|中|下)(卷|册|部|篇|集)?$|^第\s*[0-9一二三四五六七八九十百]{1,3}\s*[部卷册集辑篇章]|^(mp3|m4a|m4b|flac|wav|aac|ogg|audio|voice|music|media|音频|录音|音轨|声音|md|html|pdf|reader|assets|doc|docs|文档|资料|图片|image|images|covers?)$/i;
+     /* 章节目录名：`01-开篇词 (1讲)`、`第03章` 这种是一本书里的章，不该单独成专辑。
+        真专辑名很少以编号开头，所以这条不误伤「希赛PMP第七版」这类目录 */
+     const CHAPTER_RE = /^\d{1,3}\s*[-_.、:：)）\]】]|[(（]\s*\d+\s*讲\s*[)）]|^第\s*[0-9一二三四五六七八九十百]{1,3}\s*[讲章节回课]/i;
 
-  function groupFiles(files, mode) {
-    const m = (mode === true || mode === 'cat') ? 'cat' : (mode === 'auto' ? 'auto' : 'flat');
-    const groups = new Map();
-    const list = files || [];
+     function groupFiles(files, mode) {
+     const m = (mode === true || mode === 'cat') ? 'cat' : (mode === 'auto' ? 'auto' : 'flat');
+     const groups = new Map();
+     const list = files || [];
 
-    if (m === 'auto') {
-      /* 哪些目录里直接躺着音频。''（根目录）也算一个 */
-      const hasAudio = new Set();
-      /* parent → 直接子目录集合（只统计出现过音频的路径） */
-      const subDirs = new Map();
-      list.forEach(function (f) {
-        const segs = String(f && f.rel || '').split('/');
-        segs.pop();
-        hasAudio.add(segs.join('/'));
-        for (let i = 1; i <= segs.length; i++) {
-          const parent = segs.slice(0, i - 1).join('/');
-          if (!subDirs.has(parent)) subDirs.set(parent, new Set());
-          subDirs.get(parent).add(segs[i - 1]);
-        }
-      });
-      const volumeLike = function (parent) {
-        const subs = subDirs.get(parent);
-        if (!subs || !subs.size) return false;
-        return Array.from(subs).every(function (n) { return VOLUME_RE.test(n); });
-      };
-      list.forEach(function (f) {
-        const segs = String(f && f.rel || '').split('/');
-        segs.pop();
-        let key, dirName = '', cat = null;
-        if (!segs.length) {
-          key = '__root__';
-        } else if (hasAudio.has(segs[0]) || volumeLike(segs[0])) {
-          /* 一级目录自己就是一张专辑（分卷目录也算这张专辑里的） */
-          key = segs[0];
-          dirName = segs[0];
-        } else {
-          /* 一级目录是分类，专辑是它下面那层，再深的并进来 */
-          key = segs.length > 1 ? segs[0] + '/' + segs[1] : segs[0];
-          cat = segs[0];
-          dirName = segs.length > 1 ? segs[1] : segs[0];
-        }
-        const hit = groups.get(key);
-        if (hit) hit.files.push(f);
-        else groups.set(key, { key, dirName, cat, files: [f] });
-      });
-      return Array.from(groups.values());
-    }
+     if (m === 'auto') {
+       /* 哪些目录里直接躺着音频。''（根目录）也算一个 */
+       const hasAudio = new Set();
+       list.forEach(function (f) {
+         const segs = String(f && f.rel || '').split('/');
+         segs.pop();
+         hasAudio.add(segs.join('/'));
+       });
+       list.forEach(function (f) {
+         const segs = String(f && f.rel || '').split('/');
+         segs.pop();
+         let key, dirName = '', cat = null;
+         if (!segs.length) {
+           key = '__root__';
+         } else {
+           /* 从一级往下找第一个「直接含音频」的目录，它就是这张专辑。
+              只在前三层里找：有声书库里比「分类/分组/专辑」更深的目录基本是
+              章节，切出来只会得到一堆两三集的碎片。真没有直接含音频的层
+              （音频都塞在 CD1 / MP3 子目录里）时，就停在第三层 */
+           const top = Math.min(segs.length, 3);
+           let at = top - 1;
+           for (let i = 1; i <= top; i++) {
+             if (hasAudio.has(segs.slice(0, i).join('/'))) { at = i - 1; break; }
+           }
+           /* 落点本身是 CD1 / 上卷 / MP3 / 01-开篇词 这类容器或章节：往上收一层，
+              它们不单独成专辑。一级目录自己是容器时就停在 0，避免把分类也吃掉 */
+           while (at > 0 && (VOLUME_RE.test(segs[at]) || CHAPTER_RE.test(segs[at]))) at--;
+           key = segs.slice(0, at + 1).join('/');
+           dirName = segs[at];
+           /* 专辑不是一级目录时，一级目录就是分类 */
+           if (at > 0) cat = segs[0];
+         }
+         const hit = groups.get(key);
+         if (hit) hit.files.push(f);
+         else groups.set(key, { key, dirName, cat, files: [f] });
+       });
+       return Array.from(groups.values());
+     }
 
     const dirGroup = m === 'cat';
     list.forEach(function (f) {
