@@ -327,7 +327,8 @@
         if (r.active !== lastId) {
           Promise.resolve(FM.ui.enterLib({ force: true })).then(function () { ready(); reveal(); });
         } else if (hasLib) {
-          setTimeout(function () { FM.ui.autoRescan(); }, 1200);
+          /* 有缓存就直接用，本次会话内不再自动扫盘（有变更点「重新扫描」） */
+          if (FM.ui.needRescan(FM.fs.activeId)) setTimeout(function () { FM.ui.autoRescan(); }, 1200);
           ready();
           reveal();
         } else {

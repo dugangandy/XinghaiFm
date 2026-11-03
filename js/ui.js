@@ -123,10 +123,11 @@
     paintLink(next);
     renderStat();          // 侧栏徽标的小圆点跟着在线/离线变色
     if (next !== 'online' || (prev !== 'offline' && prev !== 'auth')) return;
-    /* 恢复：本地还有库就补刷一次；一条库都没有说明开机就没连上，直接重载走完整启动 */
+    /* 恢复：本地还有库就补刷一次；一条库都没有说明开机就没连上，直接重载走完整启动。
+       上次扫描成功（有缓存）就不重扫，断线前的内容照样能用 */
     if (!FM.fs.libs().length) { location.reload(); return; }
     toast('已重新连接');
-    autoRescan(true);
+    if (needRescan(FM.fs.activeId)) autoRescan(true);
     renderAll();
   }
 
@@ -3811,7 +3812,20 @@
     }
   }
 
-  /* 进入当前库：有缓存先秒出，再后台补扫 */
+  /* ── 扫描节流 ──
+     切库、重启 App 一律用缓存（index:<libId>）直接出内容，本次会话内不再自动扫盘：
+     全量扫描要递归 readdir 并对每个文件 stat，在 NAS/机械盘上要几秒到几十秒。
+     外部新增/删除的音频不会自动出现，由用户点「重新扫描」强制刷新（见 doScan）。
+     只有连缓存都没有（新加的库、缓存被清）时才自动扫一次，否则界面是空的。 */
+  const scannedThisRun = new Set();
+  function needRescan(id) {
+    if (!id) return false;
+    if (scannedThisRun.has(id)) return false;
+    const c = FM.db.index(id);
+    return !(c && c.albums && c.albums.length);
+  }
+
+  /* 进入当前库：有缓存直接秒出，不再后台补扫 */
   async function enterLib(opts) {
     const o = opts || {};
     const id = FM.fs.activeId;
@@ -3827,8 +3841,8 @@
       renderAll();
       /* 切库后顺手把这库的元数据落一份，远程那边才有东西可读 */
       if (FM.app && FM.app.scheduleMetaWrite) FM.app.scheduleMetaWrite(1500, true);
-      /* 1.2 秒后再补扫；期间已经切走就不扫了 */
-      setTimeout(function () { if (id === FM.fs.activeId) autoRescan(true); }, 1200);
+      /* 只有这库完全没有缓存时才补扫；期间已经切走就不扫了 */
+      if (needRescan(id)) setTimeout(function () { if (id === FM.fs.activeId) autoRescan(true); }, 1200);
       return;
     }
     await runScan({ silent: true });
@@ -3914,6 +3928,8 @@
       /* 静默补扫先记内容指纹：扫完一模一样就不重绘，页面不会无端跳一下 */
       const before = o.silent ? libSignature() : '';
       L.build(scan);
+      /* 这次会话已经完整扫过这个库了，后面切回来直接用缓存 */
+      scannedThisRun.add(libId);
       if (FM.fs.activeId) {
         FM.store.write('lastLib', FM.fs.activeId);
         FM.store.touch('lastLib');
@@ -4011,7 +4027,7 @@
 
   FM.ui = {
     init, renderAll, flushBootRender, paintTrack, syncMode, downloadsChanged,
-    autoRescan, runScan, enterLib, switchLib, addLibFlow,
+    autoRescan, runScan, enterLib, switchLib, addLibFlow, needRescan,
     openLibMenu, openLibDrawer, renderStat, renderWelcome, renderBrokenLib,
     toast, openSheet, closeSheet,
     get refs() { return refs; }

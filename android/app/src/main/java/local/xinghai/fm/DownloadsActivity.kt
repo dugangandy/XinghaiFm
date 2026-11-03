@@ -143,12 +143,19 @@ class DownloadsActivity : Activity() {
             setOnClickListener { onClick() }
         }
 
+    /* 下载索引是全局的（所有资源库合在一起），这个页面只该显示当前资源库的条目：
+       以前直接摊 entries() 全量，副标题写着「资源库：XX」却报的是全部库的集数和体积。
+       libId 为空的条目是早期没有这个字段时下的，仍算到当前库，免得老下载凭空消失；
+       libId 还没读到时不过滤，否则首帧会误报「还没有下载」。 */
+    private fun inLib(item: Dl.Item) =
+        item.libId.isEmpty() || libId.isEmpty() || item.libId == libId
+
     /* ── 已下载列表 ── */
     private fun render() {
         val box = content ?: return
         box.removeAllViews()
-        val list = Dl.entries()
-        val fails = Dl.failedItems()
+        val list = Dl.entries().filter { inLib(it) }
+        val fails = Dl.failedItems().filter { inLib(it) }
         if (list.isEmpty() && fails.isEmpty()) {
             box.addView(TextView(this).apply {
                 text = "还没有下载\n点右上角「添加」，从电脑上的资源库挑专辑或单集"
@@ -302,7 +309,11 @@ class DownloadsActivity : Activity() {
         if (libraryLoading) { toast("正在读取资源库，稍等一下"); return }
         if (albums.isEmpty()) { toast(libraryError.ifEmpty { "资源库里没有可下载的内容" }); return }
         val done = HashMap<String, Int>()
-        for (e in Dl.entries()) done[e.album] = (done[e.album] ?: 0) + 1
+        /* 只数当前库的：别的库有同名专辑时，「已下 N」会虚高 */
+        for (e in Dl.entries()) {
+            if (!inLib(e)) continue
+            done[e.album] = (done[e.album] ?: 0) + 1
+        }
         val names = albums.map {
             val n = done[it.name] ?: 0
             it.name + "（" + it.tracks.size + " 集" + (if (n > 0) " · 已下 " + n else "") + "）"

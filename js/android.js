@@ -135,10 +135,29 @@
     dlMap = next;
   }
 
+  /* 当前资源库能看到的下载条目。壳里的索引是「所有库」合在一起的，
+     直接摊给界面会让侧栏的下载数、下载管理页把别的库也算进来。
+     只留下载时记下的 libId 跟当前库一致的；libId 为空的条目是早期没有这个字段时下的，
+     仍算本库，免得老下载凭空消失；库还没就位（libId 为空）时不过滤，避免把界面清空。 */
+  function libDownloads() {
+    const cur = FM.lib && FM.lib.libId;
+    if (!cur) return dlMap;
+    const out = Object.create(null);
+    const keys = Object.keys(dlMap);
+    for (let i = 0; i < keys.length; i++) {
+      const it = dlMap[keys[i]];
+      if (!it.libId || it.libId === cur) out[keys[i]] = it;
+    }
+    return out;
+  }
+
   /* 只有真正下完的才算「已下载」；排队中/下载中在 dlMap 里也有条目 */
   function downloaded(rel) {
     const e = rel && dlMap[rel];
-    return !!e && (e.state === 'done' || !e.state);
+    if (!e) return false;
+    /* 别的库有同名 rel 时这条不算本库的下载 */
+    if (e.libId && FM.lib && FM.lib.libId && e.libId !== FM.lib.libId) return false;
+    return e.state === 'done' || !e.state;
   }
 
   /* 手机剩余空间（字节）；拿不到就返回 0，界面按「未知」处理 */
@@ -216,7 +235,7 @@
     native: true,
     canDownload: true,
     download,
-    downloads: function () { return dlMap; },
+    downloads: function () { return libDownloads(); },
     downloaded,
     /* 已下载曲目的本机播放地址；旧 APK 没这个桥方法就返回空，播放回退到服务器 */
     localUrl: function (rel) { try { return NATIVE.localUrl(rel) || ''; } catch (e) { return ''; } },

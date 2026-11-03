@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -36,10 +37,16 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
 
@@ -60,6 +67,13 @@ class MainActivity : Activity() {
     private var customView: View? = null
     private var customCallback: WebChromeClient.CustomViewCallback? = null
     private val ui = Handler(Looper.getMainLooper())
+    /* 换服务器后静默重登用；网页本体走 WebView，不经这里 */
+    private val client: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .build()
+    }
     /* 下载状态变化 / 进度 → 让网页刷新「下载管理」和曲目上的已下载标记（500ms 合帧，
        同一批变化只排一次，别让一次批量完成排出一串 evaluateJavascript） */
     private var pushQueued = false
@@ -455,11 +469,30 @@ class MainActivity : Activity() {
         }.getOrDefault(false)
     }
 
-    /* ── 服务器设置 ── */
+    /* ── 服务器设置 ──
+       和登录页一致：下拉只列名字（生产 / 测试 / 自定义），地址藏在 tooltip 上。
+       换服务器后旧 token 不作数，拿登录页记住的账号密码静默重登一次，
+       省得用户又要在网页登录页里重输 */
     fun showServerDialog() {
         runOnUiThread {
+            val p = getSharedPreferences(PREFS, MODE_PRIVATE)
+            val saved = serverBase()
+            var base = if (saved.isEmpty()) Servers.list[0].second else saved
+            var custom = Servers.list.none { it.second == base }
+
+            val pick = TextView(this).apply {
+                textSize = 14f
+                setTextColor(Color.WHITE)
+                setPadding(dp(12), dp(11), dp(12), dp(11))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(10).toFloat()
+                    setColor(0x1AFFFFFF)
+                    setStroke(dp(1), 0x33FFFFFF)
+                }
+            }
             val input = EditText(this).apply {
-                setText(serverBase())
+                hint = "http://192.168.1.8:8080"
+                setText(base)
                 setSingleLine(true)
                 inputType = InputType.TYPE_TEXT_VARIATION_URI
                 setSelection(text.length)
@@ -468,15 +501,52 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(22), dp(8), dp(22), 0)
             }
-            box.addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            box.addView(pick, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            box.addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+
+            fun current() = normalize(if (custom) input.text.toString() else base)
+            fun refresh() {
+                pick.text = "服务器：" + (if (custom) "自定义" else Servers.nameOf(base)) + "  ▾"
+                /* tooltip 要 API 26+；低版本靠长按 toast 兜底 */
+                if (Build.VERSION.SDK_INT >= 26) pick.tooltipText = current().ifEmpty { null }
+                input.visibility = if (custom) View.VISIBLE else View.GONE
+            }
+            pick.setOnLongClickListener {
+                val u = current()
+                if (u.isEmpty()) false else { toast(u); true }
+            }
+            pick.setOnClickListener {
+                val pop = PopupMenu(this, pick)
+                Servers.list.forEachIndexed { i, s -> pop.menu.add(0, i, i, s.first) }
+                pop.menu.add(0, Servers.list.size, Servers.list.size, "自定义…")
+                pop.setOnMenuItemClickListener { item ->
+                    if (item.itemId < Servers.list.size) {
+                        base = Servers.list[item.itemId].second
+                        custom = false
+                    } else if (!custom) {
+                        /* 从预设切自定义时先带出当前地址，方便改端口 */
+                        custom = true
+                        input.setText(base)
+                    }
+                    refresh()
+                    true
+                }
+                pop.show()
+            }
+            refresh()
 
             AlertDialog.Builder(this)
                 .setTitle("服务器设置")
                 .setView(box)
                 .setPositiveButton("保存") { _, _ ->
-                    val b = normalize(input.text.toString())
+                    val old = serverBase()
+                    val b = current()
+                    if (b.isEmpty()) { toast("请填写服务器地址"); return@setPositiveButton }
                     saveBase(b)
-                    if (b.isEmpty()) showSetup() else mountWeb()
+                    if (b == old) { mountWeb(); return@setPositiveButton }
+                    /* 换服务器：旧 token / uid 都作废，先静默重登，换不到就让网页自己弹登录页 */
+                    p.edit().remove("token").remove("uid").apply()
+                    reloginSilently(b) { mountWeb() }
                 }
                 .setNeutralButton("退出登录") { _, _ ->
                     CookieManager.getInstance().removeAllCookies(null)
@@ -488,6 +558,34 @@ class MainActivity : Activity() {
                 .setNegativeButton("取消", null)
                 .show()
         }
+    }
+
+    /* 换了服务器，用登录页记住的账号密码静默换一张新 token（token 跟服务器绑定，不能复用）。
+       没记住凭据、或者对面不认，就静默放弃：照旧加载，网页会自己弹登录页 */
+    private fun reloginSilently(base: String, onDone: () -> Unit) {
+        val p = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val user = p.getString("username", "").orEmpty()
+        val pass = if (p.getBoolean("remember", true)) p.getString("password", "").orEmpty() else ""
+        if (user.isEmpty() || pass.isEmpty()) { onDone(); return }
+        Thread {
+            val ok = runCatching {
+                val body = JSONObject().put("username", user).put("password", pass).toString()
+                    .toRequestBody("application/json; charset=utf-8".toMediaType())
+                val req = Request.Builder().url(base + "/api/login").post(body).build()
+                client.newCall(req).execute().use { r ->
+                    if (r.code != 200) return@use false
+                    val jo = JSONObject(r.body?.string().orEmpty())
+                    /* cookie 由 mountWeb → applyAuthCookies 统一种，这里只落 token/uid */
+                    p.edit().putString("token", jo.optString("token"))
+                        .putString("uid", jo.optString("uid")).apply()
+                    true
+                }
+            }.getOrDefault(false)
+            ui.post {
+                if (!ok) runCatching { p.edit().remove("token").apply() }
+                onDone()
+            }
+        }.start()
     }
 
     /* ── 给前台服务调用 ── */
