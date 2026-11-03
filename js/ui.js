@@ -420,19 +420,22 @@
   }
 
   /* ── 导航 ── */
-  /* 导航唯一数据源：桌面侧栏和手机首页的快捷入口都吃这一份，避免两套计数逻辑漂移 */
-  function navItems() {
+  /* 导航唯一数据源：桌面侧栏和手机首页的快捷入口都吃这一份，避免两套计数逻辑漂移。
+     手机端快捷入口不显示数量，opts.count === false 时跳过那几次 progress() 全遍历 */
+  function navItems(opts) {
+    const withCount = !(opts && opts.count === false);
     const all = L.albums();
-    const favCount = all.filter(a => a.fav && !a.hidden).length
-      + (FM.fs.favTrackIds ? FM.fs.favTrackIds.size : 0);
+    const favCount = withCount
+      ? all.filter(a => a.fav && !a.hidden).length + (FM.fs.favTrackIds ? FM.fs.favTrackIds.size : 0)
+      : 0;
     const items = [
-      { key: 'home', hash: '#/', label: '首页', icon: 'home', count: all.filter(a => !a.hidden).length },
-      { key: 'continue', hash: '#/continue', label: '继续收听', icon: 'clock', count: continueList(999).length },
-      { key: 'recent', hash: '#/recent', label: '最近播放', icon: 'headphones', count: recentList(999).length },
+      { key: 'home', hash: '#/', label: '首页', icon: 'home', count: withCount ? all.filter(a => !a.hidden).length : 0 },
+      { key: 'continue', hash: '#/continue', label: '继续收听', icon: 'clock', count: withCount ? continueList(999).length : 0 },
+      { key: 'recent', hash: '#/recent', label: '最近播放', icon: 'headphones', count: withCount ? recentList(999).length : 0 },
       { key: 'fav', hash: '#/fav', label: '我的收藏', icon: 'heart', count: favCount }
     ];
     /* 下载管理只存在于 APK：和「我的收藏」一样是个网页视图 */
-    if (canDownload()) items.push({ key: 'downloads', hash: '#/downloads', label: '下载管理', icon: 'download', count: dlCount() });
+    if (canDownload()) items.push({ key: 'downloads', hash: '#/downloads', label: '下载管理', icon: 'download', count: withCount ? dlCount() : 0 });
     return items;
   }
 
@@ -718,13 +721,13 @@
       '</div>';
   }
 
-  /* 手机首页的快捷入口：承接原侧栏里的整页导航（首页本身不用出现在这里） */
+  /* 手机首页的快捷入口：承接原侧栏里的整页导航（首页本身不用出现在这里）。
+     一行放图标 + 文案，不显示数量角标 */
   function mobileQuickRow() {
-    const items = navItems().filter(function (it) { return it.key !== 'home'; });
+    const items = navItems({ count: false }).filter(function (it) { return it.key !== 'home'; });
     return '<div class="m-quick">' + items.map(function (it) {
       return '<button class="m-quick-item" data-act="nav" data-hash="' + it.hash + '">' +
         icon(it.icon) + '<span>' + it.label + '</span>' +
-        (it.count ? '<i class="m-quick-n">' + it.count + '</i>' : '') +
         '</button>';
     }).join('') + '</div>';
   }
