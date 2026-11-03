@@ -30,23 +30,23 @@ function ffmpeg(args) {
   execFileSync(FFMPEG, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y'].concat(args), { stdio: 'pipe' });
 }
 
-/* 1 秒的 wma（wmav2）和 flv（h264 + aac）：体积很小，转码不到 1 秒 */
+/* 1 秒的 flv（h264 + aac）：体积很小，重封装不到 1 秒 */
 function makeSamples(dir) {
-  const wma = path.join(dir, 'a.wma');
   const flv = path.join(dir, 'a.flv');
-  ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-c:a', 'wmav2', wma]);
   ffmpeg([
     '-f', 'lavfi', '-i', 'testsrc=duration=1:size=160x120:rate=10',
     '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
     '-c:v', 'libx264', '-c:a', 'aac', '-shortest', flv
   ]);
-  return { wma: wma, flv: flv };
+  return { flv: flv };
 }
 
-test('格式表：wma/ape/wv → mp3，flv → mp4，其它不需要转码', () => {
-  assert.equal(TC.outExt('wma'), 'mp3');
-  assert.equal(TC.outExt('.APE'), 'mp3');
-  assert.equal(TC.outExt('wv'), 'mp3');
+test('格式表：只有 flv → mp4；ape/wv/wma 一律不转码', () => {
+  ['wma', 'ape', 'wv'].forEach(function (e) {
+    assert.equal(TC.outExt(e), '', e + ' 不再走转码');
+    assert.equal(TC.needs(e), false, e + ' 不该触发转码');
+  });
+  assert.equal(TC.outExt('.APE'), '');
   assert.equal(TC.outExt('flv'), 'mp4');
   assert.equal(TC.outExt('mp3'), '');
   assert.equal(TC.needs('mp4'), false);
@@ -67,7 +67,7 @@ test('缓存文件名：40 位 sha1 + 目标扩展名，size/mtime 变了 key �
   assert.match(name, TC.NAME_RE);
 });
 
-test('前端白名单：flv 算视频、wv 算音频，四种格式都标记为需要转码', () => {
+test('前端白名单：flv 算视频要转码，ape/wv/wma 归为不支持，但仍能扫进库', () => {
   global.window = global.window || {};
   global.window.FM = global.window.FM || {};
   require('../js/media.js');
@@ -75,14 +75,23 @@ test('前端白名单：flv 算视频、wv 算音频，四种格式都标记为�
   assert.equal(M.kindOf('flv'), 'video');
   assert.equal(M.kindOf('wma'), 'audio');
   assert.equal(M.VIDEO.flv, 1, 'flv 必须能扫进来，否则库里根本看不到');
-  assert.equal(M.AUDIO.wv, 1);
-  ['wma', 'ape', 'wv', 'flv'].forEach(function (e) {
-    assert.equal(M.needsTranscode(e), true, e + ' 应该需要转码');
+  assert.equal(M.AUDIO.wv, 1, 'wv 仍要扫进库（列表里能看到，只是播不了）');
+  assert.equal(M.needsTranscode('flv'), true, 'flv 需要重封装');
+  ['ape', 'wv'].forEach(function (e) {
+    assert.equal(M.needsTranscode(e), false, e + ' 不再转码');
+    assert.equal(M.unsupported(e), true, e + ' 要落到「不支持格式」上');
+    assert.equal(M.AUDIO[e], 1, e + ' 仍要扫进库');
   });
+  assert.equal(M.needsTranscode('wma'), false, 'wma 不转码');
+  assert.equal(M.unsupported('wma'), true, 'wma 要落到「不支持格式」上');
+  assert.equal(M.unsupported('mp3'), false);
   ['mp3', 'mp4', 'm4a', 'webm'].forEach(function (e) {
     assert.equal(M.needsTranscode(e), false, e + ' 不该触发转码');
   });
-  assert.equal(M.needsTranscode('WMA'), true, '扩展名大小写不敏感');
+  assert.equal(M.needsTranscode('FLV'), true, '扩展名大小写不敏感');
+  assert.equal(M.unsupported('WV'), true, '不支持的判断也不区分大小写');
+  assert.equal(M.unsupported('APE'), true);
+  assert.equal(M.unsupported('WMA'), true);
 });
 
 /* 只在本机完全没有 ffmpeg 时才成立：FM_FFMPEG 指向不存在的路径后仍然找得到 PATH 上的 */
@@ -92,7 +101,7 @@ test('没有 ffmpeg 时：findFfmpeg 返回空，prepare 抛 no-ffmpeg', { skip:
   try {
     assert.equal(TC.findFfmpeg(true), '');
     await assert.rejects(
-      () => TC.prepare({ file: 'x.wma', rel: 'x.wma', stat: { size: 1, mtimeMs: 1 }, cacheDir: os.tmpdir() }),
+      () => TC.prepare({ file: 'x.flv', rel: 'x.flv', stat: { size: 1, mtimeMs: 1 }, cacheDir: os.tmpdir() }),
       function (e) { return e.code === 'no-ffmpeg'; }
     );
   } finally {
@@ -101,28 +110,16 @@ test('没有 ffmpeg 时：findFfmpeg 返回空，prepare 抛 no-ffmpeg', { skip:
   }
 });
 
-test('wma → mp3：产物可被 ffmpeg 读回，第二次走缓存', { skip: NO_FFMPEG && '本机没有 ffmpeg' }, async function (t) {
-  const dir = workDir();
-  const cacheDir = path.join(dir, 'cache');
-  let f = '';
-  try { f = makeSamples(dir).wma; } catch (e) { return t.skip('本机 ffmpeg 不支持 wmav2 编码'); }
-  const st = fs.statSync(f);
-  const opt = { file: f, rel: 'a.wma', stat: { size: st.size, mtimeMs: st.mtimeMs }, cacheDir: cacheDir };
-
-  const seen = [];
-  const r1 = await TC.prepare(Object.assign({}, opt, { onProgress: function (p) { seen.push(p); } }));
-  assert.equal(r1.ext, 'mp3');
-  assert.equal(r1.cached, false);
-  assert.ok(fs.statSync(r1.file).size > 0, '转出来的 mp3 不能是空文件');
-  assert.match(path.basename(r1.file), TC.NAME_RE);
-  seen.forEach(function (p) { assert.ok(p >= 1 && p <= 99, '进度应落在 1~99，实际 ' + p); });
-
-  const dur = await TC.probeDuration(r1.file);
-  assert.ok(Math.abs(dur - 1) < 0.4, '转出来的 mp3 时长应约 1 秒，实际 ' + dur);
-
-  const r2 = await TC.prepare(opt);
-  assert.equal(r2.cached, true, '同一文件第二次必须命中缓存');
-  assert.equal(r2.file, r1.file);
+/* ape / wv 改成「直接提示不支持」后，后端也不该再接受它们：前端一拦，这里就不该有调用；
+   万一有旧页面或手工请求进来，明确报 bad-format 比偷偷转一分钟更清楚 */
+test('ape / wv / wma 不再转码：prepare 直接抛 bad-format', async () => {
+  for (const ext of ['ape', 'wv', 'wma']) {
+    await assert.rejects(
+      () => TC.prepare({ file: 'x.' + ext, rel: 'x.' + ext, stat: { size: 1, mtimeMs: 1 }, cacheDir: os.tmpdir() }),
+      function (e) { return e.code === 'bad-format'; },
+      ext + ' 应该被拒绝'
+    );
+  }
 });
 
 test('flv → mp4：默认走重封装（copy），产物时长正确且第二次命中缓存', { skip: NO_FFMPEG && '本机没有 ffmpeg' }, async function (t) {
@@ -153,13 +150,17 @@ test('取消：转码中 abort 立刻收场，不留半成品', { skip: NO_FFMPE
   const cacheDir = path.join(dir, 'cache');
   let f = '';
   try {
-    f = path.join(dir, 'long.wma');
-    ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=6', '-c:a', 'wmav2', f]);
-  } catch (e) { return t.skip('本机 ffmpeg 不支持 wmav2 编码'); }
+    /* flv1（Sorenson H.263）进不了 mp4：copy 必然失败，会走重编码，
+       2 分钟 640x480 足够跑出一批进度事件，取消才测得准 */
+    f = path.join(dir, 'long.flv');
+    ffmpeg(['-f', 'lavfi', '-i', 'testsrc=duration=120:size=640x480:rate=25',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=120',
+      '-c:v', 'flv1', '-c:a', 'libmp3lame', '-shortest', f]);
+  } catch (e) { return t.skip('本机 ffmpeg 不支持 flv1 编码'); }
   const st = fs.statSync(f);
   const ctrl = new AbortController();
   const p = TC.prepare({
-    file: f, rel: 'long.wma', stat: { size: st.size, mtimeMs: st.mtimeMs }, cacheDir: cacheDir, signal: ctrl.signal,
+    file: f, rel: 'long.flv', stat: { size: st.size, mtimeMs: st.mtimeMs }, cacheDir: cacheDir, signal: ctrl.signal,
     /* 收到第一个进度才取消：这说明 ffmpeg 已经在跑，才验证得到「杀进程 + 清 .part」 */
     onProgress: function () { try { ctrl.abort(); } catch (e) {} }
   });
@@ -168,8 +169,8 @@ test('取消：转码中 abort 立刻收场，不留半成品', { skip: NO_FFMPE
   const left = fs.existsSync(cacheDir) ? fs.readdirSync(cacheDir) : [];
   assert.deepEqual(left, [], '取消后不该留下 .part 或转了一半的文件，实际：' + left.join(','));
   /* 取消过的文件重新请求时还得能正常转（不是把状态搞坏了） */
-  const again = await TC.prepare({ file: f, rel: 'long.wma', stat: { size: st.size, mtimeMs: st.mtimeMs }, cacheDir: cacheDir });
-  assert.equal(again.ext, 'mp3');
+  const again = await TC.prepare({ file: f, rel: 'long.flv', stat: { size: st.size, mtimeMs: st.mtimeMs }, cacheDir: cacheDir });
+  assert.equal(again.ext, 'mp4');
   assert.equal(again.cached, false);
 });
 
@@ -178,11 +179,13 @@ test('取消：多个等待者时，取消一个不影响另一个（同一个�
   const cacheDir = path.join(dir, 'cache');
   let f = '';
   try {
-    f = path.join(dir, 'share.wma');
-    ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=6', '-c:a', 'wmav2', f]);
-  } catch (e) { return t.skip('本机 ffmpeg 不支持 wmav2 编码'); }
+    f = path.join(dir, 'share.flv');
+    ffmpeg(['-f', 'lavfi', '-i', 'testsrc=duration=120:size=640x480:rate=25',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=120',
+      '-c:v', 'flv1', '-c:a', 'libmp3lame', '-shortest', f]);
+  } catch (e) { return t.skip('本机 ffmpeg 不支持 flv1 编码'); }
   const st = fs.statSync(f);
-  const opt = { file: f, rel: 'share.wma', stat: { size: st.size, mtimeMs: st.mtimeMs }, cacheDir: cacheDir };
+  const opt = { file: f, rel: 'share.flv', stat: { size: st.size, mtimeMs: st.mtimeMs }, cacheDir: cacheDir };
 
   const c1 = new AbortController();
   const p1 = TC.prepare(Object.assign({
@@ -192,11 +195,12 @@ test('取消：多个等待者时，取消一个不影响另一个（同一个�
   }, opt));
   /* 第二个调用同时发起：可能 join 到同一个任务，也可能因为还没登记而排到后面，
      两种情况下它都必须成功 */
+  await new Promise(function (r) { setTimeout(r, 80); });   // 等 p1 进 inflight，p2 才是 join
   const p2 = TC.prepare(Object.assign({}, opt));
 
   await assert.rejects(p1, function (e) { return e.code === 'aborted'; });
   const r2 = await p2;
-  assert.equal(r2.ext, 'mp3', '还有人在等，任务不该被一起取消');
+  assert.equal(r2.ext, 'mp4', '还有人在等，任务不该被一起取消');
 
   const r3 = await TC.prepare(opt);
   assert.equal(r3.cached, true, '产物应已落盘，第三个调用走缓存');
@@ -204,7 +208,7 @@ test('取消：多个等待者时，取消一个不影响另一个（同一个�
 
 test('时长探测：不存在的文件返回 0，不抛错', { skip: NO_FFMPEG && '本机没有 ffmpeg' }, async () => {
   const dir = workDir();
-  assert.equal(await TC.probeDuration(path.join(dir, 'nope.wma')), 0);
+  assert.equal(await TC.probeDuration(path.join(dir, 'nope.wv')), 0);
 });
 
 test('缓存清理：超过上限时从最旧的删到 80%，中断残留的 .part 也会被清掉', async () => {

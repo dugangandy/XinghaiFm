@@ -18,7 +18,8 @@ const covers = require('./cover-fetch');
 const TC = require('./transcode');
 
 const ROOT = __dirname;
-/* flv / wv 能扫进来但 Chromium 解不了，播放前由 transcode.js 转成 mp4 / mp3 */
+/* ape / wv / wma 能扫进来但 Chromium 解不了（点了明确提示不支持）；
+   flv 容器认不全，播放前由 transcode.js 重封装成 mp4 */
 const MEDIA = new Set([
   'm4a', 'm4b', 'mp3', 'aac', 'flac', 'wav', 'ogg', 'opus', 'wma', 'ape', 'wv',
   'mp4', 'm4v', 'mov', 'webm', 'ogv', 'flv'
@@ -212,7 +213,7 @@ async function serveMedia(request, rel) {
   return mediaResponse(request, file, stat);
 }
 
-/* ── 转码缓存：wma / ape / wv / flv 转出来的 mp3 / mp4 落在这里 ── */
+/* ── 转码缓存：flv 转出来的 mp4 落在这里 ── */
 function tcDir() {
   return path.join(app.getPath('userData'), 'tc');
 }
@@ -602,7 +603,7 @@ function bindIpc() {
     return DB.setFavTrack(getDb(), adminUid(), id, trackId, !!on);
   });
 
-  /* ── 转码：Chromium 解不了的格式（wma / ape / wv / flv）先转成 mp3 / mp4 再播 ──
+  /* ── 转码：Chromium 认不全的 flv 先重封装成 mp4 再播（ape / wv / wma 前端直接提示不支持） ──
      返回 { url, ext, cached } 或 { error, message }。前端拿到 url 直接当媒体源用；
      进度通过 'fm:tc' 推给页面（同一时间只会有一个任务在转，串行限流在 transcode.js 里）。 */
   /* 页面切走时按 id 取消：光让页面「不等了」没用，主进程得把排队中/正在转的任务停掉，
@@ -734,6 +735,13 @@ if (!gotLock) {
     bindIpc();
     getConfig();          // 老的 { root } 配置在这里就地升级
     createWindow();
+    /* 转码依赖系统 ffmpeg：启动时把结果打在控制台，找不到时至少留下排查线索
+       （macOS 从 Finder 启动的 app，PATH 往往只有 /usr/bin:/bin） */
+    if (!TC.findFfmpeg()) {
+      console.warn('[tc] 未找到 ffmpeg：flv 将无法播放');
+      console.warn('     安装：macOS「brew install ffmpeg」，或启动前设置 FM_FFMPEG 指向它');
+      console.warn(TC.explain());
+    }
     /* 转码缓存清理放到启动稳定之后：翻目录不该跟首屏抢 IO */
     setTimeout(function () {
       TC.sweep(tcDir(), TC.DEFAULT_MAX).catch(function () {});

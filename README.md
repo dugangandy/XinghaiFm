@@ -35,7 +35,7 @@
 - **睡眠定时**：分钟倒计时或「本集播完停止」，最后 10 秒音量淡出；可设每晚 22:00–07:00 播放时自动定时 30 分钟
 - **全屏播放页**：实时频谱、大封面、15 秒快进快退、播放队列
 - **视频播放**：mp4 / webm 直接看，flv 自动重封装，B 站式画面 + 浮层控件
-- **格式兼容**：wma / ape / wv / flv 由系统 ffmpeg 按需转码后播放（见「需要 ffmpeg 的格式」）
+- **格式兼容**：flv 由系统 ffmpeg 重封装后播放；ape / wv / wma 不做播放支持，点开会明确提示「不支持的文件格式」（见「需要 ffmpeg 的格式」）
 - **系统媒体键**：支持键盘媒体键与锁屏信息
 
 ## 资源库
@@ -67,13 +67,22 @@ ffmpeg -i 某剧集.mkv -c copy 某剧集.mp4     # 只换容器，几秒钟
 
 ## 需要 ffmpeg 的格式
 
-Chromium 没有 `wma / ape / wv` 的解码器，`flv` 容器也认不全，所以这几种会在播放前转成 `mp3 / mp4`：
+Chromium 认不全 `flv` 容器，所以播放前会重封装成 `mp4`：
 转好的文件缓存在用户数据目录的 `tc/` 下（桌面端 `%APPDATA%\星海FM\tc`，服务端与 `fm.db` 同目录），
 同一文件第二次播放直接命中缓存，不占额外等待。
 
-- 需要系统里有 **ffmpeg**，按这个顺序查找：环境变量 `FM_FFMPEG` → 项目目录下的 `bin/ffmpeg`（Windows 为 `bin\ffmpeg.exe`）→ `PATH`
-- 找不到时点这类文件会提示「该格式需要 ffmpeg 转换」，其它格式不受影响
+**`ape / wv / wma` 不在支持范围内**：它们只能靠 ffmpeg 解码成 mp3，但一张整轨 ape 要转近一分钟、
+一集 wma 有声书也要几十秒，等起来比报错更难受。这些文件仍会被扫描进库、时长照常显示，
+点播放会提示「不支持 APE 格式，请先转成 mp3」。批量转换：
+
+```bash
+ffmpeg -i 某集.ape -c:a libmp3lame -q:a 4 某集.mp3
+```
+
+- 需要系统里有 **ffmpeg**，按这个顺序查找：环境变量 `FM_FFMPEG`（可以给全路径，也可以给目录）→ 项目目录下的 `bin/ffmpeg`（Windows 为 `bin\ffmpeg.exe`）→ `PATH` → macOS 的 `/opt/homebrew/bin`、`/usr/local/bin`
+- 找不到时点这类文件会提示「该格式需要 ffmpeg 转换」，其它格式不受影响；服务端启动日志会列出查过哪些位置
 - 缓存总量上限 2GB，超了按最久未用的清理；重新扫描库后历史 `flv` 文件才会出现在列表里
+- 等待期间界面会显示转换进度；切成别的集会自动取消上一个文件的转换，不占 CPU
 
 ```bash
 FM_FFMPEG="D:/tools/ffmpeg/bin/ffmpeg.exe" npm start   # 手动指定 ffmpeg

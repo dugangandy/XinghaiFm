@@ -210,9 +210,18 @@
        在收起播放页时发生的，不能再让界面把它拉回来。 */
     ev.emit('track', track, { restored: !!o.restored });
     updateSession(track);
+    /* 明确不支持的格式（ape / wv / wma）：直接给结论。别放它走到 <audio> 才报
+       「播放失败」，更别去转码 —— 转一份要几十秒，等完还不如告诉用户换个文件。 */
+    if (FM.media.unsupported(track.ext)) {
+      const err = new Error('不支持的文件格式');
+      err.code = 'unsupported';
+      err.ext = String(track.ext || '').toLowerCase();
+      ev.emit('error', err);
+      return;
+    }
     try {
-      /* wma / ape / wv / flv 交给后端先转成 mp3 / mp4：首次要等一会儿，
-         之后同一文件走缓存；传 { prepare:true } 是因为时长探测也会调 src()，
+      /* flv 交给后端先重封装成 mp4：首次要等一会儿，之后同一文件走缓存；
+         传 { prepare:true } 是因为时长探测也会调 src()，
          不能让它顺手把整张专辑都转一遍。 */
       const needTc = FM.media.needsTranscode(track.ext);
       let s;

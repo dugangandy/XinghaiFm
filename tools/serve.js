@@ -19,7 +19,7 @@
  *   GET  /api/covers            封面索引（.fm-covers/covers.json）
  *   GET  /api/cover/<file>      封面图片
  *   GET  /api/media/<rel>       音频流，支持 Range（拖动进度条）
- *   POST /api/prepare           把 wma/ape/wv/flv 转成 mp3/mp4，返回可播地址
+ *   POST /api/prepare           把 flv 重封装成 mp4，返回可播地址
  *   GET  /api/tc/<file>         转码缓存流，支持 Range
  *   GET  /api/duration?rel=     只读文件头取时长（不转码）
  *
@@ -46,7 +46,7 @@ const zlib = require('node:zlib');
 
 const APP_ROOT = path.resolve(__dirname, '..');
 const covers = require('../cover-fetch');
-/* 和桌面端主进程共用同一套转码逻辑：wma/ape/wv → mp3，flv → mp4 */
+/* 和桌面端主进程共用同一套转码逻辑：flv → mp4（ape/wv/wma 直接提示不支持） */
 const TC = require('../transcode');
 /* 登录页的转义与站内跳转校验：单独成模块，方便单测 */
 const { escHtml, safeNext } = require('./safe');
@@ -536,7 +536,7 @@ function sendRangeFile(req, res, file, st) {
   pipeFile(file, res, { start: range.start, end: range.end });
 }
 
-/* ── 转码缓存：wma / ape / wv / flv 转出来的 mp3 / mp4 放在数据库旁边 ── */
+/* ── 转码缓存：flv 转出来的 mp4 放在数据库旁边 ── */
 function tcDir() {
   return path.join(path.dirname(dataFilePath()), 'tc');
 }
@@ -988,8 +988,8 @@ const server = http.createServer(async function (req, res) {
     return serveMedia(req, res, p.slice('/api/media/'.length), root);
   }
 
-  /* ── 转码：Chromium 解不了的格式（wma/ape/wv/flv）先转成 mp3/mp4 再播 ──
-     转换是 CPU 活，一个文件可能要几十秒，所以先让前端拿一个「准备好了」的应答，
+  /* ── 转码：Chromium 认不全的 flv 容器先重封装成 mp4 再播 ──
+     转换是 CPU 活，长视频可能要几十秒，所以先让前端拿一个「准备好了」的应答，
      再自己去 /api/tc/<name> 拉流；请求期间保持连接，前端只显示「正在转换」。 */
   if (p === '/api/prepare') {
     if (req.method !== 'POST') return send(res, 405, 'POST only');
@@ -1101,7 +1101,15 @@ server.listen(port, host, function () {
     console.log('  ' + (u.role === 'admin' ? '*' : ' ') + ' ' + u.username + '  资源库 ' + libs.length + ' 个');
   });
   if (DEBUG_REQ) console.log('调试日志已开（FM_DEBUG=1）：/api/media、/api/progress 等逐个记一行');
-  console.log('ffmpeg · ' + (TC.findFfmpeg() || '未找到（wma / ape / wv / flv 将无法播放，可设 FM_FFMPEG 指定）'));
+  const ff = TC.findFfmpeg();
+  if (ff) console.log('ffmpeg · ' + ff);
+  else {
+    console.log('ffmpeg · 未找到，flv 将无法播放');
+    console.log('  安装：macOS「brew install ffmpeg」｜Debian/Ubuntu「sudo apt install ffmpeg」');
+    console.log('  装过仍报这个（常见于 launchd / GUI 启动，PATH 里没有 brew 目录）：');
+    console.log('    FM_FFMPEG=/opt/homebrew/bin/ffmpeg node tools/serve.js');
+    console.log(TC.explain());
+  }
   /* 转码缓存清理：翻目录和首屏不抢 IO，延后几秒再做 */
   setTimeout(function () {
     TC.sweep(tcDir(), TC.DEFAULT_MAX).catch(function () {});

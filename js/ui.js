@@ -1580,11 +1580,12 @@
       const t = pool[i];
       if (token !== probeToken) return;
       try {
-        /* 需要转码的格式（wma/ape/wv/flv）只让后端读文件头取时长：
-           走 src() 会把整个文件转一遍，翻一张专辑就是几十个转码任务。
+        /* 需要转码或干脆不支持的格式（flv / ape / wv / wma）只让后端读文件头取时长：
+           走 src() 会触发转码、或者拿到一个根本放不出来的 blob。ape/wv/wma 虽然不能播，
+           时长照样能从文件头读出来，列表里不至于全是 --:--。
            读不到就记 __noDur（本次会话不再试）：否则没装 ffmpeg 的机器上
            每进一次专辑页都要白发几十个 HTTP/IPC 请求 */
-        if (FM.media.needsTranscode(t.ext)) {
+        if (FM.media.needsTranscode(t.ext) || FM.media.unsupported(t.ext)) {
           const d = await FM.fs.duration(t.rel);
           if (token !== probeToken) return;
           if (!applyDur(t, d)) t.__noDur = true;
@@ -2839,7 +2840,7 @@
     P.on('volume', paintVolume);
     P.on('loop', paintLoop);
     P.on('sleep', paintSleep);
-    /* wma / ape / wv / flv 首次播放要先转码：盖一层过渡层，转完自动收 */
+    /* flv 首次播放要先重封装：盖一层过渡层，转完自动收 */
     P.on('preparing', function (track) { if (track) showTc(track.title); else hideTc(); });
     P.on('tcProgress', function (info) { if (info && info.pct) setTcPct(info.pct); });
     /* 只有确实断网才用统一网络文案；本地文件损坏/编码问题不要误报成断网 */
@@ -2849,6 +2850,12 @@
       hideTc();
       /* 取消是主动行为（切集 / 收起播放页），不是播放故障 */
       if (code === 'aborted') return;
+      /* 明确不支持的格式（ape / wv / wma）：不走转码（一份要转几十秒），直接告诉用户换文件 */
+      if (code === 'unsupported') {
+        const ext = (e && e.ext) ? String(e.ext).toUpperCase() : '';
+        toast('不支持' + (ext ? ' ' + ext + ' ' : '该') + '格式，请先转成 mp3 再放进资源库', 'warn');
+        return;
+      }
       /* 转码相关：格式本身没错，缺的是 ffmpeg 或文件坏了，给的提示要有指向性 */
       if (code === 'no-ffmpeg') {
         if (!ffmpegWarned) {
@@ -3744,7 +3751,7 @@
     });
   }
 
-  /* ── 转码过渡层：wma / ape / wv / flv 首次播放要先转成 mp3 / mp4 ──
+  /* ── 转码过渡层：flv 首次播放要先重封装成 mp4 ──
      转码在后台跑（主进程/服务端），这里只负责「让人知道为什么还没出声」。
      百分比来自主进程推的 fm:tc；拿不到百分比时停在「正在转换，请稍候…」。 */
   let tcHideTimer = 0;

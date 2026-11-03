@@ -34,7 +34,7 @@ contextBridge.exposeInMainWorld('fmNative', {
   deleteCover: (dirName) => ipcRenderer.invoke('fm:deleteCover', dirName),
   openLib: (id) => ipcRenderer.invoke('fm:openLib', id),
   reveal: (rel) => ipcRenderer.invoke('fm:reveal', rel),
-  /* 转码：wma/ape/wv/flv 先转成 mp3/mp4 再播，返回 { url } 或 { error }。
+  /* 转码：flv 先重封装成 mp4 再播，返回 { url } 或 { error }。
      id 用来取消：页面切到别的集时调 cancelPrepare(id)，主进程会停掉这次转码 */
   prepare: (rel, id) => ipcRenderer.invoke('fm:prepare', rel, id),
   cancelPrepare: (id) => ipcRenderer.send('fm:tcCancel', id),
