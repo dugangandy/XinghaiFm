@@ -3618,27 +3618,19 @@
   function openLibDrawer() {
     /* 网页端普通用户：禁用资源库设置页（服务端已对写操作做管理员校验，这里前端再拦一道） */
     if (!canManageLib()) { toast('只有管理员可以管理资源库', 'warn'); return; }
-    const sub = U.el('small', { class: 'drawer-sub' });
     const list_ = U.el('div', { class: 'lib-list' });
     const mask = U.el('div', { class: 'lib-drawer-mask' });
     const panel = U.el('div', { class: 'lib-drawer' });
     let closed = false;
 
     const head = U.el('div', { class: 'lib-drawer-head' });
-    const titleBox = U.el('div', { class: 'lib-drawer-title' }, [U.el('h3', { text: '资源库设置' }), sub]);
+    const titleBox = U.el('div', { class: 'lib-drawer-title' }, [U.el('h3', { text: '资源库设置' })]);
     const x = U.el('button', { class: 'icon-btn', title: '关闭', html: icon('close') });
     x.onclick = function () { close(); };
     head.append(titleBox, x);
 
-    /* 顶部说明：把「两级」这个开关讲清楚，不然一排按钮没人知道是干什么的 */
+    /* 提示区只在真有内容时（远程只读等）才占位，平时不显示 */
     const tips = U.el('div', { class: 'lib-drawer-tips' });
-    /* 手机上不给改分组，这条操作指引也就别显示了 */
-    if (canEditGroup()) {
-      tips.appendChild(U.el('div', {
-        class: 'lib-drawer-tip',
-        text: '行尾的「按专辑」= 每个文件夹是一张专辑（默认），点它可切成「按分类」：一级文件夹变分类、二级文件夹才是专辑。'
-      }));
-    }
     const body = U.el('div', { class: 'lib-drawer-body' }, [tips, list_]);
 
     const foot = U.el('div', { class: 'lib-drawer-foot' });
@@ -3695,10 +3687,6 @@
 
     function draw() {
       const list = FM.fs.libs();
-      const curLib = list.filter(function (x) { return x.id === FM.fs.activeId; })[0];
-      sub.textContent = list.length
-        ? list.length + ' 个 · 当前 ' + (curLib ? curLib.name : '未选择') + (FM.fs.remote ? ' · 远程' : '')
-        : '还没有添加';
       list_.innerHTML = '';
       if (!list.length) {
         list_.innerHTML = '<div class="lib-empty">还没有资源库。添加一个放音频 / 视频的文件夹就能开始。</div>';
