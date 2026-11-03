@@ -998,9 +998,12 @@
          否则 build 会以为分组方式变了，把两层时代建的分类归属当成旧数据清掉 */
       const dirGroup = (data.dirGroup === undefined) ? undefined : !!data.dirGroup;
       if (dirGroup !== undefined) activeLib.dirGroup = dirGroup;
+      /* stale：服务端等了 2 分钟还没扫完，先把上次的缓存给我们看，
+         它那边还在后台接着扫，扫完落盘后 scannedAt 会变，下次能同步到 */
       return {
         libId, rootName: data.rootName || activeLib.name, root: data.root || 'server', mode,
-        files: data.files, scannedAt: Number(data.scannedAt) || 0, dirGroup
+        files: data.files, scannedAt: Number(data.scannedAt) || 0, dirGroup,
+        stale: !!data.stale
       };
     }
 
@@ -1014,7 +1017,8 @@
       if (dirGroup !== undefined) activeLib.dirGroup = dirGroup;
       return {
         libId, rootName: res.rootName || activeLib.name, root: res.root, mode,
-        files: res.files, scannedAt: Number(res.scannedAt) || 0, dirGroup
+        files: res.files, scannedAt: Number(res.scannedAt) || 0, dirGroup,
+        stale: !!res.stale
       };
     }
 

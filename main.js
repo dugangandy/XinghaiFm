@@ -339,6 +339,11 @@ const SCAN_STALE_MS = 5 * 60 * 1000;
 
 async function walkAndCache(root) {
   const out = [];
+  /* 先把文件收集起来，readdir 走完再统一 stat：stat 是逐个系统调用，串行做在
+     NAS / 移动硬盘 / 机械盘上能把整库扫描拖到分钟级，8 路并发快一个数量级，
+     又不至于把磁盘打满（网络盘再大会退化成排队，不会更慢） */
+  const pending = [];
+  const STAT_CONC = 8;
   async function walk(dir, prefix, depth) {
     let entries;
     try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
@@ -352,28 +357,32 @@ async function walkAndCache(root) {
         const dot = entry.name.lastIndexOf('.');
         const ext = dot < 0 ? '' : entry.name.slice(dot + 1).toLowerCase();
         if (!MEDIA.has(ext)) continue;
-        let st = null;
-        try { st = await fsp.stat(abs); } catch (e) {}
-        out.push({
-          rel: rel,
-          name: entry.name,
-          ext: ext,
-          size: st ? st.size : 0,
-          mtime: st ? st.mtimeMs : 0,
-          depth: depth
-        });
+        pending.push({ rel, name: entry.name, ext, depth, abs, size: 0, mtime: 0 });
       }
     }
   }
   await walk(root, '', 1);
+  for (let i = 0; i < pending.length; i += STAT_CONC) {
+    await Promise.all(pending.slice(i, i + STAT_CONC).map(async function (it) {
+      let st = null;
+      try { st = await fsp.stat(it.abs); } catch (e) {}
+      it.size = st ? st.size : 0;
+      it.mtime = st ? st.mtimeMs : 0;
+    }));
+  }
+  pending.forEach(function (it) {
+    out.push({ rel: it.rel, name: it.name, ext: it.ext, size: it.size, mtime: it.mtime, depth: it.depth });
+  });
   const data = { rootName: path.basename(root), root: root, scannedAt: Date.now(), files: out };
   writeScanCache(root, data);
   return data;
 }
 
 /* 等同一库那次 walk 最多等这么久：移动硬盘/网络盘卡住时不能让请求一直挂着，
-   超时先把旧缓存回给界面，后台那次 walk 跑完仍然会落盘 */
-const SCAN_WAIT_MS = 60000;
+   超时先把旧缓存回给界面，后台那次 walk 跑完仍然会落盘。
+   第一次扫大库（几万文件、外接盘）两分钟也未必够，120 秒是个折中：
+   超过就先用旧数据顶上，扫描不会白跑 */
+const SCAN_WAIT_MS = 120000;
 
 function withTimeout(p, ms) {
   return new Promise(function (resolve, reject) {
@@ -407,7 +416,19 @@ async function scanFolder(root, opts) {
   try {
     return await withTimeout(rec.p, SCAN_WAIT_MS);
   } catch (err) {
-    if (cached) { console.warn('[scan] 等扫描超时，先回旧缓存', err.message); return cached; }
+    if (cached) {
+      console.warn('[scan] 扫描超过 ' + Math.round(SCAN_WAIT_MS / 1000) + ' 秒，先回上次结果；后台扫完会自动落盘');
+      /* stale：前端据此提示「还在后台扫」，别让人以为已经扫完了 */
+      return Object.assign({}, cached, { stale: true });
+    }
+    /* 连旧缓存都没有（第一次扫这么大的库）：不能说「扫描失败」，
+       后台那次 walk 还在跑，扫完会落盘，再扫一次就读到了。
+       真正的走盘错误（目录被删、权限不足）照原样抛出去 */
+    if (err && err.code === 'ETIMEDOUT') {
+      const e2 = new Error('库太大，第一次扫描还没跑完；它会在后台继续，稍后再点「重新扫描」就能看到结果');
+      e2.code = 'ESCANNING';
+      throw e2;
+    }
     throw err;
   }
 }

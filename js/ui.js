@@ -4113,6 +4113,24 @@
   }
 
   let scanSeq = 0;
+  /* stale 结果等后台扫完再读一次：一分钟一次，最多五次（大库外接盘够用了）。
+     stale 只是「先给你旧的结果」，服务端/主进程那次 walk 还在跑，落盘后时间戳会变，
+     所以判据用 scannedAt 有没有前进，而不是这次读到的数据看起来新不新
+     （重试读的是缓存，缓存没更新时它照样能读出来，「不 stale」不等于「扫完了」） */
+  let staleRetry = 0;
+  function retryAfterStale(libId) {
+    const my = ++staleRetry;
+    const baseAt = FM.lib.scannedAt;
+    let tries = 0;
+    const timer = setInterval(async function () {
+      if (my !== staleRetry || libId !== FM.fs.activeId || ++tries > 5) { clearInterval(timer); return; }
+      if (navLocked()) return;
+      /* refresh 不带：只读服务端/主进程的扫描缓存，不走盘 */
+      try { await runScan({ silent: true, quiet: true, libId, background: true }); } catch (e) {}
+      if (FM.lib.scannedAt > baseAt) clearInterval(timer);
+    }, 60000);
+  }
+
   async function runScan(opts) {
     const o = opts || {};
     const libId = o.libId || FM.fs.activeId;
@@ -4152,7 +4170,14 @@
       }
       if (!o.silent) renderAll();
       else if (libSignature() !== before) renderAll({ quiet: true });
-      if (!o.silent) toast('资源库已更新：' + L.albums().length + ' 个专辑 · ' + L.tracks().length + ' 集');
+      if (scan.stale) {
+        /* 服务端/主进程等了两分钟还没扫完，先给上次的结果；它还在后台接着扫，
+           扫完会落盘，所以隔一分钟后重试读缓存，拿到新内容就自动换上去 */
+        if (!o.silent) toast('库太大，扫描还在后台继续，先显示上次的结果', 'warn');
+        retryAfterStale(libId);
+      } else if (!o.silent) {
+        toast('资源库已更新：' + L.albums().length + ' 个专辑 · ' + L.tracks().length + ' 集');
+      }
       /* 服务端扫完也会在后台补封面，隔一会儿读一次索引，拿到新图就重绘 */
       if (FM.fs.server && scan.coversPending) watchCovers(libId);
       return true;

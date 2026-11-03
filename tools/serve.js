@@ -512,6 +512,9 @@ function dropScanCache(root) {
 
 async function walkAndCache(root) {
   const out = [];
+  /* 同 main.js：先收集文件，再 8 路并发 stat，别一个文件一个 stat 串着等 */
+  const pending = [];
+  const STAT_CONC = 8;
   async function walk(dir, prefix, depth) {
     let list;
     try { list = await fsp.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
@@ -524,21 +527,31 @@ async function walkAndCache(root) {
       } else if (ent.isFile()) {
         const ext = path.extname(ent.name).slice(1).toLowerCase();
         if (!MEDIA_EXT.has(ext)) continue;
-        let st = null;
-        try { st = await fsp.stat(abs); } catch (e) {}
-        out.push({ rel: rel, name: ent.name, ext: ext, size: st ? st.size : 0, mtime: st ? st.mtimeMs : 0, depth: depth });
+        pending.push({ rel, name: ent.name, ext, depth, abs, size: 0, mtime: 0 });
       }
     }
   }
   await walk(root, '', 1);
+  for (let i = 0; i < pending.length; i += STAT_CONC) {
+    await Promise.all(pending.slice(i, i + STAT_CONC).map(async function (it) {
+      let st = null;
+      try { st = await fsp.stat(it.abs); } catch (e) {}
+      it.size = st ? st.size : 0;
+      it.mtime = st ? st.mtimeMs : 0;
+    }));
+  }
+  pending.forEach(function (it) {
+    out.push({ rel: it.rel, name: it.name, ext: it.ext, size: it.size, mtime: it.mtime, depth: it.depth });
+  });
   const data = { rootName: path.basename(root), root: root, scannedAt: Date.now(), files: out };
   writeScanCache(root, data);
   return data;
 }
 
 /* 等别人那次 walk 最多等这么久：NAS 掉线、目录卡死时不能让后来的请求一起挂死。
-   超时先把手里的旧缓存回给客户端，后台那次 walk 跑完仍然会落盘 */
-const SCAN_WAIT_MS = 60000;
+   超时先把手里的旧缓存回给客户端，后台那次 walk 跑完仍然会落盘。
+   120 秒：第一次扫大库（几万文件、外接盘）一分半未必够，超过就先用旧数据顶上 */
+const SCAN_WAIT_MS = 120000;
 
 function withTimeout(p, ms) {
   return new Promise(function (resolve, reject) {
@@ -578,7 +591,17 @@ async function scanFolder(root, opts) {
     return await withTimeout(rec.p, SCAN_WAIT_MS);
   } catch (err) {
     /* 超时 / 这次 walk 失败：有旧缓存就先给旧的，别让请求一直挂着 */
-    if (cached) { console.log('[scan] 等扫描超时，先回旧缓存：' + err.message); return cached; }
+    if (cached) {
+      console.log('[scan] 扫描超过 ' + Math.round(SCAN_WAIT_MS / 1000) + ' 秒，先回上次结果；后台扫完会自动落盘');
+      return Object.assign({}, cached, { stale: true });
+    }
+    if (err && err.code === 'ETIMEDOUT') {
+      /* 连缓存都没有（第一次扫这么大的库）：不能说「扫描失败」，
+         后台那次 walk 还在跑，扫完会落盘，再问一次就读到了 */
+      const e2 = new Error('库太大，第一次扫描还没跑完；它会在后台继续，稍后再点「重新扫描」就能看到结果');
+      e2.code = 'ESCANNING';
+      throw e2;
+    }
     throw err;
   }
 }
