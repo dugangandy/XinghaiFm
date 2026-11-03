@@ -900,6 +900,10 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
   font-variant-numeric:tabular-nums;letter-spacing:.01em;
 }
 .lib-remote-btn:hover .remote-txt b{color:var(--txt)}
+/* 只读态：资源库抽屉里的服务器地址仅作展示，不响应点击、不做 hover 位移 */
+.lib-remote-btn.is-ro{cursor:default}
+.lib-remote-btn.is-ro:hover{background:rgba(255,255,255,.02);border-color:var(--line);transform:none}
+.lib-remote-btn.is-ro:hover .remote-txt b{color:var(--txt-2)}
 .lib-drawer-foot .btn{flex:1}
 /* 服务器按钮内容多，给它多一点宽度，完成按钮收窄固定 */
 /* 两个按钮等宽等高：flex 的 basis 0 会被 padding 撑出差异，直接按 50% 分 */

@@ -1684,11 +1684,20 @@
     /* 三种空状态：远端有库 / 壳里读不到库 / 本机浏览器还没选目录 */
     let text, steps, actions;
     if (srv) {
-      text = '远端模式：资源库由主机上的目录「' + esc(FM.fs.rootName || '远程资源库') + '」提供。<br>加书请在主机上放进这个目录，再点下面的重新扫描。';
-      steps = '<span class="step"><b>1</b>主机放入音频</span>' +
-        '<span class="step"><b>2</b>重新扫描</span>' +
-        '<span class="step"><b>3</b>分类、倍速、播放</span>';
-      actions = '<button class="btn btn-primary" data-act="rescan" style="height:44px;padding:0 26px">' + icon('refresh') + '重新扫描</button>';
+      text = FM.android
+        ? '远端模式：资源库由主机上的目录「' + esc(FM.fs.rootName || '远程资源库') + '」提供。<br>加书请在主机上放进这个目录并重新扫描，手机这边会自动同步。'
+        : '远端模式：资源库由主机上的目录「' + esc(FM.fs.rootName || '远程资源库') + '」提供。<br>加书请在主机上放进这个目录，再点下面的重新扫描。';
+      steps = FM.android
+        ? '<span class="step"><b>1</b>主机放入音频</span>' +
+          '<span class="step"><b>2</b>主机重新扫描</span>' +
+          '<span class="step"><b>3</b>手机自动同步</span>'
+        : '<span class="step"><b>1</b>主机放入音频</span>' +
+          '<span class="step"><b>2</b>重新扫描</span>' +
+          '<span class="step"><b>3</b>分类、倍速、播放</span>';
+      /* 手机端不提供扫描入口，只留重试（连不上主机时用） */
+      actions = FM.android
+        ? '<button class="btn" data-act="retry" style="height:44px;padding:0 22px">' + icon('refresh') + '重试连接</button>'
+        : '<button class="btn btn-primary" data-act="rescan" style="height:44px;padding:0 26px">' + icon('refresh') + '重新扫描</button>';
     } else if (app) {
       text = '还没读到电脑上的资源库。<br>先在电脑端添加一个有声书目录，或确认服务是否在运行。';
       steps = '<span class="step"><b>1</b>电脑上运行服务</span>' +
@@ -3396,9 +3405,11 @@
      侧栏在手机上不出现，原来的资源库 / 扫描 / 服务器入口全部收进这个菜单 */
   function openSettingsMenu() {
     const items = [
-      { label: '我的资源库', icon: 'library', onClick: openLibDrawer },
-      { label: '重新扫描', icon: 'refresh', onClick: doScan }
+      { label: '我的资源库', icon: 'library', onClick: openLibDrawer }
     ];
+    /* 手机端不给扫描入口：整库扫描跑在主机上，手机点一次就是主机全盘 readdir + stat。
+       主机扫过之后手机这边会自动同步（见 syncScanIfNewer），不需要手动触发 */
+    if (!FM.android) items.push({ label: '重新扫描', icon: 'refresh', onClick: doScan });
     if (FM.fs.desktop) {
       items.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'chevron', onClick: openRemoteDialog });
     } else if (FM.android) {
@@ -3561,12 +3572,11 @@
       foot.appendChild(add);
     }
     /* 远端设置入口在资源库菜单里（「远程服务器设置…」），抽屉底部不再重复放一个 */
-    /* 壳里没有「在文件夹中打开」这类本地动作，换成唯一有用的：换服务器 */
+    /* 壳里只读展示当前服务器地址：换服务器走顶栏设置 →「服务器设置…」，这里不再绑跳转 */
     if (FM.android) {
-      const appBtn = U.el('button', { class: 'btn btn-ghost lib-remote-btn', title: '服务器地址' });
-      appBtn.innerHTML = '<span class="remote-txt"><b>服务器地址</b><small>' + esc(FM.android.base() || '未设置') + '</small></span>';
-      appBtn.onclick = function () { close(); FM.android.openSettings(); };
-      foot.appendChild(appBtn);
+      const appInfo = U.el('div', { class: 'btn btn-ghost lib-remote-btn is-ro', title: '当前服务器地址（只读）' });
+      appInfo.innerHTML = '<span class="remote-txt"><b>服务器地址</b><small>' + esc(FM.android.base() || '未设置') + '</small></span>';
+      foot.appendChild(appInfo);
     }
     const done = U.el('button', { class: 'btn btn-primary', text: '完成' });
     done.onclick = function () { close(); };
@@ -3881,6 +3891,26 @@
     return !(c && c.albums && c.albums.length);
   }
 
+  /* 服务端模式：别人（桌面 / 网页）扫完写进服务端缓存后，把那份索引静默同步过来。
+     全程 refresh=false，只是在服务端读缓存，不会触发走盘——手机端没有扫描入口，靠它拿到新书。
+     gap 是两次检查之间的最小间隔：切库 / 启动用默认 30 秒，回前台用 5 分钟
+     （回前台那几百毫秒是 WebView 重新出图的窗口，别在那儿做下载 + 解析 + 重绘的重活）。 */
+  let stampCheckedAt = 0;
+  async function syncScanIfNewer(gap) {
+    if (!FM.fs.server || !FM.fs.activeId) return false;
+    const now = Date.now();
+    if (now - stampCheckedAt < (Number(gap) || 30000)) return false;
+    stampCheckedAt = now;
+    const id = FM.fs.activeId;
+    let at = 0;
+    try { at = await FM.fs.scanStamp(); } catch (e) { return false; }
+    /* 服务端那份比本地索引新才同步；期间切了库就作废。
+       两边比的是「扫描方写的时间戳」（L.build 取 scan.scannedAt），不是本地时钟 */
+    if (!at || at <= FM.lib.scannedAt || id !== FM.fs.activeId) return false;
+    /* quiet：同步缓存不该弹「正在扫描资源库…」 */
+    try { return await runScan({ silent: true, quiet: true, libId: id }); } catch (e) { return false; }
+  }
+
   /* 进入当前库：有缓存直接秒出，不再后台补扫 */
   async function enterLib(opts) {
     const o = opts || {};
@@ -3899,6 +3929,8 @@
       if (FM.app && FM.app.scheduleMetaWrite) FM.app.scheduleMetaWrite(1500, true);
       /* 只有这库完全没有缓存时才补扫；期间已经切走就不扫了 */
       if (needRescan(id)) setTimeout(function () { if (id === FM.fs.activeId) autoRescan(true); }, 1200);
+      /* 主机那边可能刚扫过：顺手问一下时间戳，有更新的就静默同步（不触发扫描） */
+      else syncScanIfNewer();
       return;
     }
     await runScan({ silent: true });
@@ -3967,15 +3999,20 @@
     const o = opts || {};
     const libId = o.libId || FM.fs.activeId;
     if (!libId || libId !== FM.fs.activeId) return false;
+    /* quiet：只是后台同步一下缓存（比如回前台问时间戳），不弹扫描指示条，
+       否则顶栏会闪一行「正在扫描资源库…」，用户以为在扫盘 */
+    const showBusy = !o.quiet;
     /* 收藏可能在别的端刚改过：扫描前重拉一次，别让界面停在旧状态 */
     try { await FM.fs.loadFavs(libId); } catch (e) {}
     const my = ++scanSeq;
-    setScanBusy(true, '正在扫描资源库…');
+    if (showBusy) setScanBusy(true, '正在扫描资源库…');
     try {
+      /* 只有手动「重新扫描」才让服务端/主进程真的走盘；静默补扫一律读它们的扫描缓存 */
       const scan = await FM.fs.scan(function (p) {
+        if (!showBusy) return;
         if (p.phase === 'list') setScanBusy(true, '发现 ' + p.count + ' 个音频…');
         else setScanBusy(true, '读取文件信息 ' + p.done + ' / ' + p.total);
-      });
+      }, { refresh: !o.silent });
       /* 扫描期间切了库：这份结果属于上一个库，直接丢掉，别把界面串了 */
       if (libId !== FM.fs.activeId) return false;
       /* 换库或刚抓完封面时，索引会变，重新读一遍 */
@@ -3997,8 +4034,9 @@
       if (FM.fs.server && scan.coversPending) watchCovers(libId);
       return true;
     } finally {
-      /* 只有最新那次扫描能收起进度，旧扫描收尾不许关掉新扫描的提示 */
-      if (my === scanSeq) setScanBusy(false);
+      /* 只有最新那次扫描能收起进度，旧扫描收尾不许关掉新扫描的提示；
+         quiet 的那次本来就没弹，别去关别人正在显示的进度 */
+      if (showBusy && my === scanSeq) setScanBusy(false);
     }
   }
 
@@ -4083,7 +4121,7 @@
 
   FM.ui = {
     init, renderAll, flushBootRender, paintTrack, syncMode, downloadsChanged,
-    autoRescan, runScan, enterLib, switchLib, addLibFlow, needRescan,
+    autoRescan, runScan, enterLib, switchLib, addLibFlow, needRescan, syncScanIfNewer,
     openLibMenu, openLibDrawer, renderStat, renderWelcome, renderBrokenLib,
     toast, openSheet, closeSheet,
     get refs() { return refs; }
