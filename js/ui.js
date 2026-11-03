@@ -333,9 +333,14 @@
     const el = U.el('div', { class: 'menu-pop' + (o.cls ? ' ' + o.cls : '') });
     items.forEach(function (it) {
       if (it.sep) { el.appendChild(U.el('div', { class: 'menu-sep' })); return; }
-      const b = U.el('button', { class: 'menu-item' + (it.danger ? ' danger' : '') + (it.cls ? ' ' + it.cls : '') });
+      /* head：一小段分组标题（比如「目录结构」）；sub：主标题下面那行弱化的括号说明 */
+      if (it.head) { el.appendChild(U.el('div', { class: 'menu-head', text: it.head })); return; }
+      const b = U.el('button', { class: 'menu-item' + (it.danger ? ' danger' : '') + (it.sub ? ' tall' : '') + (it.cls ? ' ' + it.cls : '') });
       b.innerHTML = (o.noIcon ? '' : icon(it.icon || 'chevron')) +
-        '<span>' + esc(it.label) + '</span>' +
+        (it.sub
+          ? '<span class="menu-main"><span class="menu-label">' + esc(it.label) + '</span>' +
+            '<span class="menu-sub">（' + esc(it.sub) + '）</span></span>'
+          : '<span>' + esc(it.label) + '</span>') +
         (it.right ? '<span class="menu-right">' + icon(it.right) + '</span>' : '');
       b.addEventListener('click', function () { closeMenu(); it.onClick && it.onClick(); });
       el.appendChild(b);
@@ -1308,7 +1313,7 @@
     /* 「按分类」分组下，一级文件夹自己会做成一张散集专辑（path 不带 /）。
        它的标题就是分类名，再挂一个同名分类 tag 等于自己标自己，纯噪音——
        这类专辑不显示 tag；二级专辑才挂分类 tag。 */
-    const topCatAlbum = L.isDirGroup() && !!a.dirCat && String(a.path || '').indexOf('/') < 0;
+    const topCatAlbum = L.dirMode() === 'cat' && !!a.dirCat && String(a.path || '').indexOf('/') < 0;
     const cats = topCatAlbum ? [] : L.cats().filter(c => a.cats.indexOf(c.id) >= 0);
     const catTags = cats.map(c => '<span class="tag cat">' + esc(c.name) + '</span>').join('');
     const tagHtml = topCatAlbum ? '' : a.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join('');
@@ -3432,14 +3437,11 @@
     const items = [
       { label: '我的资源库', icon: 'library', onClick: openLibDrawer }
     ];
-    /* 这个菜单只出现在手机顶栏；分组方式只在桌面端改，这里不给入口 */
+    /* 这个菜单只出现在手机顶栏；目录结构只在桌面端改，这里不给入口 */
     const curLib = FM.fs.active();
     if (curLib && canEditGroup()) {
-      items.push({
-        label: '分组方式：' + (curLib.dirGroup ? '按分类' : '按专辑'),
-        icon: 'grid',
-        onClick: function () { toggleDirGroup(curLib, function () { renderAll({ quiet: true }); }); }
-      });
+      dirModeItems(curLib, function () { renderAll({ quiet: true }); })
+        .forEach(function (it) { items.push(it); });
     }
     /* 手机端不给扫描入口：整库扫描跑在主机上，手机点一次就是主机全盘 readdir + stat。
        主机扫过之后手机这边会自动同步（见 syncScanIfNewer），不需要手动触发 */
@@ -3669,17 +3671,20 @@
         /* 分组口径按钮：文字写「当前是什么」而不是「点了会变成什么」，
            默认的平铺库显示「一层」，避免被误读成已经启用两层分组。
            只写 fm.db 的元数据、不碰主机目录，所以 fixed 库也允许点 */
-        const modeTitle = l.dirGroup
-          ? '当前：一级文件夹当分类、二级文件夹当专辑。点击改为「每个文件夹 = 一张专辑」'
-          : '当前：每个文件夹 = 一张专辑。点击改为「一级文件夹 = 分类，二级 = 专辑」';
+        const lm = libDirMode(l);
+        const lt = DIR_MODE_LABEL[lm];
+        const modeTitle = '目录结构：' + lt[0] + '（' + lt[1] + '）。点击切换';
         row.innerHTML = libRowHtml(l) +
           (canEditGroup()
-            ? '<button class="lib-mode' + (l.dirGroup ? ' on' : '') + '" type="button" title="' + esc(modeTitle) + '">' +
-              (l.dirGroup ? '按分类' : '按专辑') + '</button>'
+            ? '<button class="lib-mode' + (lm !== 'flat' ? ' on' : '') + '" type="button" title="' + esc(modeTitle) + '">' +
+              esc(lt[0]) + '</button>'
             : '') +
           (l.fixed ? '' : '<button class="icon-btn lib-more" title="更多">' + icon('more') + '</button>');
         const mode = row.querySelector('.lib-mode');
-        if (mode) mode.addEventListener('click', function (e) { e.stopPropagation(); toggleDirGroup(l, draw); });
+        if (mode) mode.addEventListener('click', function (e) {
+          e.stopPropagation();
+          openMenu(e.currentTarget, dirModeItems(l, draw));
+        });
         const more = row.querySelector('.lib-more');
         if (more) more.addEventListener('click', function (e) { e.stopPropagation(); libRowMenu(e.currentTarget, l, draw, handle); });
         row.addEventListener('click', function (e) {
@@ -3709,41 +3714,56 @@
       items.push({ label: '重新定位…', icon: 'folder', onClick: function () { relocateFlow(l, redraw); } });
       items.push({ label: '在文件夹中打开', icon: 'folder', onClick: function () { FM.fs.openLib(l.id); } });
     }
-    /* 分组口径：两个选项二选一，文案直接说「文件夹会变成什么」，
-       比「一层 / 两层分组」这种术语好懂。当前口径右侧打勾，点另一个才生效。
-       手机上不提供改分组的入口（见 canEditGroup） */
-    if (canEditGroup()) {
-      items.push({ sep: true });
-      items.push({
-        label: '每个文件夹 = 一张专辑',
-        icon: 'folder',
-        right: l.dirGroup ? '' : 'check',
-        onClick: function () { if (!l.dirGroup) return; toggleDirGroup(l, redraw); }
-      });
-      items.push({
-        label: '一级文件夹 = 分类（二级是专辑）',
-        icon: 'grid',
-        right: l.dirGroup ? 'check' : '',
-        onClick: function () { if (l.dirGroup) return; toggleDirGroup(l, redraw); }
-      });
-    }
     items.push({ sep: true });
     items.push({
       label: '移除资源库', icon: 'trash', danger: true,
       onClick: function () { removeLibFlow(l, redraw); }
     });
+    /* 目录结构三档插在「移除」前面，单独一段标题，不容易误点到下面的红色按钮 */
+    if (canEditGroup()) {
+      const modeItems = dirModeItems(l, redraw);
+      const at = items.length - 2;      // 指向「移除」前面那道分隔线
+      items.splice(at, 0, { sep: true });
+      items.splice.apply(items, [at + 1, 0].concat(modeItems));
+    }
     openMenu(anchor, items);
   }
 
-  /* 按目录分两级：一层子目录当分类、二层当专辑。只改分组口径，
-     扫描缓存里的文件列表与开关无关，所以静默重扫一遍（读缓存、不走盘）就够 */
-  async function toggleDirGroup(l, after) {
+  /* ── 目录结构三档：默认 / 二级目录 / 自动检测 ──
+     只改分组口径，扫描缓存里的文件列表与口径无关，所以静默重扫一遍（读缓存、不走盘）就够。
+     手机端不给入口（见 canEditGroup）：改口径会影响所有端看到的专辑数。 */
+  const DIR_MODE_LABEL = {
+    flat: ['默认', '每个文件夹是专辑', 'folder'],
+    cat: ['二级目录', '一级文件夹是分类，二级是专辑', 'grid'],
+    auto: ['自动检测', '一级文件夹=分类，自动检测专辑', 'refresh']
+  };
+  function libDirMode(l) {
+    const m = l && l.dirMode;
+    if (m === 'cat' || m === 'auto' || m === 'flat') return m;
+    return l && l.dirGroup ? 'cat' : 'flat';
+  }
+  /* 菜单项：标题「目录结构」+ 三档，主标题加粗、括号说明弱化，当前档打勾 */
+  function dirModeItems(l, after) {
+    const cur = libDirMode(l);
+    const items = [{ head: '目录结构' }];
+    ['flat', 'cat', 'auto'].forEach(function (m) {
+      const t = DIR_MODE_LABEL[m];
+      items.push({
+        label: t[0], sub: t[1], icon: t[2],
+        right: cur === m ? 'check' : '',
+        onClick: function () { if (cur !== m) setLibDirModeFlow(l, m, after); }
+      });
+    });
+    return items;
+  }
+  async function setLibDirModeFlow(l, mode, after) {
     if (navLocked()) { toast('正在扫描资源库，请稍候'); return; }
-    const on = !l.dirGroup;
     try {
-      await FM.fs.setDirGroup(l.id, on);
-      l.dirGroup = on;
-      toast(on ? '已改为「按分类」：一级文件夹是分类、二级文件夹是专辑' : '已改为「按专辑」：每个文件夹是一张专辑');
+      const val = await FM.fs.setDirMode(l.id, mode);
+      l.dirMode = val;
+      l.dirGroup = val !== 'flat';
+      const t = DIR_MODE_LABEL[val] || DIR_MODE_LABEL.flat;
+      toast('目录结构：' + t[0] + '（' + t[1] + '）');
       if (FM.fs.activeId === l.id) await runScan({ silent: true });
       else renderAll({ quiet: true });
       if (after) after();
@@ -3831,12 +3851,16 @@
   /* 服务器模式：浏览器弹不出对方的目录选择框，改成让人填路径 */
   function addLibByPath() {
     const input = U.el('input', { class: 'input', placeholder: '例如 E:/学习资料/喜马拉雅mp3' });
-    /* 添加时就能把分组口径定好：层级深的库（作者/系列/专辑）不用再回头找开关。
-       手机上不给改分组，这个勾选也就不显示 */
-    const chk = U.el('input', { type: 'checkbox' });
-    const opt = U.el('label', { class: 'lib-dirgroup-opt' }, [
-      chk, U.el('span', { text: '一级文件夹当分类、二级当专辑（不勾选则每个文件夹都是一张专辑）' })
-    ]);
+    /* 添加时就能把目录结构定好：层级深的库（作者/系列/专辑）不用再回头找开关。
+       手机上不给改，这个下拉也就不显示 */
+    const sel = U.el('select', { class: 'input lib-dirmode-opt' });
+    ['flat', 'cat', 'auto'].forEach(function (m) {
+      const t = DIR_MODE_LABEL[m];
+      const o = U.el('option', { text: t[0] + '（' + t[1] + '）' });
+      o.value = m;
+      sel.appendChild(o);
+    });
+    const opt = U.el('div', { class: 'field' }, [U.el('label', { text: '目录结构' }), sel]);
     const fields = [U.el('div', { class: 'field' }, [U.el('label', { text: '服务器上的目录' }), input])];
     if (canEditGroup()) fields.push(opt);
     const body = U.el('div', {}, fields);
@@ -3852,25 +3876,26 @@
           label: '添加', cls: 'btn-primary', onClick: function () {
             const v = input.value.trim();
             if (!v) { toast('请输入目录路径', 'warn'); return false; }
-            runAddLib(v, chk.checked);
+            runAddLib(v, sel.value || 'flat');
           }
         }
       ]
     });
   }
 
-  async function runAddLib(path, dirGroup) {
+  async function runAddLib(path, dirMode) {
     try {
       setScanBusy(true, '添加资源库…');
       const lib = await FM.fs.add(path || undefined);
       if (!lib) return;
-      /* 开关只写元数据，失败不该拦住添加流程 */
-      if (dirGroup) { try { await FM.fs.setDirGroup(lib.id, true); } catch (e) {} }
+      /* 口径只写元数据，失败不该拦住添加流程 */
+      const m = libDirMode({ dirMode: dirMode });
+      if (m !== 'flat') { try { await FM.fs.setDirMode(lib.id, m); lib.dirMode = m; lib.dirGroup = true; } catch (e) {} }
       P.stop();
       resetView();
       await enterLib({ force: true });
       renderAll();
-      toast('已添加资源库「' + lib.name + '」' + (dirGroup ? '（按目录分两级）' : ''));
+      toast('已添加资源库「' + lib.name + '」' + (m === 'flat' ? '' : '（目录结构：' + DIR_MODE_LABEL[m][0] + '）'));
     } catch (e) {
       if (e && e.name === 'AbortError') return;
       toast(e.message || '添加资源库失败', 'warn');
@@ -4002,10 +4027,10 @@
     if (now - stampCheckedAt < (Number(gap) || 30000)) return false;
     stampCheckedAt = now;
     const id = FM.fs.activeId;
-    /* 口径变了（别的设备翻了「两层」开关）就立刻按新口径重算一遍，不必等服务端重扫 */
+    /* 口径变了（别的设备改了「目录结构」）就立刻按新口径重算一遍，不必等服务端重扫 */
     const cached = FM.db.index(id);
-    const wantGroup = !!(FM.fs.active() && FM.fs.active().dirGroup);
-    if (cached && !!cached.dirGroup !== wantGroup) {
+    const cachedMode = cached ? (cached.dirMode === undefined ? (cached.dirGroup ? 'cat' : 'flat') : cached.dirMode) : 'flat';
+    if (cached && cachedMode !== libDirMode(FM.fs.active())) {
       try { return await runScan({ silent: true, quiet: true, libId: id, background: true }); } catch (e) { return false; }
     }
     let at = 0;
@@ -4025,10 +4050,10 @@
     /* 先把库里的元数据（分类 / 整理 / 进度）拉下来，分类才带得出来：桌面走 IPC、网页和手机走接口 */
     if (FM.fs.canSyncMeta()) { try { await FM.fs.pullMeta(); } catch (e) {} }
     const cached = o.force ? null : FM.db.index(id);
-    /* 分组口径跟缓存对不上（另一台设备翻了「两层」开关）：这份缓存是按旧口径算的，
+    /* 目录结构跟缓存对不上（另一台设备改过）：这份缓存是按旧口径算的，
        直接 restore 会显示错的专辑数，重扫一遍（读宿主扫描缓存，不走盘） */
-    const wantGroup = !!(FM.fs.active() && FM.fs.active().dirGroup);
-    if (cached && cached.albums && cached.albums.length && !!cached.dirGroup !== wantGroup) {
+    const cachedMode = cached && (cached.dirMode === undefined ? (cached.dirGroup ? 'cat' : 'flat') : cached.dirMode);
+    if (cached && cached.albums && cached.albums.length && cachedMode !== libDirMode(FM.fs.active())) {
       await runScan({ silent: true, libId: id });
       return;
     }

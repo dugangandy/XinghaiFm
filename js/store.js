@@ -110,16 +110,22 @@
     setIndex: (id, v) => {
       if (!id) { write('index', v); return; }
       write('index:' + id, v);
-      /* 分组口径单独存一份小键：扫描每轮都要它，为了一个布尔去 JSON.parse 几 MB 的索引不值当 */
-      if (v && typeof v.dirGroup === 'boolean') write('indexMode:' + id, v.dirGroup ? 1 : 0);
+      /* 目录结构口径单独存一份小键：扫描每轮都要它，为了一个字符串去 JSON.parse 几 MB 的索引不值当 */
+      if (v && typeof v.dirMode === 'string') write('indexMode:' + id, v.dirMode);
+      else if (v && typeof v.dirGroup === 'boolean') write('indexMode:' + id, v.dirGroup ? 'cat' : 'flat');
     },
-    /* 上次扫描用的分组口径。老缓存没有小键时回退读一次完整索引，下次 saveIndex 会自动补上 */
+    /* 上次扫描用的目录结构口径：flat / cat / auto。
+       老缓存里存的是布尔（1/0）或压根没有小键，统一折算；下次 setIndex 会自动补成字符串 */
     indexMode: id => {
-      if (!id) return false;
+      if (!id) return 'flat';
       const v = read('indexMode:' + id, null);
-      if (v !== null) return !!v;
+      if (v === 'cat' || v === 'auto' || v === 'flat') return v;
+      if (v === 1 || v === true) return 'cat';
+      if (v === 0 || v === false) return 'flat';
       const idx = read('index:' + id, null);
-      return !!(idx && idx.dirGroup);
+      if (!idx) return 'flat';
+      if (idx.dirMode === 'cat' || idx.dirMode === 'auto' || idx.dirMode === 'flat') return idx.dirMode;
+      return idx.dirGroup ? 'cat' : 'flat';
     },
     dropIndex: id => {
       if (!id) return;

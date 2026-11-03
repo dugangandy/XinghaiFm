@@ -106,6 +106,67 @@ test('空扫描结果 → 空分组', () => {
   assert.deepEqual(L.groupFiles([], true), []);
   assert.deepEqual(L.groupFiles([], false), []);
   assert.deepEqual(L.groupFiles(null, true), []);
+  assert.deepEqual(L.groupFiles([], 'auto'), []);
+});
+
+/* ── auto 自动检测：不假设整库层数一致，每个一级目录自己判断 ── */
+
+test('自动检测：2 层与 3 层混在同一个库里各按自己的结构走', () => {
+  const groups = L.groupFiles([
+    f('三体/01.mp3'), f('三体/02.mp3'),          // 一级目录里直接有音频 → 它是一张专辑
+    f('历史/明朝那些事/01.mp3')                   // 一级目录只有子目录 → 它是分类
+  ], 'auto');
+  assert.deepEqual(keys(groups), ['三体', '历史/明朝那些事'].sort());
+  const leaf = groups.find(g => g.key === '三体');
+  assert.equal(leaf.cat, null, '叶目录不是分类');
+  assert.equal(leaf.dirName, '三体');
+  const sub = groups.find(g => g.key === '历史/明朝那些事');
+  assert.equal(sub.cat, '历史');
+  assert.equal(sub.dirName, '明朝那些事');
+});
+
+test('自动检测：专辑里按 CD1/CD2 分卷时仍是一张专辑', () => {
+  const groups = L.groupFiles([
+    f('三体/CD1/01.mp3'), f('三体/CD2/02.mp3')
+  ], 'auto');
+  assert.deepEqual(keys(groups), ['三体']);
+  assert.equal(groups[0].cat, null);
+  assert.equal(groups[0].files.length, 2);
+});
+
+test('自动检测：分类/专辑/CD1 这种三层半的结构并到二级专辑', () => {
+  const groups = L.groupFiles([
+    f('历史/明朝那些事/CD1/01.mp3'), f('历史/明朝那些事/CD2/02.mp3')
+  ], 'auto');
+  assert.deepEqual(keys(groups), ['历史/明朝那些事']);
+  assert.equal(groups[0].cat, '历史');
+});
+
+test('自动检测：专辑根上散着音频、子目录再分卷时合成一张', () => {
+  const groups = L.groupFiles([
+    f('三体/01.mp3'), f('三体/CD2/02.mp3')
+  ], 'auto');
+  assert.deepEqual(keys(groups), ['三体']);
+  assert.equal(groups[0].files.length, 2);
+});
+
+test('自动检测：专辑 id 与对应旧口径一致（切档不丢整理数据）', () => {
+  const auto = L.groupFiles([f('三体/01.mp3'), f('历史/明朝那些事/01.mp3')], 'auto');
+  const leaf = auto.find(g => g.key === '三体');
+  /* 2 层目录在平铺模式下 key 也是「三体」 */
+  const flat = L.groupFiles([f('三体/01.mp3')], 'flat');
+  assert.equal(U.uid('a', leaf.key), U.uid('a', flat[0].key));
+  /* 3 层目录在二级目录模式下 key 也是「历史/明朝那些事」 */
+  const cat = L.groupFiles([f('历史/明朝那些事/01.mp3')], 'cat');
+  const sub = auto.find(g => g.key === '历史/明朝那些事');
+  assert.equal(U.uid('a', sub.key), U.uid('a', cat[0].key));
+});
+
+test('自动检测：根目录散落文件仍归「未分类单集」', () => {
+  const groups = L.groupFiles([f('散集.mp3'), f('三体/01.mp3')], 'auto');
+  const root = groups.find(g => g.key === '__root__');
+  assert.ok(root);
+  assert.equal(root.cat, null);
 });
 
 test('目录分类 id 稳定且与手工分类区分开', () => {

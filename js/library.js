@@ -62,9 +62,18 @@
   let rootName = '';
   let scannedAt = 0;
   let libId = '';
-  /* 当前内存模型是按哪种口径分组的（false=一层子目录当专辑，true=两层）。
-     索引缓存里要记这个字段：口径变了，缓存就不能直接拿来 restore */
+  /* 当前内存模型是按哪种口径分组的：
+       flat 默认（每个文件夹 = 一张专辑）
+       cat  二级目录（一级 = 分类，二级 = 专辑）
+       auto 自动检测（一级 = 分类，专辑层按目录内容判断）
+     索引缓存里要记这个字段：口径变了，缓存就不能直接拿来 restore。
+     dirGroupMode 是老布尔口径（是否按分类分），auto 也算 true */
+  let dirMode = 'flat';
   let dirGroupMode = false;
+  function setDirMode(m) {
+    dirMode = (m === 'cat' || m === 'auto') ? m : 'flat';
+    dirGroupMode = dirMode !== 'flat';
+  }
 
   /* ── 分类：按资源库分开 ──
      分类最初是给喜马拉雅有声书用的，别的库不该继承同一份清单。
@@ -150,13 +159,68 @@
   }
 
   /* ── 扫描结果 → 专辑分组 ──
-     平铺（默认）：一层子目录 = 专辑，根目录散落文件单独成一张。
-     两级（库开关）：1 段（根目录散落文件）→ 单独一张；2 段（分类目录里直接放的音频）
-     → 该分类下的散集专辑；3 段及以上（分类/专辑/子目录/a.mp3）→ 并入最近的二级专辑。
+     flat 默认：一层子目录 = 专辑，根目录散落文件单独成一张。
+     cat 二级目录：1 段（根目录散落文件）→ 单独一张；2 段（分类目录里直接放的音频）
+       → 该分类下的散集专辑；3 段及以上（分类/专辑/子目录/a.mp3）→ 并入最近的二级专辑。
+     auto 自动检测：不假设整个库层数一致，每个一级目录自己判断——
+       一级目录里直接有音频（专辑/1.mp3，或专辑/CD1/1.mp3）→ 它是一张专辑；
+       一级目录里没有直接音频、子目录名又是 CD1/上部/第X卷 这种分卷 → 还是一张专辑；
+       否则一级目录当分类，专辑取二级目录（再深并进二级专辑）。
+     三档都在同一份扫描结果上算，切口径不用重新走盘。
+     第二参数同时接受老布尔（false=flat，true=cat）。
      返回 [{ key, dirName, cat, files }]，dirName 为空时由调用方按 key 兜底。 */
-  function groupFiles(files, dirGroup) {
+  const VOLUME_RE = /^(cd|disc|disk|dvd|part|pt|vol|volume)\s*[-_.]?\s*\d{1,3}$|^\d{1,3}$|^(上|中|下)(卷|册|部|篇|集)?$|^第\s*[0-9一二三四五六七八九十百]{1,3}\s*[部卷册集辑篇章]/i;
+
+  function groupFiles(files, mode) {
+    const m = (mode === true || mode === 'cat') ? 'cat' : (mode === 'auto' ? 'auto' : 'flat');
     const groups = new Map();
-    (files || []).forEach(function (f) {
+    const list = files || [];
+
+    if (m === 'auto') {
+      /* 哪些目录里直接躺着音频。''（根目录）也算一个 */
+      const hasAudio = new Set();
+      /* parent → 直接子目录集合（只统计出现过音频的路径） */
+      const subDirs = new Map();
+      list.forEach(function (f) {
+        const segs = String(f && f.rel || '').split('/');
+        segs.pop();
+        hasAudio.add(segs.join('/'));
+        for (let i = 1; i <= segs.length; i++) {
+          const parent = segs.slice(0, i - 1).join('/');
+          if (!subDirs.has(parent)) subDirs.set(parent, new Set());
+          subDirs.get(parent).add(segs[i - 1]);
+        }
+      });
+      const volumeLike = function (parent) {
+        const subs = subDirs.get(parent);
+        if (!subs || !subs.size) return false;
+        return Array.from(subs).every(function (n) { return VOLUME_RE.test(n); });
+      };
+      list.forEach(function (f) {
+        const segs = String(f && f.rel || '').split('/');
+        segs.pop();
+        let key, dirName = '', cat = null;
+        if (!segs.length) {
+          key = '__root__';
+        } else if (hasAudio.has(segs[0]) || volumeLike(segs[0])) {
+          /* 一级目录自己就是一张专辑（分卷目录也算这张专辑里的） */
+          key = segs[0];
+          dirName = segs[0];
+        } else {
+          /* 一级目录是分类，专辑是它下面那层，再深的并进来 */
+          key = segs.length > 1 ? segs[0] + '/' + segs[1] : segs[0];
+          cat = segs[0];
+          dirName = segs.length > 1 ? segs[1] : segs[0];
+        }
+        const hit = groups.get(key);
+        if (hit) hit.files.push(f);
+        else groups.set(key, { key, dirName, cat, files: [f] });
+      });
+      return Array.from(groups.values());
+    }
+
+    const dirGroup = m === 'cat';
+    list.forEach(function (f) {
       const segs = String(f && f.rel || '').split('/');
       let key, dirName = '', cat = null;
       if (!dirGroup) {
@@ -263,23 +327,26 @@
        本地目录（handle / files）没有这个字段，退回本地时间，不影响任何逻辑。 */
     scannedAt = Number(scan.scannedAt) || Date.now();
 
-    const dirGroup = !!scan.dirGroup;
-    dirGroupMode = dirGroup;
-    const groups = groupFiles(scan.files, dirGroup);
+    /* 三档口径：优先读 dirMode，老服务端/老主进程只给布尔 dirGroup 时折算 */
+    const scanMode = scan.dirMode === undefined || scan.dirMode === null
+      ? (scan.dirGroup ? 'cat' : 'flat')
+      : scan.dirMode;
+    setDirMode(scanMode);
+    const groups = groupFiles(scan.files, dirMode);
 
     const metas = db.albumMeta();
     const durs = db.durations();
     /* 本轮要回写的专辑元数据：扫描时自动产生的归类（新建 / 补齐 / 作废）都得推给数据库。
        只写本地缓存的话，服务端只有分类清单、没有专辑归属，重开或换设备后分类下面就是空的 */
     const touchedMeta = {};
-    /* 分组口径变了（开/关「按分类」）：旧口径算出来的自动归类全部作废，
+    /* 口径变了（默认 / 二级目录 / 自动检测 之间切换）：旧口径算出来的自动归类全部作废，
        否则「只补空」的逻辑会让专辑继续挂在旧分类下，新的目录分类永远空着。
        用户手工改过的（auto === false）不动 */
-    /* hasModeFlag：扫描结果里到底有没有这个字段。老服务端 / 老主进程不返回时，
+    /* hasModeFlag：扫描结果里到底有没有口径字段。老服务端 / 老主进程不返回时，
        不能把「没告诉我」当成「明确改回一层」，否则会把两层时代的归类全清掉 */
-    const hasModeFlag = typeof scan.dirGroup === 'boolean';
-    const prevGroup = db.indexMode(libId);
-    if (libId && hasModeFlag && prevGroup !== dirGroup) {
+    const hasModeFlag = typeof scan.dirMode === 'string' || typeof scan.dirGroup === 'boolean';
+    const prevMode = db.indexMode(libId);
+    if (libId && hasModeFlag && prevMode !== dirMode) {
       const prefix = rootKey + '|';
       Object.keys(metas).forEach(function (k) {
         if (k.indexOf(prefix) !== 0) return;
@@ -292,7 +359,7 @@
     }
     /* 分类清单：先把目录分类补齐（只补缺失的，用户删过的不会复活），再算关键词规则 */
     const catDirs = [];
-    if (dirGroup) groups.forEach(function (g) {
+    if (dirGroupMode) groups.forEach(function (g) {
       if (g.cat && catDirs.indexOf(g.cat) < 0) catDirs.push(g.cat);
     });
     let cats = ensureCats();
@@ -312,10 +379,10 @@
       /* 专辑 id：平铺库沿用「目录名哈希」（与旧版完全一致，存量整理数据不受影响），
          两级库用「分类/专辑」相对路径哈希，不同分类下的同名专辑不会撞在一起。 */
       const albumId = U.uid('a', group.key === '__root__' ? dirName : group.key);
-      /* 两级模式：这一组挂在哪个目录分类下；用户删掉过的分类不再自动挂回去 */
-      const dirCat = (dirGroup && group.cat && dropped.indexOf(group.cat) < 0) ? dirCatId(group.cat) : '';
+      /* 二级目录 / 自动检测：这一组挂在哪个目录分类下；用户删掉过的分类不再自动挂回去 */
+      const dirCat = (dirGroupMode && group.cat && dropped.indexOf(group.cat) < 0) ? dirCatId(group.cat) : '';
       const autoForAlbum = function () {
-        if (!dirGroup) return autoFor(dirName);
+        if (!dirGroupMode) return autoFor(dirName);
         return dirCat ? [dirCat] : [];
       };
 
@@ -377,7 +444,7 @@
       }
       /* 目录分类是结构性的（一层文件夹就是分类），只要用户没手工改过分类（auto !== false），
          缺了就补上：老库换成两层后即使 meta 里还挂着关键词分类，也能马上出现在目录分类下 */
-      if (dirGroup && dirCat && own && meta.auto !== false && (meta.cats || []).indexOf(dirCat) < 0) {
+      if (dirGroupMode && dirCat && own && meta.auto !== false && (meta.cats || []).indexOf(dirCat) < 0) {
         meta.cats = (meta.cats || []).concat([dirCat]);
         touchedMeta[mkey] = meta;
       }
@@ -476,6 +543,8 @@
       rootName: rootName,
       root: rootKey,
       scannedAt: scannedAt,
+      /* dirMode 是当前口径，dirGroup 留着给老版本读（auto 也算「按分类」） */
+      dirMode: dirMode,
       dirGroup: dirGroupMode,
       albums: albums.map(a => ({
         id: a.id, key: a.key, path: a.path || '', dirCat: a.dirCat || '',
@@ -495,7 +564,8 @@
     rootName = cached.rootName || '';
     rootKey = String(cached.root || cached.rootName || '');
     scannedAt = cached.scannedAt || 0;
-    dirGroupMode = !!cached.dirGroup;
+    /* 老索引只有布尔 dirGroup：true 就是当年唯一的「二级目录」 */
+    setDirMode(cached.dirMode === undefined ? (cached.dirGroup ? 'cat' : 'flat') : cached.dirMode);
     const metas = db.albumMeta();
     const rawCats = db.catsFor(libId);
     const cats = ensureCats();
@@ -798,13 +868,16 @@
   /* 一个库都没有时把内存里的模型清干净 */
   function clear() {
     albums = []; tracks = []; rootName = ''; rootKey = ''; libId = ''; scannedAt = 0;
+    setDirMode('flat');
     reindex();
   }
 
   FM.lib = {
     build, restore, saveIndex, clear,
     ensureCats, groupFiles, dirCatId,
+    dirMode: () => dirMode,
     isDirGroup: () => dirGroupMode,
+    isAutoGroup: () => dirMode === 'auto',
     albums: () => albums,
     tracks: () => tracks,
     allAlbums,

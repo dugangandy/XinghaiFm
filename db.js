@@ -294,20 +294,36 @@ function libRootKey(p) {
   return out;
 }
 
-/* ── 库级开关：按目录分两级 ──
-   一层子目录当分类、二层子目录当专辑。和分类/整理元数据一样按库根路径共享，
-   桌面端、服务端、手机端读到的都是同一个开关。 */
-function libDirGroup(db, root) {
-  const key = libRootKey(root);
-  if (!key) return false;
-  return getSetting(db, 'dirgroup:' + key, '0') === '1';
+/* ── 库级开关：目录结构 ──
+   和分类/整理元数据一样按库根路径共享，桌面端、服务端、手机端读到的是同一份。
+   三档（存 settings.dirgroup:<root>）：
+     '0'    默认：每个文件夹 = 一张专辑（历史值，等同于 flat）
+     '1'    二级目录：一级文件夹 = 分类，二级 = 专辑（历史布尔值，等同于 cat）
+     'auto' 自动检测：一级文件夹当分类，专辑层按目录内容判断
+   老版本写进去的是 '0'/'1'，这里原样识别，不需要迁移脚本。 */
+const DIR_MODES = ['flat', 'cat', 'auto'];
+function normDirMode(v) {
+  if (v === 'cat' || v === 'auto' || v === 'flat') return v;
+  return 'flat';
 }
-function setLibDirGroup(db, root, on) {
+function libDirMode(db, root) {
   const key = libRootKey(root);
-  if (!key) return false;
-  setSetting(db, 'dirgroup:' + key, on ? '1' : '0');
-  return !!on;
+  if (!key) return 'flat';
+  const raw = String(getSetting(db, 'dirgroup:' + key, '0'));
+  if (raw === 'auto') return 'auto';
+  if (raw === '1' || raw === 'cat') return 'cat';
+  return 'flat';
 }
+function setLibDirMode(db, root, mode) {
+  const key = libRootKey(root);
+  if (!key) return 'flat';
+  const m = normDirMode(mode);
+  setSetting(db, 'dirgroup:' + key, m === 'flat' ? '0' : (m === 'cat' ? '1' : 'auto'));
+  return m;
+}
+/* 老接口：只区分「是否按分类分组」。auto 也算「不是平铺」，老调用方据此走分类分支 */
+function libDirGroup(db, root) { return libDirMode(db, root) !== 'flat'; }
+function setLibDirGroup(db, root, on) { return setLibDirMode(db, root, on ? 'cat' : 'flat') !== 'flat'; }
 
 function tx(db, fn) {
   db.exec('BEGIN');
@@ -590,7 +606,7 @@ module.exports = {
   listFavs, setFav, clearFavs,
   listFavTracks, setFavTrack, clearFavTracks,
   META_VERSION, META_LIMIT, libRootKey,
-  libDirGroup, setLibDirGroup,
+  libDirGroup, setLibDirGroup, libDirMode, setLibDirMode, normDirMode, DIR_MODES,
   catsList, catsReplace,
   albumMetaMap, albumMetaUpsert,
   progressMap, progressUpsert,

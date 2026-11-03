@@ -256,9 +256,25 @@
     else { mode = 'handle'; }
   }
 
+  /* 目录结构三档：
+       flat 默认（每个文件夹 = 一张专辑）
+       cat  二级目录（一级 = 分类，二级 = 专辑）
+       auto 自动检测（一级 = 分类，专辑层按目录内容判断）
+     老版本只存布尔 dirGroup：true 折算成 cat，false 折算成 flat。
+     dirGroup 继续同步写回，老渲染层读到的还是对的。 */
+  const DIR_MODES = ['flat', 'cat', 'auto'];
+  function normDirMode(v) { return DIR_MODES.indexOf(v) >= 0 ? v : 'flat'; }
+  function libFromView(l) {
+    const dirMode = normDirMode(l.dirMode === undefined ? (l.dirGroup ? 'cat' : 'flat') : l.dirMode);
+    /* 其余字段（temp / fixed …）原样带着：纯网页的临时目录靠 temp 走 files 模式 */
+    return Object.assign({}, l, {
+      id: l.id, name: l.name, path: l.path || '', missing: !!l.missing, fixed: !!l.fixed,
+      dirMode: dirMode, dirGroup: dirMode !== 'flat'
+    });
+  }
   function readWebLibs() {
     const v = FM.store.read('libs', []);
-    return Array.isArray(v) ? v.filter(l => l && l.id) : [];
+    return Array.isArray(v) ? v.filter(l => l && l.id).map(libFromView) : [];
   }
 
   function writeWebLibs(list) {
@@ -269,7 +285,7 @@
   async function load() {
     if (DESKTOP_FS) {
       const res = await window.fmNative.libs();
-      libs = res.libs;
+      libs = (res.libs || []).map(libFromView);
       activeId = res.active;
     } else {
       const srv = await detectServer();
@@ -285,10 +301,7 @@
           try {
             const r = await apiFetch('/api/libs', { cache: 'no-store' });
             const data = await r.json();
-            libs = (data.libs || []).map(l => ({
-              id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed,
-              dirGroup: !!l.dirGroup
-            }));
+            libs = (data.libs || []).map(libFromView);
             activeId = data.active;
           } catch (e) {
             libs = [];
@@ -296,10 +309,10 @@
           }
         }
         if (!libs.length) {
-          libs = [{
+          libs = [libFromView({
             id: 'server', name: srv.rootName || '远程资源库', path: '', missing: false, fixed: true,
-            dirGroup: !!srv.dirGroup
-          }];
+            dirMode: srv.dirMode, dirGroup: srv.dirGroup
+          })];
           activeId = 'server';
         }
       } else if (APP) {
@@ -387,13 +400,10 @@
       if (!r.ok) return false;
       data = await r.json();
     } catch (e) { return false; }
-    const next = (data.libs || []).map(l => ({
-      id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed,
-      dirGroup: !!l.dirGroup
-    }));
+    const next = (data.libs || []).map(libFromView);
     const same = next.length === libs.length && next.every(function (l, i) {
       const o = libs[i];
-      return o && o.id === l.id && o.name === l.name && o.missing === l.missing;
+      return o && o.id === l.id && o.name === l.name && o.missing === l.missing && o.dirMode === l.dirMode;
     });
     libs = next;
     if (!libs.some(l => l.id === activeId)) activeId = data.active;
@@ -411,33 +421,30 @@
     });
     if (!r.ok) throw new Error((await r.text()) || '资源库操作失败');
     const data = await r.json();
-    libs = (data.libs || []).map(l => ({
-      id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed,
-      dirGroup: !!l.dirGroup
-    }));
+    libs = (data.libs || []).map(libFromView);
     activeId = data.active;
     syncActive();
     applyMode();
     return activeLib;
   }
 
-  /* 「按目录分两级」开关（一层子目录当分类、二层当专辑）
+  /* 「目录结构」三档（flat / cat / auto）
      桌面走 IPC 写 fm.db，服务端走 /api/libdirgroup，纯网页存本地库条目 */
-  async function setDirGroup(id, on) {
-    const val = !!on;
+  async function setDirMode(id, mode) {
+    const val = normDirMode(mode);
     const lib = libs.find(l => l.id === id) || activeLib;
     if (DESKTOP_FS) {
       /* 老客户端没有这条通道：invoke 会报 "No handler registered"，这里先说人话 */
-      if (typeof window.fmNative.setLibDirGroup !== 'function') {
+      if (typeof window.fmNative.setLibDirMode !== 'function') {
         throw new Error('客户端版本过旧：请完全退出并重新打开星海 FM');
       }
-      const r = await window.fmNative.setLibDirGroup(id, val);
-      if (r !== val) throw new Error('开关未写入（资源库可能已被移除）');
+      const r = await window.fmNative.setLibDirMode(id, val);
+      if (r !== val) throw new Error('目录结构未写入（资源库可能已被移除）');
     } else if (serverMode) {
       const r = await apiFetch('/api/libdirgroup', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: id, on: val })
+        body: JSON.stringify({ id: id, mode: val })
       });
       if (!r.ok) {
         const txt = String((await r.text()) || '').trim();
@@ -450,11 +457,14 @@
     } else {
       const list = readWebLibs();
       const l = list.find(x => x.id === id);
-      if (l) { l.dirGroup = val; writeWebLibs(list); }
+      if (l) { l.dirMode = val; l.dirGroup = val !== 'flat'; writeWebLibs(list); }
     }
-    if (lib) lib.dirGroup = val;
+    if (lib) { lib.dirMode = val; lib.dirGroup = val !== 'flat'; }
     return val;
   }
+
+  /* 老接口：布尔版（true = 二级目录，false = 默认） */
+  function setDirGroup(id, on) { return setDirMode(id, on ? 'cat' : 'flat'); }
 
   async function activate(id) {
     const lib = libs.find(l => l.id === id);
@@ -469,10 +479,7 @@
       const r = await apiFetch('/api/activate?id=' + encodeURIComponent(id), { cache: 'no-store' });
       if (!r.ok) throw new Error('切换资源库失败');
       const data = await r.json();
-      libs = (data.libs || []).map(l => ({
-        id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed,
-        dirGroup: !!l.dirGroup
-      }));
+      libs = (data.libs || []).map(libFromView);
       activeId = data.active;
     } else {
       if (lib.temp) throw new Error('当前是临时目录，不支持切换');
@@ -994,15 +1001,17 @@
       /* root 用服务端回的真实路径：albumMeta 的键是「<路径>|<专辑id>」，和桌面端要对得上。
          scannedAt 也要带上：它是「谁、什么时候扫的」那个时间戳，客户端拿它和服务端的
          /api/scan/at 比，不能换成客户端本地时间（两边时钟一歪就永远比不对） */
-      /* 老服务端不返回这个字段：留 undefined，别当成「明确的一层口径」，
+      /* 老服务端不返回这两个字段：留 undefined，别当成「明确的一层口径」，
          否则 build 会以为分组方式变了，把两层时代建的分类归属当成旧数据清掉 */
-      const dirGroup = (data.dirGroup === undefined) ? undefined : !!data.dirGroup;
-      if (dirGroup !== undefined) activeLib.dirGroup = dirGroup;
+      const dirMode = (data.dirMode === undefined && data.dirGroup === undefined) ? undefined
+        : normDirMode(data.dirMode === undefined ? (data.dirGroup ? 'cat' : 'flat') : data.dirMode);
+      if (dirMode !== undefined) { activeLib.dirMode = dirMode; activeLib.dirGroup = dirMode !== 'flat'; }
       /* stale：服务端等了 2 分钟还没扫完，先把上次的缓存给我们看，
          它那边还在后台接着扫，扫完落盘后 scannedAt 会变，下次能同步到 */
       return {
         libId, rootName: data.rootName || activeLib.name, root: data.root || 'server', mode,
-        files: data.files, scannedAt: Number(data.scannedAt) || 0, dirGroup,
+        files: data.files, scannedAt: Number(data.scannedAt) || 0, dirMode,
+        dirGroup: dirMode === undefined ? undefined : dirMode !== 'flat',
         stale: !!data.stale
       };
     }
@@ -1013,11 +1022,13 @@
       const res = await window.fmNative.scan(refresh);
       if (onProgress) onProgress({ phase: 'size', done: res.files.length, total: res.files.length });
       /* 同上：老主进程/preload 没有这个字段时保留 undefined */
-      const dirGroup = (res.dirGroup === undefined) ? undefined : !!res.dirGroup;
-      if (dirGroup !== undefined) activeLib.dirGroup = dirGroup;
+      const dirMode = (res.dirMode === undefined && res.dirGroup === undefined) ? undefined
+        : normDirMode(res.dirMode === undefined ? (res.dirGroup ? 'cat' : 'flat') : res.dirMode);
+      if (dirMode !== undefined) { activeLib.dirMode = dirMode; activeLib.dirGroup = dirMode !== 'flat'; }
       return {
         libId, rootName: res.rootName || activeLib.name, root: res.root, mode,
-        files: res.files, scannedAt: Number(res.scannedAt) || 0, dirGroup,
+        files: res.files, scannedAt: Number(res.scannedAt) || 0, dirMode,
+        dirGroup: dirMode === undefined ? undefined : dirMode !== 'flat',
         stale: !!res.stale
       };
     }
@@ -1036,6 +1047,7 @@
       rootName: activeLib.name,
       root: activeLib.path || activeLib.name,
       mode,
+      dirMode: normDirMode(activeLib.dirMode),
       dirGroup: !!activeLib.dirGroup,
       files: items.map(function (it) {
         return { rel: it.rel, name: it.name, ext: it.ext, size: it.size, mtime: it.mtime, depth: it.depth };
@@ -1193,7 +1205,7 @@
 
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, canSyncMeta, pushProgress, refreshLibs,
-    setDirGroup,
+    setDirGroup, setDirMode,
     loadFavs, setFav, setFavTrack,
     scan, scanStamp, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,

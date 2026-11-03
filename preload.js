@@ -25,7 +25,8 @@ contextBridge.exposeInMainWorld('fmNative', {
   addLib: (p) => ipcRenderer.invoke('fm:addLib', p),
   activate: (id) => ipcRenderer.invoke('fm:activate', id),
   renameLib: (id, name) => ipcRenderer.invoke('fm:renameLib', id, name),
-  /* 按目录分两级：一层子目录当分类、二层当专辑 */
+  /* 目录结构：flat / cat / auto（老版本只有布尔版 setLibDirGroup） */
+  setLibDirMode: (id, mode) => ipcRenderer.invoke('fm:setLibDirMode', id, mode),
   setLibDirGroup: (id, on) => ipcRenderer.invoke('fm:setLibDirGroup', id, on),
   relocate: (id) => ipcRenderer.invoke('fm:relocate', id),
   removeLib: (id) => ipcRenderer.invoke('fm:removeLib', id),

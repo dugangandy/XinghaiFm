@@ -106,6 +106,8 @@ function activeLib() {
 function libView(l) {
   return {
     id: l.id, name: l.name, path: l.path, missing: !fs.existsSync(l.path),
+    /* dirMode 是三档（flat / cat / auto）；dirGroup 是老字段，只为兼容旧版渲染层 */
+    dirMode: DB.libDirMode(getDb(), l.path),
     dirGroup: DB.libDirGroup(getDb(), l.path)
   };
 }
@@ -609,18 +611,27 @@ function bindIpc() {
     /* 封面不再扫描时自动拉取：交给用户在网页里手动编辑（上传/抓取/删除）。
        扫描结果里不再带 coversPending，界面不会去轮询不存在的后台抓取。 */
     const scan = await scanFolder(lib.path, { refresh: !!refresh });
-    /* 开关跟着扫描结果一起下发：渲染层不用再单独取一次。
+    /* 目录结构跟着扫描结果一起下发：渲染层不用再单独取一次。
        拷贝后补字段，扫描缓存里的对象保持不变 */
-    return Object.assign({}, scan, { dirGroup: DB.libDirGroup(getDb(), lib.path) });
+    return Object.assign({}, scan, {
+      dirMode: DB.libDirMode(getDb(), lib.path),
+      dirGroup: DB.libDirGroup(getDb(), lib.path)
+    });
   });
 
-  /* 「按目录分两级」开关：只改元数据，不动扫描缓存。
-     id 必须精确命中，找不到就返回 false——别回退到当前库，否则传错 id 会悄悄改掉另一个库 */
+  /* 「目录结构」三档开关：只改元数据，不动扫描缓存。
+     id 必须精确命中，找不到就返回 'flat'——别回退到当前库，否则传错 id 会悄悄改掉另一个库 */
+  ipcMain.handle('fm:setLibDirMode', function (e, id, mode) {
+    const lib = getConfig().libs.find(l => l.id === id);
+    if (!lib) return 'flat';
+    return DB.setLibDirMode(getDb(), lib.path, mode);
+  });
+
+  /* 老通道：布尔版（false=默认，true=二级目录）。新版渲染层走 fm:setLibDirMode */
   ipcMain.handle('fm:setLibDirGroup', function (e, id, on) {
     const lib = getConfig().libs.find(l => l.id === id);
     if (!lib) return false;
-    DB.setLibDirGroup(getDb(), lib.path, !!on);
-    return !!on;
+    return DB.setLibDirGroup(getDb(), lib.path, !!on);
   });
 
   /* ── 网页手动编辑封面：搜索候选 / 保存 / 删除，三者都走 .fm-covers/ ── */

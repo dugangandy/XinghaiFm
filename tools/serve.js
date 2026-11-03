@@ -138,7 +138,8 @@ function userActiveRoot(uid) { const l = userActiveLib(uid); return l ? l.path :
 function libView(l) {
   return {
     id: l.id, name: l.name, missing: !fs.existsSync(l.path), fixed: !ALLOW_LIB_EDIT,
-    /* 按目录分两级：一层子目录当分类、二层当专辑 */
+    /* 目录结构三档：flat / cat / auto；dirGroup 是老字段，只为兼容旧客户端 */
+    dirMode: DB.libDirMode(db, l.path),
     dirGroup: DB.libDirGroup(db, l.path)
   };
 }
@@ -928,7 +929,8 @@ const server = http.createServer(async function (req, res) {
     const lib = userActiveLib(uid);
     return json(res, {
       server: libs.length > 0, rootName: lib ? lib.name : '', multi: MULTI, libEdit: ALLOW_LIB_EDIT,
-      version: APP_VERSION, dirGroup: lib ? DB.libDirGroup(db, lib.path) : false
+      version: APP_VERSION, dirMode: lib ? DB.libDirMode(db, lib.path) : 'flat',
+      dirGroup: lib ? DB.libDirGroup(db, lib.path) : false
     });
   }
   if (p === '/api/libs') {
@@ -1042,8 +1044,9 @@ const server = http.createServer(async function (req, res) {
     const a = userActiveLib(uid);
     return json(res, { active: a ? a.id : null, multi: MULTI, libs: userLibs(uid).map(libView) });
   }
-  /* 「按目录分两级」开关：只改 fm.db 里的一条元数据，不碰主机目录，
-     所以不受 --allow-lib-edit 限制；登录用户只能改自己名下的库 */
+  /* 「目录结构」三档开关：只改 fm.db 里的一条元数据，不碰主机目录，
+     所以不受 --allow-lib-edit 限制；登录用户只能改自己名下的库。
+     body 用 mode（flat/cat/auto）；老客户端传 on 布尔，照旧按 二级/默认 处理 */
   if (p === '/api/libdirgroup') {
     if (req.method !== 'POST') return send(res, 405, 'POST only');
     if (!writeAllowed(ip)) return send(res, 429, 'too many writes');
@@ -1057,8 +1060,10 @@ const server = http.createServer(async function (req, res) {
     const id = String((payload && payload.id) || '');
     const lib = userLibs(uid).find(function (l) { return l.id === id; });
     if (!lib) return send(res, 403, 'unknown lib');
-    const on = DB.setLibDirGroup(db, lib.path, !!(payload && payload.on));
-    return json(res, { ok: true, id: lib.id, dirGroup: on });
+    const mode = payload && payload.mode !== undefined
+      ? DB.setLibDirMode(db, lib.path, payload.mode)
+      : DB.setLibDirMode(db, lib.path, (payload && payload.on) ? 'cat' : 'flat');
+    return json(res, { ok: true, id: lib.id, dirMode: mode, dirGroup: mode !== 'flat' });
   }
   /* 只回扫描缓存的时间戳（一行 settings，几毫秒）：手机端没有扫描入口，
      靠它判断「主机上是不是有人扫过更新的」，有就静默重新读 /api/scan 的缓存 */
@@ -1079,7 +1084,8 @@ const server = http.createServer(async function (req, res) {
       const data = Object.assign({}, await scanFolder(root, { refresh: refresh }));
       const a = userActiveLib(uid);
       data.libId = a ? a.id : null;
-      /* 分组口径跟着扫描结果一起下发，前端不用再单独取一次 */
+      /* 目录结构跟着扫描结果一起下发，前端不用再单独取一次 */
+      data.dirMode = DB.libDirMode(db, root);
       data.dirGroup = DB.libDirGroup(db, root);
       /* 封面不再扫描时自动拉取：交给用户在网页「编辑封面」里手动上传/抓取/删除 */
       return json(res, data);

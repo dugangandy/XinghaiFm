@@ -712,6 +712,19 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .menu-item.danger{color:#ff8095}
 .menu-item.danger:hover{background:rgba(255,110,130,.12)}
 .menu-sep{height:1px;margin:5px 6px;background:var(--line)}
+/* 菜单里的小段标题（如「目录结构」） */
+.menu-head{
+  padding:6px 10px 3px;font-size:10.5px;letter-spacing:.06em;color:var(--dim);
+  text-transform:none;pointer-events:none;
+}
+/* 带括号说明的菜单项：主标题一行、说明小字一行，说明用弱色和选项区分开 */
+.menu-item.tall{height:auto;padding:7px 10px;align-items:flex-start;gap:10px}
+.menu-item.tall .i{margin-top:2px;flex:none}
+.menu-main{display:flex;flex-direction:column;gap:1px;min-width:0;text-align:left}
+.menu-label{font-size:12.5px;line-height:1.35;color:var(--txt-2)}
+.menu-item.tall:hover .menu-label{color:#fff}
+.menu-sub{font-size:10.5px;line-height:1.35;color:var(--dim)}
+.menu-item.tall .menu-right{margin-left:auto;align-self:center}
 /* 倍速菜单：紧凑的档位列表，当前档高亮打勾（参考 B 站播放器） */
 .menu-right{display:flex;margin-left:auto;color:var(--cyan)}
 .menu-pop.menu-rate{min-width:0;padding:4px;border-radius:12px}
