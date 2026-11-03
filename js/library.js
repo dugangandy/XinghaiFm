@@ -105,6 +105,83 @@
     return init;
   }
 
+  /* ── 目录分类（「按目录分两级」模式） ──
+     一层子目录就是一个分类：id 用目录名哈希（d 前缀），和手工分类（c 开头）区分开。
+     删掉的目录分类记进本地名单，下次扫描不再自动建回来。 */
+  function dirCatId(name) { return 'd' + U.hash(String(name || '')).toString(36); }
+  function droppedCatKey() { return 'dirCatDropped:' + (libId || ''); }
+  function droppedCats() {
+    if (!libId) return [];
+    const v = FM.store.read(droppedCatKey(), []);
+    return Array.isArray(v) ? v : [];
+  }
+  function rememberDroppedCat(name) {
+    if (!libId || !name) return;
+    const list = droppedCats();
+    if (list.indexOf(name) >= 0) return;
+    list.push(name);
+    FM.store.write(droppedCatKey(), list.slice(-200));
+    FM.store.touch(droppedCatKey());
+  }
+
+  /* 补齐本轮扫到的目录分类：已有的不动、用户手工建过同名分类就直接挂过去，
+     只有真缺的才追加。改动一次性推给数据库，避免每次扫描都写一遍。 */
+  function ensureDirCats(names, list) {
+    if (!libId || !names || !names.length) return list;
+    const drop = droppedCats();
+    const next = list.slice();
+    let changed = false;
+    names.forEach(function (name) {
+      if (!name || drop.indexOf(name) >= 0) return;
+      const id = dirCatId(name);
+      if (next.some(function (c) { return c.id === id; })) return;
+      if (next.some(function (c) { return c.name === name; })) return;
+      next.push({ id, name, color: U.coverColors(U.hash(name))[0], order: next.length });
+      changed = true;
+    });
+    if (!changed) return list;
+    db.setCatsFor(libId, next);
+    db.touch('cats:' + libId);
+    pushMeta({ cats: next.slice().sort(function (a, b) { return a.order - b.order; }) });
+    return next;
+  }
+
+  /* ── 扫描结果 → 专辑分组 ──
+     平铺（默认）：一层子目录 = 专辑，根目录散落文件单独成一张。
+     两级（库开关）：1 段（根目录散落文件）→ 单独一张；2 段（分类目录里直接放的音频）
+     → 该分类下的散集专辑；3 段及以上（分类/专辑/子目录/a.mp3）→ 并入最近的二级专辑。
+     返回 [{ key, dirName, cat, files }]，dirName 为空时由调用方按 key 兜底。 */
+  function groupFiles(files, dirGroup) {
+    const groups = new Map();
+    (files || []).forEach(function (f) {
+      const segs = String(f && f.rel || '').split('/');
+      let key, dirName = '', cat = null;
+      if (!dirGroup) {
+        key = segs.length > 1 ? segs[0] : '__root__';
+      } else if (segs.length <= 1) {
+        key = '__root__';
+      } else if (segs.length === 2) {
+        key = segs[0];
+        cat = segs[0];
+        dirName = segs[0];
+      } else {
+        key = segs[0] + '/' + segs[1];
+        cat = segs[0];
+        dirName = segs[1];
+      }
+      const hit = groups.get(key);
+      if (hit) hit.files.push(f);
+      else groups.set(key, { key, dirName, cat, files: [f] });
+    });
+    return Array.from(groups.values());
+  }
+
+  /* 排序：置顶优先；两级模式下按「分类/专辑」相对路径排，同一分类自然挨在一起 */
+  function albumPath(a) { return a && (a.path || a.dirName || a.key) || ''; }
+  function albumSort(a, b) {
+    return (b.pinned - a.pinned) || U.naturalCompare(albumPath(a), albumPath(b));
+  }
+
   /* ── 标题解析 ── */
   function parseTitle(dir) {
     const s = String(dir).replace(/\s+/g, ' ').trim();
@@ -177,20 +254,26 @@
     rootName = scan.rootName || '';
     rootKey = String(scan.root || scan.rootName || '');
     libId = scan.libId || FM.fs.activeId || libId;
-    scannedAt = Date.now();
+    /* 用扫描方给的时间戳（服务端 / 主进程写的那次 walk 的完成时间），别用本地时间：
+       客户端会拿它和 /api/scan/at 比来判断"服务端有没有更新的结果"，
+       两边时钟不齐时本地时间会让这个比较永远不成立（或永远成立）。
+       本地目录（handle / files）没有这个字段，退回本地时间，不影响任何逻辑。 */
+    scannedAt = Number(scan.scannedAt) || Date.now();
 
-    const groups = new Map();
-    scan.files.forEach(function (f) {
-      const segs = f.rel.split('/');
-      const key = segs.length > 1 ? segs[0] : '__root__';
-      if (!groups.has(key)) groups.set(key, { key, files: [] });
-      groups.get(key).files.push(f);
-    });
+    const dirGroup = !!scan.dirGroup;
+    const groups = groupFiles(scan.files, dirGroup);
 
     const metas = db.albumMeta();
     const durs = db.durations();
-    const cats = ensureCats();
+    /* 分类清单：先把目录分类补齐（只补缺失的，用户删过的不会复活），再算关键词规则 */
+    const catDirs = [];
+    if (dirGroup) groups.forEach(function (g) {
+      if (g.cat && catDirs.indexOf(g.cat) < 0) catDirs.push(g.cat);
+    });
+    let cats = ensureCats();
+    cats = ensureDirCats(catDirs, cats);
     const catIds = new Set(cats.map(function (c) { return c.id; }));
+    const dropped = droppedCats();
     const autoFor = function (text) { return autoCats(text).filter(function (id) { return catIds.has(id); }); };
     const favs = FM.fs.favIds || new Set();
     const trackFavs = FM.fs.favTrackIds || new Set();
@@ -200,8 +283,16 @@
     let ownCount = 0;
 
     groups.forEach(function (group) {
-      const dirName = group.key === '__root__' ? (scan.rootName || '未分类单集') : group.key;
-      const albumId = U.uid('a', dirName);
+      const dirName = group.dirName || (group.key === '__root__' ? (scan.rootName || '未分类单集') : group.key);
+      /* 专辑 id：平铺库沿用「目录名哈希」（与旧版完全一致，存量整理数据不受影响），
+         两级库用「分类/专辑」相对路径哈希，不同分类下的同名专辑不会撞在一起。 */
+      const albumId = U.uid('a', group.key === '__root__' ? dirName : group.key);
+      /* 两级模式：这一组挂在哪个目录分类下；用户删掉过的分类不再自动挂回去 */
+      const dirCat = (dirGroup && group.cat && dropped.indexOf(group.cat) < 0) ? dirCatId(group.cat) : '';
+      const autoForAlbum = function () {
+        if (!dirGroup) return autoFor(dirName);
+        return dirCat ? [dirCat] : [];
+      };
 
       /* 去重：同名保留体积最大、层级最浅的一个 */
       const seen = new Map();
@@ -242,7 +333,7 @@
       const mkey = metaKey(albumId);
       let meta = metas[mkey] || adoptMeta(metas, albumId);
       if (!meta) {
-        meta = { cats: autoFor(dirName), auto: true, addedAt: Date.now(), root: rootKey };
+        meta = { cats: autoForAlbum(), auto: true, addedAt: Date.now(), root: rootKey };
         metas[mkey] = meta;
       }
       /* 同名但属于别的库：不继承，切回去时元数据仍然完好。
@@ -254,7 +345,7 @@
          空分类的大多是新专辑，或旧版本关键词没命中，扫描时补一次。
          规则升级也不再往已分类的专辑里追加。 */
       if (own && meta.auto !== false && !(meta.cats || []).length) {
-        const auto = autoFor(dirName);
+        const auto = autoForAlbum();
         if (auto.length) meta.cats = auto;
         meta.auto = true;
       }
@@ -265,6 +356,8 @@
       nextAlbums.push({
         id: albumId,
         key: group.key,
+        path: group.key === '__root__' ? '' : group.key,
+        dirCat: dirCat,
         dirName: dirName,
         title: (own && meta.title) || parsed.title,
         origTitle: parsed.title,
@@ -315,7 +408,7 @@
 
     db.setAlbumMeta(metas);
 
-    albums = nextAlbums.sort((a, b) => (b.pinned - a.pinned) || U.naturalCompare(a.dirName, b.dirName));
+    albums = nextAlbums.sort(albumSort);
     tracks = nextTracks;
     reindex();
     if (FM.covers) FM.covers.apply();
@@ -350,7 +443,8 @@
       root: rootKey,
       scannedAt: scannedAt,
       albums: albums.map(a => ({
-        id: a.id, key: a.key, dirName: a.dirName, title: a.title, origTitle: a.origTitle,
+        id: a.id, key: a.key, path: a.path || '', dirCat: a.dirCat || '',
+        dirName: a.dirName, title: a.title, origTitle: a.origTitle,
         tags: a.tags, seed: a.seed, count: a.count, size: a.size, duration: a.duration,
         addedAt: a.addedAt
       })),
@@ -375,12 +469,13 @@
     albums = cached.albums.map(function (a) {
       const m = metas[rootKey + '|' + a.id] || {};
       const own = !m.root || m.root === rootKey;
-      return Object.assign({}, a, {
+      /* 旧索引没有 path / dirCat：按 key（再退回目录名）兜底，封面和排序才不会拿到 undefined */
+      return Object.assign({ path: a.key === '__root__' ? '' : (a.key || '') }, a, {
         cats: own ? (catIds ? (m.cats || []).filter(function (id) { return catIds.has(id); }) : (m.cats || []).slice()) : [],
         fav: !!(FM.fs.favIds && FM.fs.favIds.has(a.id)), pinned: own && !!m.pinned, hidden: own && !!m.hidden,
         title: (own && m.title) || a.title
       });
-    }).sort((a, b) => (b.pinned - a.pinned) || U.naturalCompare(a.dirName, b.dirName));
+    }).sort(albumSort);
     tracks = (cached.tracks || []).map(function (row) {
       return {
         id: row[0], albumId: row[1], rel: row[2], name: row[3], ext: row[4],
@@ -503,7 +598,7 @@
   function refreshMeta() {
     ensureMetaKeys();
     albums.forEach(function (a) { recomputeAlbum(a.id); });
-    albums.sort((a, b) => (b.pinned - a.pinned) || U.naturalCompare(a.dirName, b.dirName));
+    albums.sort(albumSort);
   }
 
   function setMeta(albumId, patch) {
@@ -518,7 +613,7 @@
     db.touch('albumMeta');
     pushMeta({ albumMeta: albumPatch(key, m) });
     recomputeAlbum(albumId);
-    albums.sort((a, b) => (b.pinned - a.pinned) || U.naturalCompare(a.dirName, b.dirName));
+    albums.sort(albumSort);
     return m;
   }
 
@@ -564,7 +659,12 @@
 
   /* 删分类只清当前库的归属：别的库同名 id（内置种子跨库同 id）不能被误伤 */
   function removeCat(id) {
-    const rest = cats().filter(c => c.id !== id);
+    const list = cats();
+    const gone = list.find(c => c.id === id);
+    const rest = list.filter(c => c.id !== id);
+    /* 目录分类（d 开头）删掉后记住名字：下次扫描不再自动建回来，
+       否则用户永远删不干净这一栏 */
+    if (gone && String(id).charAt(0) === 'd') rememberDroppedCat(gone.name);
     db.setCatsFor(libId, rest);
     db.touch('cats:' + libId);
     albums.forEach(function (a) { a.cats = a.cats.filter(x => x !== id); });
@@ -667,7 +767,7 @@
 
   FM.lib = {
     build, restore, saveIndex, clear,
-    ensureCats,
+    ensureCats, groupFiles, dirCatId,
     albums: () => albums,
     tracks: () => tracks,
     allAlbums,

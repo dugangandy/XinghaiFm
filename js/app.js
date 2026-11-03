@@ -329,6 +329,8 @@
         } else if (hasLib) {
           /* 有缓存就直接用，本次会话内不再自动扫盘（有变更点「重新扫描」） */
           if (FM.ui.needRescan(FM.fs.activeId)) setTimeout(function () { FM.ui.autoRescan(); }, 1200);
+          /* 服务端模式下主机可能刚扫过：问一下时间戳，有更新就静默同步（不触发扫描） */
+          else setTimeout(function () { FM.ui.syncScanIfNewer(); }, 1200);
           ready();
           reveal();
         } else {
@@ -376,6 +378,9 @@
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState !== 'visible') return;
     deferResume(refreshServerLibs);
+    /* 主机那边可能刚扫过新书（手机端没有扫描入口）：问一下时间戳，有就静默同步。
+       回前台这条路径间隔拉长到 5 分钟——刚回到前台这几百毫秒要和 WebView 重新出图抢主线程 */
+    deferResume(function () { FM.ui.syncScanIfNewer(5 * 60 * 1000); });
     /* 切回来再补一次分类/进度：别的端刚改过的东西能立刻看到。
        整份快照不小，一分钟内只拉一次 */
     const now = Date.now();

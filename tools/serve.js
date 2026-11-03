@@ -15,7 +15,8 @@
  *   GET  /api/meta              当前库的元数据快照（分类 / 专辑整理 / 进度 / 时长，来自 fm.db）
  *   POST /api/meta              增量写回元数据（网页端、手机端也能改分类）
  *   POST /api/progress          手机端回传播放进度，按时间戳合并进 fm.db
- *   GET  /api/scan              目录列表（和主进程扫描结果同构）
+ *   GET  /api/scan[?refresh=1] 目录列表（和主进程扫描结果同构；默认读 fm.db 里的扫描缓存）
+ *   GET  /api/scan/at          扫描缓存的时间戳（客户端据此判断要不要同步别人的扫描结果）
  *   GET  /api/covers            封面索引（.fm-covers/covers.json）
  *   GET  /api/cover/<file>      封面图片
  *   GET  /api/media/<rel>       音频流，支持 Range（拖动进度条）
@@ -133,7 +134,13 @@ function userLibs(uid) { return DB.listLibs(db, uid); }
 function userActiveLib(uid) { return DB.activeLib(db, uid); }
 function userActiveRoot(uid) { const l = userActiveLib(uid); return l ? l.path : ''; }
 /* fixed = 前端不给改（没开 --allow-lib-edit） */
-function libView(l) { return { id: l.id, name: l.name, missing: !fs.existsSync(l.path), fixed: !ALLOW_LIB_EDIT }; }
+function libView(l) {
+  return {
+    id: l.id, name: l.name, missing: !fs.existsSync(l.path), fixed: !ALLOW_LIB_EDIT,
+    /* 按目录分两级：一层子目录当分类、二层当专辑 */
+    dirGroup: DB.libDirGroup(db, l.path)
+  };
+}
 
 /* ── 库元数据（分类 / 专辑整理 / 进度 / 时长）──
  * 住 fm.db，和桌面端共用同一份：一次事务只写变化的部分，不再有「谁把谁覆盖」的问题。
@@ -184,8 +191,9 @@ function mutateLibs(uid, body) {
     lib.name = name;
   } else if (act === 'remove') {
     DB.clearFavs(db, uid, id);
-    /* 元数据按库目录存：库移除时顺手清掉，别留孤儿行 */
+    /* 元数据、扫描缓存都按库目录存：库移除时顺手清掉，别留孤儿行 */
     if (lib.path) { try { DB.clearLibMeta(db, lib.path); } catch (e) {} }
+    dropScanCache(lib.path);
     libs.splice(libs.findIndex(l => l.id === id), 1);
     if (active === id) active = libs[0] ? libs[0].id : null;
     console.log('[lib] 远程移除资源库：' + lib.name);
@@ -448,12 +456,60 @@ function loginPage(err, next) {
     '</form>';
 }
 
-/* 整库扫描实测 2~3 秒（几万个目录项 + stat），短时间内重复请求（刷新页面、
-   来回切页签）没必要重扫，缓存 5 秒 */
-const scanCache = new Map();
-async function scanFolder(root) {
-  const hit = scanCache.get(root);
-  if (hit && Date.now() - hit.at < 5000) return hit.data;
+/* ── 扫描结果缓存 ──
+ * 整库扫描要递归 readdir + 每个文件 stat（实测 2~3 秒，NAS 上几十秒）。以前只有 5 秒内存缓存，
+ * 手机扫完、桌面进来、网页刷新、换个用户登录，每台设备每个账号都要各自重扫一遍。
+ * 现在扫完就落到 fm.db 的 settings（键 scan:<库目录>，按目录共享，不区分用户），
+ * 之后所有请求默认直接读缓存；只有前端点「重新扫描」才带 refresh=1 真的走盘。 */
+const scanCache = new Map();   // settings 的反序列化结果，省掉每次请求的 JSON.parse
+
+function scanKey(root) { return 'scan:' + DB.libRootKey(root); }
+
+/* 内存层用 settings 里的小时间戳（scan:<库>:at）校验：桌面主进程和这里共用同一个 fm.db，
+   一端重新扫描后，另一端的常驻内存缓存也要能跟上，否则会一直返回旧结果直到重启进程 */
+function readScanCache(root) {
+  const k = scanKey(root);
+  let stamp = '';
+  try { stamp = DB.getSetting(db, k + ':at', ''); } catch (e) { return null; }
+  const mem = scanCache.get(k);
+  if (mem && stamp && String(mem.scannedAt) === stamp) return mem;
+  let raw = '';
+  try { raw = DB.getSetting(db, k, ''); } catch (e) { return null; }
+  if (!raw) { scanCache.delete(k); return null; }
+  try {
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.files)) return null;
+    scanCache.set(k, data);
+    return data;
+  } catch (e) { return null; }
+}
+
+function writeScanCache(root, data) {
+  const k = scanKey(root);
+  const at = data.scannedAt || Date.now();
+  try {
+    /* 新旧守卫：两次扫描交错时（A 先开始、B 后开始但先扫完），别让 A 的旧快照把 B 的新快照盖回去 */
+    const prev = Number(DB.getSetting(db, k + ':at', '0')) || 0;
+    if (prev > at) return;
+    DB.setSetting(db, k, JSON.stringify(data));
+    DB.setSetting(db, k + ':at', String(at));
+  } catch (e) { console.log('[scan] 写缓存失败：' + e.message); }
+  scanCache.set(k, data);
+}
+
+/* 同一库同一时刻只允许一个 walk 在跑：多人同时点「重新扫描」时，后来的请求挂到同一个 Promise 上，
+   不会在主机上叠出好几路 readdir + stat */
+const scanInflight = new Map();
+
+/* 库里移除后把它的扫描缓存一起清掉，别在 settings 里留几 MB 的孤儿行 */
+function dropScanCache(root) {
+  if (!root) return;
+  const k = scanKey(root);
+  scanCache.delete(k);
+  try { DB.setSetting(db, k, ''); DB.setSetting(db, k + ':at', ''); } catch (e) {}
+}
+
+async function walkAndCache(root) {
   const out = [];
   async function walk(dir, prefix, depth) {
     let list;
@@ -474,9 +530,56 @@ async function scanFolder(root) {
     }
   }
   await walk(root, '', 1);
-  const data = { rootName: path.basename(root), root: root, files: out };
-  scanCache.set(root, { at: Date.now(), data: data });
+  const data = { rootName: path.basename(root), root: root, scannedAt: Date.now(), files: out };
+  writeScanCache(root, data);
   return data;
+}
+
+/* 等别人那次 walk 最多等这么久：NAS 掉线、目录卡死时不能让后来的请求一起挂死。
+   超时先把手里的旧缓存回给客户端，后台那次 walk 跑完仍然会落盘 */
+const SCAN_WAIT_MS = 60000;
+
+function withTimeout(p, ms) {
+  return new Promise(function (resolve, reject) {
+    const t = setTimeout(function () {
+      const e = new Error('扫描超时'); e.code = 'ETIMEDOUT'; reject(e);
+    }, ms);
+    p.then(function (v) { clearTimeout(t); resolve(v); }, function (e) { clearTimeout(t); reject(e); });
+  });
+}
+
+/* 卡死的 walk（磁盘拔了、SMB 会话挂了）超过这个时间就放弃，重新起一次，
+   否则手动「重新扫描」也会永远挂在那个永远不结束的 Promise 上 */
+const SCAN_STALE_MS = 5 * 60 * 1000;
+
+/* opts.refresh = true 时跳过缓存重新走盘（前端「重新扫描」） */
+async function scanFolder(root, opts) {
+  const o = opts || {};
+  const cached = readScanCache(root);
+  if (!o.refresh && cached) return cached;
+  const k = scanKey(root);
+  let rec = scanInflight.get(k);
+  if (rec && Date.now() - rec.at > SCAN_STALE_MS) {
+    console.log('[scan] 上一次扫描卡住超过 5 分钟，丢弃重来');
+    scanInflight.delete(k);
+    rec = null;
+  }
+  if (!rec) {
+    const entry = { at: Date.now(), p: null };
+    entry.p = walkAndCache(root).finally(function () {
+      /* 只清自己这一条：被判定卡死而替换掉的旧 walk 结束时不能把新的删掉 */
+      if (scanInflight.get(k) === entry) scanInflight.delete(k);
+    });
+    scanInflight.set(k, entry);
+    rec = entry;
+  }
+  try {
+    return await withTimeout(rec.p, SCAN_WAIT_MS);
+  } catch (err) {
+    /* 超时 / 这次 walk 失败：有旧缓存就先给旧的，别让请求一直挂着 */
+    if (cached) { console.log('[scan] 等扫描超时，先回旧缓存：' + err.message); return cached; }
+    throw err;
+  }
 }
 
 function parseRange(header, size) {
@@ -799,7 +902,10 @@ const server = http.createServer(async function (req, res) {
   if (p === '/api/config') {
     const libs = userLibs(uid);
     const lib = userActiveLib(uid);
-    return json(res, { server: libs.length > 0, rootName: lib ? lib.name : '', multi: MULTI, libEdit: ALLOW_LIB_EDIT, version: APP_VERSION });
+    return json(res, {
+      server: libs.length > 0, rootName: lib ? lib.name : '', multi: MULTI, libEdit: ALLOW_LIB_EDIT,
+      version: APP_VERSION, dirGroup: lib ? DB.libDirGroup(db, lib.path) : false
+    });
   }
   if (p === '/api/libs') {
     const a = userActiveLib(uid);
@@ -912,14 +1018,45 @@ const server = http.createServer(async function (req, res) {
     const a = userActiveLib(uid);
     return json(res, { active: a ? a.id : null, multi: MULTI, libs: userLibs(uid).map(libView) });
   }
+  /* 「按目录分两级」开关：只改 fm.db 里的一条元数据，不碰主机目录，
+     所以不受 --allow-lib-edit 限制；登录用户只能改自己名下的库 */
+  if (p === '/api/libdirgroup') {
+    if (req.method !== 'POST') return send(res, 405, 'POST only');
+    if (!writeAllowed(ip)) return send(res, 429, 'too many writes');
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > 1024) return send(res, 413, 'too large');
+    }
+    let payload = null;
+    try { payload = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    const id = String((payload && payload.id) || '');
+    const lib = userLibs(uid).find(function (l) { return l.id === id; });
+    if (!lib) return send(res, 403, 'unknown lib');
+    const on = DB.setLibDirGroup(db, lib.path, !!(payload && payload.on));
+    return json(res, { ok: true, id: lib.id, dirGroup: on });
+  }
+  /* 只回扫描缓存的时间戳（一行 settings，几毫秒）：手机端没有扫描入口，
+     靠它判断「主机上是不是有人扫过更新的」，有就静默重新读 /api/scan 的缓存 */
+  if (p === '/api/scan/at') {
+    const root = userActiveRoot(uid);
+    if (!root) return json(res, { scannedAt: 0 });
+    let at = 0;
+    try { at = Number(DB.getSetting(db, scanKey(root) + ':at', '0')) || 0; } catch (e) {}
+    return json(res, { scannedAt: at });
+  }
   if (p === '/api/scan') {
     const root = userActiveRoot(uid);
     if (!root) return send(res, 404, 'server mode off');
     try {
+      /* refresh=1 只有前端「重新扫描」会带；平时一律读缓存，别让每台设备每个用户各扫一遍 */
+      const refresh = u.searchParams.get('refresh') === '1';
       /* 拷一份再往上加字段：缓存里的对象别被改动 */
-      const data = Object.assign({}, await scanFolder(root));
+      const data = Object.assign({}, await scanFolder(root, { refresh: refresh }));
       const a = userActiveLib(uid);
       data.libId = a ? a.id : null;
+      /* 分组口径跟着扫描结果一起下发，前端不用再单独取一次 */
+      data.dirGroup = DB.libDirGroup(db, root);
       /* 封面不再扫描时自动拉取：交给用户在网页「编辑封面」里手动上传/抓取/删除 */
       return json(res, data);
     } catch (e) { return send(res, 500, e.message); }

@@ -25,9 +25,12 @@ contextBridge.exposeInMainWorld('fmNative', {
   addLib: (p) => ipcRenderer.invoke('fm:addLib', p),
   activate: (id) => ipcRenderer.invoke('fm:activate', id),
   renameLib: (id, name) => ipcRenderer.invoke('fm:renameLib', id, name),
+  /* 按目录分两级：一层子目录当分类、二层当专辑 */
+  setLibDirGroup: (id, on) => ipcRenderer.invoke('fm:setLibDirGroup', id, on),
   relocate: (id) => ipcRenderer.invoke('fm:relocate', id),
   removeLib: (id) => ipcRenderer.invoke('fm:removeLib', id),
-  scan: () => ipcRenderer.invoke('fm:scan'),
+  /* refresh=true 跳过扫描缓存真的走盘（前端「重新扫描」）；平时读主进程缓存的扫描结果 */
+  scan: (refresh) => ipcRenderer.invoke('fm:scan', !!refresh),
   covers: () => ipcRenderer.invoke('fm:covers'),
   searchCover: (title) => ipcRenderer.invoke('fm:searchCover', title),
   saveCover: (dirName, payload) => ipcRenderer.invoke('fm:saveCover', dirName, payload),

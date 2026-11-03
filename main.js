@@ -101,7 +101,10 @@ function activeLib() {
 }
 
 function libView(l) {
-  return { id: l.id, name: l.name, path: l.path, missing: !fs.existsSync(l.path) };
+  return {
+    id: l.id, name: l.name, path: l.path, missing: !fs.existsSync(l.path),
+    dirGroup: DB.libDirGroup(getDb(), l.path)
+  };
 }
 
 /* ── 自定义协议：把静态资源当作 app 源，localStorage / Web Audio 才有正常 origin ── */
@@ -279,8 +282,59 @@ function registerProtocol() {
   });
 }
 
-/* ── 扫描 ── */
-async function scanFolder(root) {
+/* ── 扫描 ──
+ * 结果按库目录缓存到 fm.db（settings 键 scan:<库目录>）：一台机器扫过一次之后，
+ * 重启 App、切库、换个用户在网页端登录都直接读这份，不再各自重扫整库。
+ * 只有「重新扫描」（refresh=true）才真走盘。 */
+const scanMem = new Map();   // settings 反序列化后的结果，省掉每次请求的 JSON.parse
+
+function scanKey(root) { return 'scan:' + DB.libRootKey(root); }
+
+/* 内存层用 settings 里的小时间戳（scan:<库>:at）校验：serve.js 和桌面主进程共用同一个 fm.db，
+   另一端重新扫描后这里也能跟上，不会抱着常驻内存里的旧结果直到重启 */
+function readScanCache(root) {
+  const k = scanKey(root);
+  let stamp = '';
+  try { stamp = DB.getSetting(getDb(), k + ':at', ''); } catch (e) { return null; }
+  const mem = scanMem.get(k);
+  if (mem && stamp && String(mem.scannedAt) === stamp) return mem;
+  let raw = '';
+  try { raw = DB.getSetting(getDb(), k, ''); } catch (e) { return null; }
+  if (!raw) { scanMem.delete(k); return null; }
+  try {
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.files)) return null;
+    scanMem.set(k, data);
+    return data;
+  } catch (e) { return null; }
+}
+
+function writeScanCache(root, data) {
+  const k = scanKey(root);
+  const at = data.scannedAt || Date.now();
+  try {
+    /* 新旧守卫：两次扫描交错时，别让先开始那次（较旧）的快照把新快照盖回去 */
+    const prev = Number(DB.getSetting(getDb(), k + ':at', '0')) || 0;
+    if (prev > at) return;
+    DB.setSetting(getDb(), k, JSON.stringify(data));
+    DB.setSetting(getDb(), k + ':at', String(at));
+  } catch (e) { console.warn('[scan] 写缓存失败', e.message); }
+  scanMem.set(k, data);
+}
+
+function dropScanCache(root) {
+  const k = scanKey(root);
+  scanMem.delete(k);
+  try { DB.setSetting(getDb(), k, ''); DB.setSetting(getDb(), k + ':at', ''); } catch (e) {}
+}
+
+/* 同一库同一时刻只跑一个 walk（重复点「重新扫描」不会叠出多路 stat）。
+   卡死的 walk（移动硬盘拔了、网络盘掉线）超过 SCAN_STALE_MS 就放弃重来，
+   否则手动重扫也会永远挂在那一个 Promise 上 */
+const scanInflight = new Map();
+const SCAN_STALE_MS = 5 * 60 * 1000;
+
+async function walkAndCache(root) {
   const out = [];
   async function walk(dir, prefix, depth) {
     let entries;
@@ -309,7 +363,50 @@ async function scanFolder(root) {
     }
   }
   await walk(root, '', 1);
-  return { rootName: path.basename(root), root: root, files: out };
+  const data = { rootName: path.basename(root), root: root, scannedAt: Date.now(), files: out };
+  writeScanCache(root, data);
+  return data;
+}
+
+/* 等同一库那次 walk 最多等这么久：移动硬盘/网络盘卡住时不能让请求一直挂着，
+   超时先把旧缓存回给界面，后台那次 walk 跑完仍然会落盘 */
+const SCAN_WAIT_MS = 60000;
+
+function withTimeout(p, ms) {
+  return new Promise(function (resolve, reject) {
+    const t = setTimeout(function () {
+      const e = new Error('扫描超时'); e.code = 'ETIMEDOUT'; reject(e);
+    }, ms);
+    p.then(function (v) { clearTimeout(t); resolve(v); }, function (e) { clearTimeout(t); reject(e); });
+  });
+}
+
+async function scanFolder(root, opts) {
+  const o = opts || {};
+  const cached = readScanCache(root);
+  if (!o.refresh && cached) return cached;
+  const k = scanKey(root);
+  let rec = scanInflight.get(k);
+  if (rec && Date.now() - rec.at > SCAN_STALE_MS) {
+    console.warn('[scan] 上一次扫描卡住超过 5 分钟，丢弃重来');
+    scanInflight.delete(k);
+    rec = null;
+  }
+  if (!rec) {
+    const entry = { at: Date.now(), p: null };
+    entry.p = walkAndCache(root).finally(function () {
+      /* 只清自己这一条：被判定卡死而替换掉的旧 walk 结束时不能把新的删掉 */
+      if (scanInflight.get(k) === entry) scanInflight.delete(k);
+    });
+    scanInflight.set(k, entry);
+    rec = entry;
+  }
+  try {
+    return await withTimeout(rec.p, SCAN_WAIT_MS);
+  } catch (err) {
+    if (cached) { console.warn('[scan] 等扫描超时，先回旧缓存', err.message); return cached; }
+    throw err;
+  }
 }
 
 function insideRoot(rel) {
@@ -455,9 +552,12 @@ function bindIpc() {
       properties: ['openDirectory', 'dontAddToRecent']
     });
     if (res.canceled || !res.filePaths.length) return null;
+    const oldPath = lib.path;
     lib.path = res.filePaths[0];
     /* 选目录期间可能有其它 IPC 刷新 lastCfg，必须保存这次修改的配置对象 */
     saveConfig(cfg);
+    /* 旧路径的扫描缓存已经没用了，清掉（几 MB 的孤儿行），新路径第一次进库会重新扫 */
+    if (oldPath && path.resolve(oldPath) !== path.resolve(lib.path)) dropScanCache(oldPath);
     return libView(lib);
   });
 
@@ -472,16 +572,31 @@ function bindIpc() {
     DB.clearFavs(getDb(), adminUid(), id);
     /* 元数据按库目录存：库被移除时顺手清掉，别留孤儿行 */
     try { DB.clearLibMeta(getDb(), gone.path); } catch (err) {}
+    /* 扫描缓存也一起清掉，重新加回来时按新内容扫 */
+    dropScanCache(gone.path);
     return { active: cfg.active };
   });
 
-  ipcMain.handle('fm:scan', async function () {
+  /* refresh=true 只有前端「重新扫描」会传；平时读 fm.db 里的扫描缓存 */
+  ipcMain.handle('fm:scan', async function (e, refresh) {
     const lib = activeLib();
     if (!lib) throw new Error('尚未选择资源库');
     if (!fs.existsSync(lib.path)) throw new Error('资源库目录不存在：' + lib.name);
     /* 封面不再扫描时自动拉取：交给用户在网页里手动编辑（上传/抓取/删除）。
        扫描结果里不再带 coversPending，界面不会去轮询不存在的后台抓取。 */
-    return await scanFolder(lib.path);
+    const scan = await scanFolder(lib.path, { refresh: !!refresh });
+    /* 开关跟着扫描结果一起下发：渲染层不用再单独取一次。
+       拷贝后补字段，扫描缓存里的对象保持不变 */
+    return Object.assign({}, scan, { dirGroup: DB.libDirGroup(getDb(), lib.path) });
+  });
+
+  /* 「按目录分两级」开关：只改元数据，不动扫描缓存 */
+  ipcMain.handle('fm:setLibDirGroup', function (e, id, on) {
+    const cfg = getConfig();
+    const lib = cfg.libs.find(l => l.id === id) || activeLib();
+    if (!lib) return false;
+    DB.setLibDirGroup(getDb(), lib.path, !!on);
+    return !!on;
   });
 
   /* ── 网页手动编辑封面：搜索候选 / 保存 / 删除，三者都走 .fm-covers/ ── */

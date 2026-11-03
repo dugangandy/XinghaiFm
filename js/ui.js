@@ -3650,6 +3650,12 @@
       });
     }
     items.push({ label: '重命名', icon: 'edit', onClick: function () { renameLibFlow(l, redraw); } });
+    /* 目录层级深的库：一层子目录当分类、二层子目录当专辑 */
+    items.push({
+      label: '按目录分两级' + (l.dirGroup ? '（已开启）' : ''),
+      icon: l.dirGroup ? 'check' : 'grid',
+      onClick: function () { toggleDirGroup(l, redraw); }
+    });
     if (FM.fs.native) {
       items.push({ label: '重新定位…', icon: 'folder', onClick: function () { relocateFlow(l, redraw); } });
       items.push({ label: '在文件夹中打开', icon: 'folder', onClick: function () { FM.fs.openLib(l.id); } });
@@ -3660,6 +3666,22 @@
       onClick: function () { removeLibFlow(l, redraw); }
     });
     openMenu(anchor, items);
+  }
+
+  /* 按目录分两级：一层子目录当分类、二层当专辑。只改分组口径，
+     扫描缓存里的文件列表与开关无关，所以静默重扫一遍（读缓存、不走盘）就够 */
+  async function toggleDirGroup(l, after) {
+    const on = !l.dirGroup;
+    try {
+      await FM.fs.setDirGroup(l.id, on);
+      l.dirGroup = on;
+      toast(on ? '已按目录分两级：一层是分类、二层是专辑' : '已恢复平铺：一层子目录就是专辑');
+      if (FM.fs.activeId === l.id) await runScan({ silent: true });
+      else renderAll({ quiet: true });
+      if (after) after();
+    } catch (e) {
+      toast(e.message || '切换失败', 'warn');
+    }
   }
 
   function renameLibFlow(l, after) {

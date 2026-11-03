@@ -284,7 +284,10 @@
           try {
             const r = await apiFetch('/api/libs', { cache: 'no-store' });
             const data = await r.json();
-            libs = (data.libs || []).map(l => ({ id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed }));
+            libs = (data.libs || []).map(l => ({
+              id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed,
+              dirGroup: !!l.dirGroup
+            }));
             activeId = data.active;
           } catch (e) {
             libs = [];
@@ -292,7 +295,10 @@
           }
         }
         if (!libs.length) {
-          libs = [{ id: 'server', name: srv.rootName || '远程资源库', path: '', missing: false, fixed: true }];
+          libs = [{
+            id: 'server', name: srv.rootName || '远程资源库', path: '', missing: false, fixed: true,
+            dirGroup: !!srv.dirGroup
+          }];
           activeId = 'server';
         }
       } else if (APP) {
@@ -380,7 +386,10 @@
       if (!r.ok) return false;
       data = await r.json();
     } catch (e) { return false; }
-    const next = (data.libs || []).map(l => ({ id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed }));
+    const next = (data.libs || []).map(l => ({
+      id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed,
+      dirGroup: !!l.dirGroup
+    }));
     const same = next.length === libs.length && next.every(function (l, i) {
       const o = libs[i];
       return o && o.id === l.id && o.name === l.name && o.missing === l.missing;
@@ -401,11 +410,38 @@
     });
     if (!r.ok) throw new Error((await r.text()) || '资源库操作失败');
     const data = await r.json();
-    libs = (data.libs || []).map(l => ({ id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed }));
+    libs = (data.libs || []).map(l => ({
+      id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed,
+      dirGroup: !!l.dirGroup
+    }));
     activeId = data.active;
     syncActive();
     applyMode();
     return activeLib;
+  }
+
+  /* 「按目录分两级」开关（一层子目录当分类、二层当专辑）
+     桌面走 IPC 写 fm.db，服务端走 /api/libdirgroup，纯网页存本地库条目 */
+  async function setDirGroup(id, on) {
+    const val = !!on;
+    const lib = libs.find(l => l.id === id) || activeLib;
+    if (DESKTOP_FS) {
+      const r = await window.fmNative.setLibDirGroup(id, val);
+      if (r !== val) throw new Error('开关未写入');
+    } else if (serverMode) {
+      const r = await apiFetch('/api/libdirgroup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: id, on: val })
+      });
+      if (!r.ok) throw new Error((await r.text()) || '设置失败');
+    } else {
+      const list = readWebLibs();
+      const l = list.find(x => x.id === id);
+      if (l) { l.dirGroup = val; writeWebLibs(list); }
+    }
+    if (lib) lib.dirGroup = val;
+    return val;
   }
 
   async function activate(id) {
@@ -887,26 +923,40 @@
     if (onProgress) onProgress({ phase: 'size', done: total, total });
   }
 
-  async function scan(onProgress) {
+  /* opts.refresh=true 表示跳过服务端/主进程的扫描缓存，真的重扫一遍（只给「重新扫描」用） */
+  async function scan(onProgress, opts) {
     if (!activeLib) throw new Error('尚未选择资源库');
     const libId = activeId;
+    const refresh = !!(opts && opts.refresh);
 
     /* 服务器模式：目录在跑服务的那台机器上，问它要列表 */
     if (mode === 'server') {
-      const res = await apiFetch('/api/scan', { cache: 'no-store' });
+      const res = await apiFetch('/api/scan' + (refresh ? '?refresh=1' : ''), { cache: 'no-store' });
       if (!res.ok) throw new Error(U.NET_FAIL);
       const data = await res.json();
       if (onProgress) onProgress({ phase: 'size', done: data.files.length, total: data.files.length });
-      /* root 用服务端回的真实路径：albumMeta 的键是「<路径>|<专辑id>」，和桌面端要对得上 */
-      return { libId, rootName: data.rootName || activeLib.name, root: data.root || 'server', mode, files: data.files };
+      /* root 用服务端回的真实路径：albumMeta 的键是「<路径>|<专辑id>」，和桌面端要对得上。
+         scannedAt 也要带上：它是「谁、什么时候扫的」那个时间戳，客户端拿它和服务端的
+         /api/scan/at 比，不能换成客户端本地时间（两边时钟一歪就永远比不对） */
+      const dirGroup = !!data.dirGroup;
+      activeLib.dirGroup = dirGroup;
+      return {
+        libId, rootName: data.rootName || activeLib.name, root: data.root || 'server', mode,
+        files: data.files, scannedAt: Number(data.scannedAt) || 0, dirGroup
+      };
     }
 
     /* 桌面模式：交给主进程读盘，速度更快且无授权问题 */
     if (mode === 'desktop') {
       if (onProgress) onProgress({ phase: 'list', count: 0 });
-      const res = await window.fmNative.scan();
+      const res = await window.fmNative.scan(refresh);
       if (onProgress) onProgress({ phase: 'size', done: res.files.length, total: res.files.length });
-      return { libId, rootName: res.rootName || activeLib.name, root: res.root, mode, files: res.files };
+      const dirGroup = !!res.dirGroup;
+      activeLib.dirGroup = dirGroup;
+      return {
+        libId, rootName: res.rootName || activeLib.name, root: res.root, mode,
+        files: res.files, scannedAt: Number(res.scannedAt) || 0, dirGroup
+      };
     }
 
     let items;
@@ -923,10 +973,23 @@
       rootName: activeLib.name,
       root: activeLib.path || activeLib.name,
       mode,
+      dirGroup: !!activeLib.dirGroup,
       files: items.map(function (it) {
         return { rel: it.rel, name: it.name, ext: it.ext, size: it.size, mtime: it.mtime, depth: it.depth };
       })
     };
+  }
+
+  /* 服务端扫描缓存的时间戳（只有一行 settings，很便宜）。
+     手机端没有「重新扫描」入口，靠它判断主机上是不是有人扫过更新的结果 */
+  async function scanStamp() {
+    if (mode !== 'server') return 0;
+    try {
+      const res = await apiFetch('/api/scan/at', { cache: 'no-store' });
+      if (!res.ok) return 0;
+      const j = await res.json();
+      return Number(j && j.scannedAt) || 0;
+    } catch (e) { return 0; }
   }
 
   /* ── 取文件 ── */
@@ -1067,8 +1130,9 @@
 
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, canSyncMeta, pushProgress, refreshLibs,
+    setDirGroup,
     loadFavs, setFav, setFavTrack,
-    scan, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
+    scan, scanStamp, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,
     libs: () => libs.slice(),
     active: () => activeLib,

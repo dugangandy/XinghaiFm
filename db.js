@@ -294,6 +294,21 @@ function libRootKey(p) {
   return out;
 }
 
+/* ── 库级开关：按目录分两级 ──
+   一层子目录当分类、二层子目录当专辑。和分类/整理元数据一样按库根路径共享，
+   桌面端、服务端、手机端读到的都是同一个开关。 */
+function libDirGroup(db, root) {
+  const key = libRootKey(root);
+  if (!key) return false;
+  return getSetting(db, 'dirgroup:' + key, '0') === '1';
+}
+function setLibDirGroup(db, root, on) {
+  const key = libRootKey(root);
+  if (!key) return false;
+  setSetting(db, 'dirgroup:' + key, on ? '1' : '0');
+  return !!on;
+}
+
 function tx(db, fn) {
   db.exec('BEGIN');
   try { const r = fn(); db.exec('COMMIT'); return r; }
@@ -575,6 +590,7 @@ module.exports = {
   listFavs, setFav, clearFavs,
   listFavTracks, setFavTrack, clearFavTracks,
   META_VERSION, META_LIMIT, libRootKey,
+  libDirGroup, setLibDirGroup,
   catsList, catsReplace,
   albumMetaMap, albumMetaUpsert,
   progressMap, progressUpsert,
