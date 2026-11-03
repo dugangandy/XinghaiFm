@@ -779,6 +779,11 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
   transition:.2s;
 }
 .input:focus{border-color:rgba(34,211,238,.55);background:rgba(34,211,238,.06);box-shadow:0 0 0 3px rgba(34,211,238,.09)}
+/* 原生 select 默认按浅色方案渲染，深色主题下收起态是黑字黑底；color-scheme 让控件和下拉都用暗色 */
+select.input{
+  color:var(--txt);color-scheme:dark;cursor:pointer;
+}
+select.input option{background:#161d29;color:var(--txt)}
 .swatches{display:flex;gap:8px;flex-wrap:wrap}
 .swatch{
   width:26px;height:26px;border-radius:50%;border:2px solid transparent;transition:.2s;position:relative;
