@@ -518,8 +518,18 @@
     }
   }
 
+  /* ── 导航锁：整库扫描 / 切库加载期间不让切专辑、分类 ──
+     扫到一半跳走只会看到空列表，还会把半成品渲染出去。
+     后台静默同步不占锁（见 runScan 的 background 参数），免得定时器到点时打断用户 */
+  let navLock = 0;
+  const NAV_LOCK_TIP = '正在扫描资源库，完成后再切换专辑和分类';
+  function lockNav() { navLock++; }
+  function unlockNav() { if (navLock > 0) navLock--; }
+  function navLocked() { return navLock > 0; }
+
   /* ── 路由 ── */
   function go(hash) {
+    if (navLocked()) { toast(NAV_LOCK_TIP); return; }
     if (location.hash === hash) route();
     else location.hash = hash;
   }
@@ -3728,6 +3738,7 @@
   /* 按目录分两级：一层子目录当分类、二层当专辑。只改分组口径，
      扫描缓存里的文件列表与开关无关，所以静默重扫一遍（读缓存、不走盘）就够 */
   async function toggleDirGroup(l, after) {
+    if (navLocked()) { toast('正在扫描资源库，请稍候'); return; }
     const on = !l.dirGroup;
     try {
       await FM.fs.setDirGroup(l.id, on);
@@ -3985,6 +3996,8 @@
   let stampCheckedAt = 0;
   async function syncScanIfNewer(gap) {
     if (!FM.fs.server || !FM.fs.activeId) return false;
+    /* 手动扫描在跑的时候别插一脚 */
+    if (navLocked()) return false;
     const now = Date.now();
     if (now - stampCheckedAt < (Number(gap) || 30000)) return false;
     stampCheckedAt = now;
@@ -3993,7 +4006,7 @@
     const cached = FM.db.index(id);
     const wantGroup = !!(FM.fs.active() && FM.fs.active().dirGroup);
     if (cached && !!cached.dirGroup !== wantGroup) {
-      try { return await runScan({ silent: true, quiet: true, libId: id }); } catch (e) { return false; }
+      try { return await runScan({ silent: true, quiet: true, libId: id, background: true }); } catch (e) { return false; }
     }
     let at = 0;
     try { at = await FM.fs.scanStamp(); } catch (e) { return false; }
@@ -4001,7 +4014,7 @@
        两边比的是「扫描方写的时间戳」（L.build 取 scan.scannedAt），不是本地时钟 */
     if (!at || at <= FM.lib.scannedAt || id !== FM.fs.activeId) return false;
     /* quiet：同步缓存不该弹「正在扫描资源库…」 */
-    try { return await runScan({ silent: true, quiet: true, libId: id }); } catch (e) { return false; }
+    try { return await runScan({ silent: true, quiet: true, libId: id, background: true }); } catch (e) { return false; }
   }
 
   /* 进入当前库：有缓存直接秒出，不再后台补扫 */
@@ -4068,8 +4081,12 @@
   }
 
   /* ── 扫描 ── */
+  /* 手动扫描只允许一个在跑：连点会把整库 readdir + stat 叠成好几份，进度条也会互相掐 */
+  let doScanBusy = false;
   async function doScan() {
     if (!FM.fs.hasSource) { addLibFlow(); return; }
+    if (doScanBusy || navLocked()) { toast('正在扫描资源库，请稍候'); return; }
+    doScanBusy = true;
     try {
       setScanBusy(true, '准备中…');
       if (FM.fs.canSyncMeta()) { try { await FM.fs.pullMeta(); } catch (e) {} }
@@ -4081,6 +4098,7 @@
     } catch (e) {
       toast(e.message || '扫描失败', 'warn');
     } finally {
+      doScanBusy = false;
       setScanBusy(false);
     }
   }
@@ -4105,8 +4123,13 @@
     /* 收藏可能在别的端刚改过：扫描前重拉一次，别让界面停在旧状态 */
     try { await FM.fs.loadFavs(libId); } catch (e) {}
     const my = ++scanSeq;
-    if (showBusy) setScanBusy(true, '正在扫描资源库…');
+    /* 手动扫描 / 切库后的首次扫描会锁导航；后台静默同步不锁。
+       locked 单独记一份：加锁后中途出错也只释放自己这一把 */
+    const wantLock = !o.background;
+    let locked = false;
     try {
+      if (wantLock) { lockNav(); locked = true; }
+      if (showBusy) setScanBusy(true, '正在扫描资源库…');
       /* 只有手动「重新扫描」才让服务端/主进程真的走盘；静默补扫一律读它们的扫描缓存 */
       const scan = await FM.fs.scan(function (p) {
         if (!showBusy) return;
@@ -4134,6 +4157,7 @@
       if (FM.fs.server && scan.coversPending) watchCovers(libId);
       return true;
     } finally {
+      if (locked) unlockNav();
       /* 只有最新那次扫描能收起进度，旧扫描收尾不许关掉新扫描的提示；
          quiet 的那次本来就没弹，别去关别人正在显示的进度 */
       if (showBusy && my === scanSeq) setScanBusy(false);
@@ -4162,10 +4186,12 @@
 
   async function autoRescan(silent) {
     if (!FM.fs.granted || !FM.fs.hasSource) return;
+    /* 已经在扫了就别再排一次：叠着扫会互相覆盖结果 */
+    if (navLocked()) return;
     const libId = FM.fs.activeId;
     try {
       /* 带上发起时的库 id：定时器到点时如果已经切走了，这次补扫直接作废 */
-      await runScan({ silent: true, libId });
+      await runScan({ silent: true, libId, background: true });
     } catch (e) {
       console.warn('[scan] 自动扫描失败', e);
       if (!silent) toast(U.NET_FAIL, 'warn');

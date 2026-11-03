@@ -269,6 +269,27 @@
 
     const metas = db.albumMeta();
     const durs = db.durations();
+    /* 本轮要回写的专辑元数据：扫描时自动产生的归类（新建 / 补齐 / 作废）都得推给数据库。
+       只写本地缓存的话，服务端只有分类清单、没有专辑归属，重开或换设备后分类下面就是空的 */
+    const touchedMeta = {};
+    /* 分组口径变了（开/关「按分类」）：旧口径算出来的自动归类全部作废，
+       否则「只补空」的逻辑会让专辑继续挂在旧分类下，新的目录分类永远空着。
+       用户手工改过的（auto === false）不动 */
+    /* hasModeFlag：扫描结果里到底有没有这个字段。老服务端 / 老主进程不返回时，
+       不能把「没告诉我」当成「明确改回一层」，否则会把两层时代的归类全清掉 */
+    const hasModeFlag = typeof scan.dirGroup === 'boolean';
+    const prevGroup = db.indexMode(libId);
+    if (libId && hasModeFlag && prevGroup !== dirGroup) {
+      const prefix = rootKey + '|';
+      Object.keys(metas).forEach(function (k) {
+        if (k.indexOf(prefix) !== 0) return;
+        const m = metas[k];
+        if (!m || m.auto === false) return;
+        if (!(m.cats || []).length) return;
+        m.cats = [];
+        touchedMeta[k] = m;
+      });
+    }
     /* 分类清单：先把目录分类补齐（只补缺失的，用户删过的不会复活），再算关键词规则 */
     const catDirs = [];
     if (dirGroup) groups.forEach(function (g) {
@@ -339,6 +360,7 @@
       if (!meta) {
         meta = { cats: autoForAlbum(), auto: true, addedAt: Date.now(), root: rootKey };
         metas[mkey] = meta;
+        touchedMeta[mkey] = meta;
       }
       /* 同名但属于别的库：不继承，切回去时元数据仍然完好。
          本地 albumMeta 条目可能不带 root（服务端拉回来的快照就是如此），按 restore() 同样用宽松判断，
@@ -350,8 +372,14 @@
          规则升级也不再往已分类的专辑里追加。 */
       if (own && meta.auto !== false && !(meta.cats || []).length) {
         const auto = autoForAlbum();
-        if (auto.length) meta.cats = auto;
+        if (auto.length) { meta.cats = auto; touchedMeta[mkey] = meta; }
         meta.auto = true;
+      }
+      /* 目录分类是结构性的（一层文件夹就是分类），只要用户没手工改过分类（auto !== false），
+         缺了就补上：老库换成两层后即使 meta 里还挂着关键词分类，也能马上出现在目录分类下 */
+      if (dirGroup && dirCat && own && meta.auto !== false && (meta.cats || []).indexOf(dirCat) < 0) {
+        meta.cats = (meta.cats || []).concat([dirCat]);
+        touchedMeta[mkey] = meta;
       }
 
       albumIds.add(albumId);
@@ -411,6 +439,8 @@
     }
 
     db.setAlbumMeta(metas);
+    /* 推给数据库（fs.pushMeta 会攒批，且按 400 条拆包）。纯网页本地库没有后端，这里直接 no-op */
+    if (Object.keys(touchedMeta).length) pushMeta({ albumMeta: touchedMeta });
 
     albums = nextAlbums.sort(albumSort);
     tracks = nextTracks;

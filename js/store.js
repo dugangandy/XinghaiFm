@@ -107,7 +107,24 @@
 
     /* 索引按资源库分开存，切库时直接读缓存 */
     index: id => read(id ? 'index:' + id : 'index', null),
-    setIndex: (id, v) => write('index:' + id, v),
-    dropIndex: id => { if (id) drop('index:' + id); }
+    setIndex: (id, v) => {
+      if (!id) { write('index', v); return; }
+      write('index:' + id, v);
+      /* 分组口径单独存一份小键：扫描每轮都要它，为了一个布尔去 JSON.parse 几 MB 的索引不值当 */
+      if (v && typeof v.dirGroup === 'boolean') write('indexMode:' + id, v.dirGroup ? 1 : 0);
+    },
+    /* 上次扫描用的分组口径。老缓存没有小键时回退读一次完整索引，下次 saveIndex 会自动补上 */
+    indexMode: id => {
+      if (!id) return false;
+      const v = read('indexMode:' + id, null);
+      if (v !== null) return !!v;
+      const idx = read('index:' + id, null);
+      return !!(idx && idx.dirGroup);
+    },
+    dropIndex: id => {
+      if (!id) return;
+      drop('index:' + id);
+      drop('indexMode:' + id);
+    }
   };
 })(window.FM);

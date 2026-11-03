@@ -685,6 +685,28 @@
     return true;
   }
 
+  /* 数据库每包最多收 500 条 albumMeta（db.js 的 META_LIMIT），超出的会被静默截断：
+     大库第一次落库要拆包，否则只有前 500 个专辑的归类能存下来，重开就丢 */
+  const META_BATCH = 400;
+  function splitPatch(patch) {
+    const meta = patch.albumMeta;
+    const keys = meta ? Object.keys(meta) : [];
+    if (keys.length <= META_BATCH) return [patch];
+    const out = [];
+    for (let i = 0; i < keys.length; i += META_BATCH) {
+      const one = { libId: patch.libId, albumMeta: {} };
+      /* 分类 / 进度 / 时长只在第一批带，后面各批只负责专辑整理 */
+      if (i === 0) {
+        if (patch.cats) one.cats = patch.cats;
+        if (patch.progress) one.progress = patch.progress;
+        if (patch.durations) one.durations = patch.durations;
+      }
+      keys.slice(i, i + META_BATCH).forEach(function (k) { one.albumMeta[k] = meta[k]; });
+      out.push(one);
+    }
+    return out;
+  }
+
   async function flushMeta() {
     if (!metaQueue) return false;
     /* 上一发还在飞：稍后再发，别把这一批直接丢掉 */
@@ -696,24 +718,43 @@
     const patch = metaQueue;
     metaQueue = null;
     metaSending = true;
-    let ok = false;
+    let ok = true;
     try {
       const ch = metaChannel();
-      if (ch === 'ipc') {
-        ok = !!(await window.fmNative.metaPatch(patch.libId, patch));
-      } else if (ch === 'http') {
-        const r = await apiFetch('/api/meta', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(patch)
-        });
-        /* 响应体必须读掉：不消费的话这条连接一直占着，进度每 10 秒一条，很快把同域 6 条连接占满 */
-        try { await r.text(); } catch (e) {}
-        ok = r.ok;
+      const parts = splitPatch(patch);
+      const t0 = Date.now();       // 节流窗口起点（见下面的 12 批 / 秒）
+      for (let i = 0; i < parts.length; i++) {
+        const one = parts[i];
+        let sent = false;
+        if (ch === 'ipc') {
+          sent = !!(await window.fmNative.metaPatch(one.libId, one));
+        } else if (ch === 'http') {
+          const r = await apiFetch('/api/meta', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(one)
+          });
+          /* 响应体必须读掉：不消费的话这条连接一直占着，进度每 10 秒一条，很快把同域 6 条连接占满 */
+          try { await r.text(); } catch (e) {}
+          sent = r.ok;
+        }
+        if (!sent) { ok = false; break; }
+        /* 拆包节流：服务端给 meta 写入的额度是「1 秒 20 次」，这里按每秒 12 批自限。
+           小批量只等基础间隔不被拖慢，大批量则在第 12、24… 批把这一秒补齐，绝不撞限额 */
+        if (parts.length > 1 && i < parts.length - 1) {
+          let wait = 60;
+          if ((i + 1) % 12 === 0) wait = Math.max(wait, 1000 - (Date.now() - t0));
+          await new Promise(function (res) { setTimeout(res, wait); });
+        }
       }
     } catch (e) { ok = false; }
     metaSending = false;
-    if (ok) { metaRetry = 0; return true; }
+    if (ok) {
+      metaRetry = 0;
+      /* 分批期间可能又攒了新改动：补排一次，别等下一次用户操作 */
+      if (metaQueue) { clearTimeout(metaTimer); metaTimer = setTimeout(flushMeta, 200); }
+      return true;
+    }
     /* 失败重排一次；再失败就丢弃，下次 pullMeta 会把状态纠正回来（不阻塞播放） */
     if (metaRetry < 1) {
       metaRetry++;
@@ -953,8 +994,10 @@
       /* root 用服务端回的真实路径：albumMeta 的键是「<路径>|<专辑id>」，和桌面端要对得上。
          scannedAt 也要带上：它是「谁、什么时候扫的」那个时间戳，客户端拿它和服务端的
          /api/scan/at 比，不能换成客户端本地时间（两边时钟一歪就永远比不对） */
-      const dirGroup = !!data.dirGroup;
-      activeLib.dirGroup = dirGroup;
+      /* 老服务端不返回这个字段：留 undefined，别当成「明确的一层口径」，
+         否则 build 会以为分组方式变了，把两层时代建的分类归属当成旧数据清掉 */
+      const dirGroup = (data.dirGroup === undefined) ? undefined : !!data.dirGroup;
+      if (dirGroup !== undefined) activeLib.dirGroup = dirGroup;
       return {
         libId, rootName: data.rootName || activeLib.name, root: data.root || 'server', mode,
         files: data.files, scannedAt: Number(data.scannedAt) || 0, dirGroup
@@ -966,8 +1009,9 @@
       if (onProgress) onProgress({ phase: 'list', count: 0 });
       const res = await window.fmNative.scan(refresh);
       if (onProgress) onProgress({ phase: 'size', done: res.files.length, total: res.files.length });
-      const dirGroup = !!res.dirGroup;
-      activeLib.dirGroup = dirGroup;
+      /* 同上：老主进程/preload 没有这个字段时保留 undefined */
+      const dirGroup = (res.dirGroup === undefined) ? undefined : !!res.dirGroup;
+      if (dirGroup !== undefined) activeLib.dirGroup = dirGroup;
       return {
         libId, rootName: res.rootName || activeLib.name, root: res.root, mode,
         files: res.files, scannedAt: Number(res.scannedAt) || 0, dirGroup
