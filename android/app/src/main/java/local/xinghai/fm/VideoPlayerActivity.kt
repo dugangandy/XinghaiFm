@@ -1,6 +1,6 @@
 /* ── VideoPlayerActivity · 原生视频播放（对齐优酷布局）────
- * 顶部：渐变 + 返回 + 标题。底部：播放/下一集 + 当前时间 + 进度条 + 总时长；
- * 下行右侧「倍速 / 选集」文字按钮（点击弹出选择）。右侧锁定。
+ * 顶部：渐变 + 返回 + 标题。底部一行：竖屏只留 播放/暂停 + 进度条（两侧时间）+ 列表 + 最大化；
+ * 横屏补回 下一集 + 「倍速 / 选集」文字按钮（点击弹出选择）。右侧锁定。
  * 手势：点=显隐，长按=快进，左/右半屏上下滑=亮度/音量。无 PiP，离开即暂停。
  */
 package local.xinghai.fm
@@ -73,6 +73,7 @@ class VideoPlayerActivity : Activity() {
     private lateinit var titleView: TextView
     private lateinit var subView: TextView
     private lateinit var playPauseBtn: ImageButton
+    private lateinit var nextBtn: ImageButton
     private lateinit var speedBtn: TextView
     private lateinit var episodeBtn: TextView
     private lateinit var episodeIcon: ImageButton    // 窄屏（竖屏）代替文字版「选集」
@@ -259,10 +260,11 @@ class VideoPlayerActivity : Activity() {
             setPadding(dp(12), dp(2), dp(12), dp(12))
         }
 
-        /* 底栏就一行：播放/下一集 + 当前时间 + 进度条 + 总时长 + 倍速/选集/全屏 */
+        /* 底栏就一行：竖屏只留 播放/暂停 + 进度条（两侧时间）+ 列表 + 最大化，
+           下一集 / 倍速在横屏才显示，见 layoutControlRows() */
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         playPauseBtn = iconBtn(R.drawable.ic_pause, 40) { togglePlay() }
-        val next = iconBtn(R.drawable.ic_next, 40) { goNext() }
+        nextBtn = iconBtn(R.drawable.ic_next, 40) { goNext() }
         curView = timeText()
         seek = VideoSeekBar(this)
         seek.onSeek = { ratio -> player?.let { if (it.duration > 0) it.seekTo((ratio * it.duration).toLong()) } ; showControls() }
@@ -277,7 +279,7 @@ class VideoPlayerActivity : Activity() {
             contentDescription = "全屏"
         }
         row.addView(playPauseBtn)
-        row.addView(next)
+        row.addView(nextBtn)
         row.addView(curView)
         row.addView(seek, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10); marginEnd = dp(10) })
         row.addView(durView)
@@ -330,7 +332,9 @@ class VideoPlayerActivity : Activity() {
         setControls(true, false)
     }
 
-    /* 底栏只有一行，按钮和进度条并排：竖屏挤，字号/内边距/图标收小一档，横屏放回正常尺寸 */
+    /* 底栏只有一行，按钮和进度条并排。
+       竖屏：只留 播放/暂停 · 进度条（两侧时间/总时长）· 列表 · 最大化，字号/内边距/图标收小一档；
+       横屏：放回正常尺寸，再把下一集 / 倍速补回来（横向空间够） */
     private fun layoutControlRows() {
         if (audioOnly) return
         val compact = !isFullscreen
@@ -341,6 +345,10 @@ class VideoPlayerActivity : Activity() {
         /* 竖屏窄，选集也用图标；横屏恢复文字，认起来更清楚 */
         episodeBtn.visibility = if (compact) View.GONE else View.VISIBLE
         episodeIcon.visibility = if (compact) View.VISIBLE else View.GONE
+        /* 竖屏底栏只留 播放/暂停 · 进度条（带当前时间/总时长）· 列表 · 最大化，下一集和倍速收掉 */
+        nextBtn.visibility = if (compact) View.GONE else View.VISIBLE
+        speedBtn.visibility = if (compact) View.GONE else View.VISIBLE
+        syncSpeedBtn()
         listOf(fullscreenBtn, episodeIcon).forEach { b ->
             /* 34dp 的按钮里留 3dp 内边距，图标本身还能画到 ~24dp，不至于缩成小点 */
             b.setPadding(dp(if (compact) 5 else 8), dp(if (compact) 5 else 8), dp(if (compact) 5 else 8), dp(if (compact) 5 else 8))
@@ -354,6 +362,13 @@ class VideoPlayerActivity : Activity() {
             lp.marginStart = dp(if (compact) 6 else 10)
             lp.marginEnd = dp(if (compact) 6 else 10)
         }
+    }
+
+    /* 横屏空间足，「1x」这种缩写认不出来，1 倍速时改写「倍速」；
+       选了别的档位仍回显数值，按钮上才看得出当前倍速 */
+    private fun syncSpeedBtn() {
+        if (!::speedBtn.isInitialized) return
+        speedBtn.text = if (isFullscreen && abs(rate - 1f) < 0.001f) "倍速" else fmtRate(rate) + "x"
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -490,6 +505,8 @@ class VideoPlayerActivity : Activity() {
         openPanel(0) {
             addView(scaleRow())
             addView(divider())
+            addView(rateRow())
+            addView(divider())
             addView(loopRow())
             addView(divider())
             addView(timerRow())
@@ -555,6 +572,15 @@ class VideoPlayerActivity : Activity() {
             if (i != effectiveScale()) applyScale(i)
             showHud("画面 " + SCALE_NAMES[i]); hideHudSoon()
         }
+
+    /* 倍速入口：竖屏底栏不显示倍速按钮，收到设置面板里；档位表跟底栏 / 倍速磁贴共用 RATES */
+    private fun rateRow(): LinearLayout {
+        val names = Array(RATES.size) { fmtRate(RATES[it]) + "x" }
+        return chipGridRow("倍速", names, { RATES.indexOfFirst { abs(it - rate) < 0.001f } }) { i ->
+            setRate(RATES[i])
+            showHud("倍速 " + names[i]); hideHudSoon()
+        }
+    }
 
     private fun loopRow(): LinearLayout =
         chipGridRow("播放方式", LOOP_NAMES, { if (loopOne) 1 else 0 }) { i ->
@@ -940,7 +966,7 @@ class VideoPlayerActivity : Activity() {
     private fun setRate(r: Float) {
         rate = r
         player?.setPlaybackSpeed(r)
-        if (::speedBtn.isInitialized) speedBtn.text = fmtRate(r) + "x"
+        syncSpeedBtn()
         getSharedPreferences("fm", MODE_PRIVATE).edit().putFloat("videoRate", r).apply()
     }
 
