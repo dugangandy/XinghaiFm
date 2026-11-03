@@ -1,7 +1,7 @@
 {
   "name": "xinghai-fm",
   "productName": "星海FM",
-  "version": "1.0.22",
+  "version": "1.0.23",
   "description": "本地有声书播放器 · 分类管理、倍速播放",
   "main": "main.js",
   "author": "local",
@@ -33,6 +33,7 @@
       "preload.js",
       "db.js",
       "cover-fetch.js",
+      "transcode.js",
       "README.md",
       "build/icon.png",
       "!js/__*"

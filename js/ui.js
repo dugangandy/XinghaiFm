@@ -74,7 +74,8 @@
       queuePanel: $('queuePanel'), sheetQueue: $('sheetQueue'), btnSheetQueue: $('btnSheetQueue'),
       btnQueueClose: $('btnQueueClose'), queueCount: $('queueCount'),
       modalRoot: $('modalRoot'), toastRoot: $('toastRoot'),
-      main: $('main'), libLoading: $('libLoading'), libLoadingName: $('libLoadingName'), libLoadingHint: $('libLoadingHint')
+      main: $('main'), libLoading: $('libLoading'), libLoadingName: $('libLoadingName'), libLoadingHint: $('libLoadingHint'),
+      tcLoading: $('tcLoading'), tcName: $('tcName'), tcHint: $('tcHint')
     };
     state.sortDesc = !!FM.db.state().sortDesc;
     state.showHidden = !!FM.db.state().showHidden;
@@ -1565,21 +1566,32 @@
     const visible = new Set();
     U.$$('.track', refs.view || document).forEach(function (row) { visible.add(row.dataset.id); });
     pool.sort(function (a, b) { return (visible.has(b) ? 1 : 0) - (visible.has(a) ? 1 : 0); });
+    const applyDur = function (t, dur) {
+      if (!(dur > 0)) return false;
+      L.setDuration(t.id, dur);
+      const cell = document.querySelector('.track[data-id="' + t.id + '"] .tk-dur');
+      if (cell) cell.textContent = U.fmtTime(dur);
+      return true;
+    };
     for (let i = 0; i < pool.length; i++) {
       const t = pool[i];
       if (token !== probeToken) return;
       try {
+        /* 需要转码的格式（wma/ape/wv/flv）只让后端读文件头取时长：
+           走 src() 会把整个文件转一遍，翻一张专辑就是几十个转码任务。
+           读不到就记 __noDur（本次会话不再试）：否则没装 ffmpeg 的机器上
+           每进一次专辑页都要白发几十个 HTTP/IPC 请求 */
+        if (FM.media.needsTranscode(t.ext)) {
+          const d = await FM.fs.duration(t.rel);
+          if (token !== probeToken) return;
+          if (!applyDur(t, d)) t.__noDur = true;
+          continue;
+        }
         const s = await FM.fs.src(t.rel);
         const dur = await readDuration(s.url, t.kind === 'video');
         if (s.revoke) s.revoke();
         if (token !== probeToken) return;
-        if (dur > 0) {
-          L.setDuration(t.id, dur);
-          const cell = document.querySelector('.track[data-id="' + t.id + '"] .tk-dur');
-          if (cell) cell.textContent = U.fmtTime(dur);
-        } else {
-          t.__noDur = true;
-        }
+        if (!applyDur(t, dur)) t.__noDur = true;
       } catch (e) {
         t.__noDur = true;
       }
@@ -2824,9 +2836,27 @@
     P.on('volume', paintVolume);
     P.on('loop', paintLoop);
     P.on('sleep', paintSleep);
+    /* wma / ape / wv / flv 首次播放要先转码：盖一层过渡层，转完自动收 */
+    P.on('preparing', function (track) { if (track) showTc(track.title); else hideTc(); });
+    P.on('tcProgress', function (info) { if (info && info.pct) setTcPct(info.pct); });
     /* 只有确实断网才用统一网络文案；本地文件损坏/编码问题不要误报成断网 */
     P.on('error', function (e) {
       const m = (e && e.message) ? String(e.message) : '';
+      const code = e && e.code;
+      hideTc();
+      /* 取消是主动行为（切集 / 收起播放页），不是播放故障 */
+      if (code === 'aborted') return;
+      /* 转码相关：格式本身没错，缺的是 ffmpeg 或文件坏了，给的提示要有指向性 */
+      if (code === 'no-ffmpeg') {
+        if (!ffmpegWarned) {
+          ffmpegWarned = true;
+          toast('该格式需要 ffmpeg 转换：安装 ffmpeg 或设置 FM_FFMPEG 后重启', 'warn');
+        }
+        return;
+      }
+      if (code === 'busy') { toast('服务端正忙，请稍后重试', 'warn'); return; }
+      if (code === 'no-encoder') { toast('该格式需要转换成 mp3/mp4 才能播，请用桌面端或服务器模式', 'warn'); return; }
+      if (code === 'ffmpeg-failed' || code === 'bad-format') { toast('转换失败，文件可能已损坏', 'warn'); return; }
       const offline = (typeof navigator !== 'undefined' && navigator.onLine === false) ||
         (FM.fs && FM.fs.link === 'offline');
       if (m === U.NET_FAIL || offline) toast(U.NET_FAIL, 'warn');
@@ -2839,6 +2869,7 @@
     /* 切资源库时播放器被清空：播放条收起、播放页关掉 */
     P.on('stop', function () {
       syncAlbumPlayBtn();
+      hideTc();                 /* 切库时停在转码过渡层上会像卡死 */
       if (refs.sheet.classList.contains('open')) closeSheet();
       setCinema(false);
       setPlayerbarVisible(false);
@@ -3708,6 +3739,37 @@
         resolve();
       }, wait);
     });
+  }
+
+  /* ── 转码过渡层：wma / ape / wv / flv 首次播放要先转成 mp3 / mp4 ──
+     转码在后台跑（主进程/服务端），这里只负责「让人知道为什么还没出声」。
+     百分比来自主进程推的 fm:tc；拿不到百分比时停在「正在转换，请稍候…」。 */
+  let tcHideTimer = 0;
+  let ffmpegWarned = false;
+
+  function showTc(name) {
+    if (!refs.tcLoading) return;
+    clearTimeout(tcHideTimer);
+    if (refs.tcName) refs.tcName.textContent = name || '正在准备';
+    if (refs.tcHint) refs.tcHint.textContent = '正在转换，请稍候…';
+    refs.tcLoading.hidden = false;
+    /* 先上屏再挂 show，样式过渡才有起点 */
+    requestAnimationFrame(function () { if (refs.tcLoading) refs.tcLoading.classList.add('show'); });
+  }
+
+  function setTcPct(pct) {
+    if (!refs.tcLoading || !refs.tcHint || !refs.tcLoading.classList.contains('show')) return;
+    const n = Math.max(1, Math.min(99, Math.round(Number(pct) || 0)));
+    refs.tcHint.textContent = '正在转换 ' + n + '%';
+  }
+
+  function hideTc() {
+    if (!refs.tcLoading) return;
+    clearTimeout(tcHideTimer);
+    refs.tcLoading.classList.remove('show');
+    tcHideTimer = setTimeout(function () {
+      if (refs.tcLoading && !refs.tcLoading.classList.contains('show')) refs.tcLoading.hidden = true;
+    }, 420);
   }
 
   async function switchLib(id) {

@@ -42,6 +42,8 @@
   let remoteSaveAt = 0;   // 上次把进度推给远程服务端的时间
   let mediaTrackId = null; // media 里实际装着的集；换集过渡期置空，避免把新集进度写成 0
   let savedSig = null;    // 上次落盘的内容指纹，同一位置不重复写
+  let prepareCtrl = null; // 当前这次「等转码」的取消句柄，切集时 abort 掉
+  let prepareRel = '';    // 正在等的是哪条文件：同一集重载时复用它，别杀刚转了一半的任务
   let pausedAt = 0;       // 上次暂停的时刻，用来判断恢复时要不要回退
   let pausedTrackId = null;
   let sleepTimer = null;
@@ -193,13 +195,47 @@
     let el = (track.kind === 'video' && !audioOnly) ? videoEl : audioEl;
     if (media !== el) { if (media) stopEl(media); media = el; }
     setKind(track.kind === 'video' ? 'video' : 'audio');
+    /* 切集就把上一次还在排队的转码取消掉：只让页面「不等了」不够，主进程/服务端
+       那边还得停掉 ffmpeg，否则连点几集会在后台排一串没人要的转码，服务端还会
+       把 HTTP 连接占满（同域只有 6 条，占满后连播放都会卡住）。
+       同一集的重载（收起播放页转 audio、恢复进度）要复用同一个请求：
+       杀掉了再重来，等于把刚转的那一半白白丢掉。 */
+    const sameTc = !!prepareCtrl && prepareRel === track.rel;
+    if (prepareCtrl && !sameTc) {
+      try { prepareCtrl.abort(); } catch (e) {}
+      prepareCtrl = null;
+      prepareRel = '';
+    }
     /* restored 决定界面要不要为视频自动展开播放页。setAudioOnly 触发的重载是
        在收起播放页时发生的，不能再让界面把它拉回来。 */
     ev.emit('track', track, { restored: !!o.restored });
     updateSession(track);
     try {
-      const s = await FM.fs.src(track.rel);
-      if (my !== loadToken) { if (s.revoke) s.revoke(); return; }
+      /* wma / ape / wv / flv 交给后端先转成 mp3 / mp4：首次要等一会儿，
+         之后同一文件走缓存；传 { prepare:true } 是因为时长探测也会调 src()，
+         不能让它顺手把整张专辑都转一遍。 */
+      const needTc = FM.media.needsTranscode(track.ext);
+      let s;
+      if (needTc) {
+        if (!sameTc) { prepareCtrl = new AbortController(); prepareRel = track.rel; }
+        ev.emit('preparing', track);
+      } else {
+        /* 不需要转码的这一集要顺手把上一次的等待提示收掉：用户可能在上一次转码
+           还没结束时就切到了 mp3 集，那层提示是 pointer-events:auto 的，留着会
+           一直盖在界面上连点击都拦住（它的 finally 因为切集了不会执行）。 */
+        ev.emit('preparing', null);
+      }
+      try {
+        s = await FM.fs.src(track.rel, { prepare: true, signal: prepareCtrl ? prepareCtrl.signal : undefined });
+      } finally {
+        /* 切集了就别再关别人的加载态：只有当前这次载入负责收尾 */
+        if (needTc && my === loadToken) {
+          ev.emit('preparing', null);
+          prepareCtrl = null;
+          prepareRel = '';
+        }
+      }
+      if (my !== loadToken) { if (s && s.revoke) s.revoke(); return; }
       /* 视频集在播放页收起时走 <audio>：同一个文件，只是不让它解码视频轨道。
          上面 emit('track') 之后界面可能自动展开播放页、把 audioOnly 改回来，所以这里再确认。 */
       const asAudio = audioOnly && track.kind === 'video';
@@ -236,6 +272,8 @@
       } else ev.emit('state', false);
     } catch (e) {
       if (my !== loadToken) return;
+      /* 取消（切集 / 收起播放页）不是播放失败，不弹提示 */
+      if (e && e.code === 'aborted') return;
       ev.emit('error', e);
     }
   }
@@ -267,6 +305,8 @@
   /* ── 停止并清空（切换资源库时用） ── */
   function stop() {
     if (cur) saveProgress(true);
+    /* 切库/清空时把还在排队的转码也撤掉：资源库都换了，转出来的文件没人要 */
+    if (prepareCtrl) { try { prepareCtrl.abort(); } catch (e) {} prepareCtrl = null; prepareRel = ''; }
     mediaTrackId = null;
     pausedAt = 0; pausedTrackId = null;
     eachEl(stopEl);
@@ -689,6 +729,10 @@
   setRate(rate);
   setVolume(volume);
   bindSession();
+  /* 转码进度：主进程转 wma/flv 时推给页面（同一时间只有一个任务在转） */
+  if (typeof window !== 'undefined' && window.fmNative && window.fmNative.onTc) {
+    window.fmNative.onTc(function (info) { ev.emit('tcProgress', info); });
+  }
 
   /* 原生视频播放器回传的事件（track/time/state/ended/closed） */
   function onNative(type, data) {

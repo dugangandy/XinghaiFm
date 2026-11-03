@@ -15,11 +15,13 @@ const fsp = require('node:fs/promises');
 const { Readable } = require('node:stream');
 const DB = require('./db');
 const covers = require('./cover-fetch');
+const TC = require('./transcode');
 
 const ROOT = __dirname;
+/* flv / wv 能扫进来但 Chromium 解不了，播放前由 transcode.js 转成 mp4 / mp3 */
 const MEDIA = new Set([
-  'm4a', 'm4b', 'mp3', 'aac', 'flac', 'wav', 'ogg', 'opus', 'wma', 'ape',
-  'mp4', 'm4v', 'mov', 'webm', 'ogv'
+  'm4a', 'm4b', 'mp3', 'aac', 'flac', 'wav', 'ogg', 'opus', 'wma', 'ape', 'wv',
+  'mp4', 'm4v', 'mov', 'webm', 'ogv', 'flv'
 ]);
 const MAX_DEPTH = 3;
 const SKIP = /^[._]|^(fm|dist|build|node_modules|\$RECYCLE\.BIN|System Volume Information)$/i;
@@ -124,6 +126,7 @@ const MIME = {
    跨源的话 Web Audio 的 createMediaElementSource 只能拿到静音波形。 */
 const MEDIA_PREFIX = '__media';
 const COVER_PREFIX = '__cover';
+const TC_PREFIX = '__tc';
 const COVER_DIR = '.fm-covers';
 const META_FILE = '.fm-meta.json';
 const MEDIA_MIME = {
@@ -137,11 +140,13 @@ const MEDIA_MIME = {
   '.opus': 'audio/ogg',
   '.wma': 'audio/x-ms-wma',
   '.ape': 'audio/x-ape',
+  '.wv': 'audio/x-wavpack',
   '.mp4': 'video/mp4',
   '.m4v': 'video/mp4',
   '.mov': 'video/quicktime',
   '.webm': 'video/webm',
-  '.ogv': 'video/ogg'
+  '.ogv': 'video/ogg',
+  '.flv': 'video/x-flv'
 };
 
 /* 只支持单段 Range；多段请求当作整段返回，播放器不会走到那条路 */
@@ -207,6 +212,27 @@ async function serveMedia(request, rel) {
   return mediaResponse(request, file, stat);
 }
 
+/* ── 转码缓存：wma / ape / wv / flv 转出来的 mp3 / mp4 落在这里 ── */
+function tcDir() {
+  return path.join(app.getPath('userData'), 'tc');
+}
+
+/* 缓存文件名由 transcode.js 生成（40 位 sha1 + 目标扩展名），
+   这里只认这个形状，天然挡住路径穿越；再在缓存目录内二次确认。 */
+async function serveTc(request, name) {
+  if (!TC.NAME_RE.test(name)) return new Response('not found', { status: 404 });
+  const file = path.join(tcDir(), name);
+  if (path.dirname(path.normalize(file)) !== path.normalize(tcDir())) return new Response('forbidden', { status: 403 });
+  let stat;
+  try {
+    stat = await fsp.stat(file);
+    if (!stat.isFile()) return new Response('not found', { status: 404 });
+  } catch (e) {
+    return new Response('not found', { status: 404 });
+  }
+  return mediaResponse(request, file, stat);
+}
+
 /* ── 专辑封面：直接从 .fm-covers 里读，不需要 Range ── */
 async function serveCover(name) {
   if (!activeLib() || !name) return new Response('not found', { status: 404 });
@@ -235,6 +261,7 @@ function registerProtocol() {
     });
     if (segs[0] === MEDIA_PREFIX) return serveMedia(request, segs.slice(1).join('/'));
     if (segs[0] === COVER_PREFIX) return serveCover(segs.slice(1).join('/'));
+    if (segs[0] === TC_PREFIX) return serveTc(request, segs.slice(1).join('/'));
 
     const target = path.normalize(path.join(ROOT, '/' + (segs.length ? segs.join('/') : 'index.html')));
     /* 必须带分隔符，否则同名兄弟目录（fm-xxx）也能通过前缀匹配 */
@@ -575,6 +602,54 @@ function bindIpc() {
     return DB.setFavTrack(getDb(), adminUid(), id, trackId, !!on);
   });
 
+  /* ── 转码：Chromium 解不了的格式（wma / ape / wv / flv）先转成 mp3 / mp4 再播 ──
+     返回 { url, ext, cached } 或 { error, message }。前端拿到 url 直接当媒体源用；
+     进度通过 'fm:tc' 推给页面（同一时间只会有一个任务在转，串行限流在 transcode.js 里）。 */
+  /* 页面切走时按 id 取消：光让页面「不等了」没用，主进程得把排队中/正在转的任务停掉，
+     否则连点几集就会在后台排一长串没人要的转码，CPU 一直烧着 */
+  const tcCancels = new Map();   // id -> AbortController
+  ipcMain.on('fm:tcCancel', function (e, id) {
+    const c = tcCancels.get(String(id || ''));
+    if (c) { try { c.abort(); } catch (err) {} }
+  });
+
+  ipcMain.handle('fm:prepare', async function (e, rel, id) {
+    const name = String(rel || '');
+    const key = String(id || '');
+    const ctrl = new AbortController();
+    if (key) tcCancels.set(key, ctrl);
+    try {
+      const file = insideRoot(name);
+      const stat = await fsp.stat(file);
+      if (!stat.isFile()) throw new Error('文件不存在');
+      const r = await TC.prepare({
+        file: file,
+        rel: name,
+        stat: stat,
+        cacheDir: tcDir(),
+        signal: ctrl.signal,
+        onProgress: function (pct) {
+          if (win && !win.isDestroyed()) win.webContents.send('fm:tc', { rel: name, pct: pct });
+        }
+      });
+      return { url: 'fm://app/' + TC_PREFIX + '/' + path.basename(r.file), ext: r.ext, cached: r.cached };
+    } catch (err) {
+      /* 取消是正常路径（用户切集了），不刷告警 */
+      if (err && err.code === 'aborted') return { error: 'aborted' };
+      console.warn('[tc] 准备失败 ' + name + '：' + (err && err.message));
+      return { error: (err && err.code) || 'ffmpeg-failed', message: (err && err.message) || '转换失败' };
+    } finally {
+      if (key) tcCancels.delete(key);
+    }
+  });
+
+  /* 时长探测：只读文件头（ffmpeg -i），不触发转码。转码格式的曲目靠它拿时长 */
+  ipcMain.handle('fm:probeDur', async function (e, rel) {
+    try {
+      return await TC.probeDuration(insideRoot(String(rel || '')));
+    } catch (err) { return 0; }
+  });
+
   /* 在文件管理器里定位某一集 */
   ipcMain.handle('fm:reveal', function (e, rel) {
     try { shell.showItemInFolder(insideRoot(String(rel))); } catch (err) {}
@@ -659,6 +734,10 @@ if (!gotLock) {
     bindIpc();
     getConfig();          // 老的 { root } 配置在这里就地升级
     createWindow();
+    /* 转码缓存清理放到启动稳定之后：翻目录不该跟首屏抢 IO */
+    setTimeout(function () {
+      TC.sweep(tcDir(), TC.DEFAULT_MAX).catch(function () {});
+    }, 8000);
 
     app.on('activate', function () {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

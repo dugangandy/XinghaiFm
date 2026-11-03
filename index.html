@@ -175,6 +175,17 @@
   </main>
 </div>
 
+<!-- 转码过渡层：wma / ape / wv / flv 首次播放要先转成 mp3 / mp4。
+     必须挂在 main 外面：main 是 position:relative + z-index:2 的层叠上下文，
+     放在里面再怎么抬 z-index 也压不过播放页（60），首次看 flv 时就看不到这句提示。 -->
+<div class="lib-loading" id="tcLoading" aria-hidden="true">
+  <div class="lib-loading-box">
+    <div class="lib-loading-orbit"><i></i><i></i><i></i><div class="core"><svg class="i"><use href="#i-refresh"/></svg></div></div>
+    <div class="lib-loading-name" id="tcName">正在准备</div>
+    <div class="lib-loading-hint" id="tcHint">正在转换，请稍候…</div>
+  </div>
+</div>
+
 <!-- 音频专用元素：不要放进隐藏容器，安卓 WebView 的 video 管线换源会卡死 -->
 <audio id="mediaAudio" preload="metadata"></audio>
 

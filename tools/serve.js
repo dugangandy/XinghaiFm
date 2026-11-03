@@ -19,6 +19,9 @@
  *   GET  /api/covers            封面索引（.fm-covers/covers.json）
  *   GET  /api/cover/<file>      封面图片
  *   GET  /api/media/<rel>       音频流，支持 Range（拖动进度条）
+ *   POST /api/prepare           把 wma/ape/wv/flv 转成 mp3/mp4，返回可播地址
+ *   GET  /api/tc/<file>         转码缓存流，支持 Range
+ *   GET  /api/duration?rel=     只读文件头取时长（不转码）
  *
  * 资源库来源：config.json 的 libs 数组（--config 可指定另一份）
  * （--config 可指定路径，默认 %APPDATA%\星海FM\config.json）。
@@ -43,6 +46,8 @@ const zlib = require('node:zlib');
 
 const APP_ROOT = path.resolve(__dirname, '..');
 const covers = require('../cover-fetch');
+/* 和桌面端主进程共用同一套转码逻辑：wma/ape/wv → mp3，flv → mp4 */
+const TC = require('../transcode');
 /* 登录页的转义与站内跳转校验：单独成模块，方便单测 */
 const { escHtml, safeNext } = require('./safe');
 /* 版本号：打包前已把 package.json 的 version 自增，这里读出来给远程页面显示 */
@@ -54,8 +59,8 @@ const COVER_DIR = '.fm-covers';
 /* 口令文件可重定向（测试/多实例用），默认项目根目录 */
 const AUTH_FILE = process.env.FM_AUTH_FILE ? path.resolve(process.env.FM_AUTH_FILE) : path.join(APP_ROOT, '.auth.json');
 const MEDIA_EXT = new Set([
-  'm4a', 'm4b', 'mp3', 'aac', 'flac', 'wav', 'ogg', 'opus', 'wma', 'ape',
-  'mp4', 'm4v', 'mov', 'webm', 'ogv'
+  'm4a', 'm4b', 'mp3', 'aac', 'flac', 'wav', 'ogg', 'opus', 'wma', 'ape', 'wv',
+  'mp4', 'm4v', 'mov', 'webm', 'ogv', 'flv'
 ]);
 const MAX_DEPTH = 3;
 const SKIP_DIR = /^[._]|^(fm|dist|build|node_modules|[$]RECYCLE[.]BIN|System Volume Information)$/i;
@@ -324,11 +329,13 @@ const MIME = {
   '.opus': 'audio/ogg',
   '.wma': 'audio/x-ms-wma',
   '.ape': 'audio/x-ape',
+  '.wv': 'audio/x-wavpack',
   '.mp4': 'video/mp4',
   '.m4v': 'video/mp4',
   '.mov': 'video/quicktime',
   '.webm': 'video/webm',
-  '.ogv': 'video/ogg'
+  '.ogv': 'video/ogg',
+  '.flv': 'video/x-flv'
 };
 
 /* gzip：只压文本类，压过的结果按内容哈希缓存，重复请求不再压一遍 */
@@ -502,13 +509,18 @@ async function serveMedia(req, res, rel, root) {
   if (!st.isFile()) return send(res, 404, 'not found');
 
   res.__media = true;
+  sendRangeFile(req, res, file, st);
+}
+
+/* 媒体与转码缓存共用：Range 直读 + 禁浏览器磁盘缓存。
+   之前试过 private, max-age=3600 想让 seek 复用已下载区间，结果 Chrome 会把缓冲到的
+   每一段都写进自己的磁盘缓存（实测播 15 秒写 22MB），盘一慢或被杀软扫一遍，
+   视频就「播几秒开始转圈」。局域网/本机重新拉一遍本来就是毫秒级，换来的风险不值当。 */
+function sendRangeFile(req, res, file, st) {
+  res.__media = true;
   const head = {
     'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
     'accept-ranges': 'bytes',
-    /* 媒体一律不进浏览器磁盘缓存。之前试过 private, max-age=3600 想让 seek 复用已下载区间，
-       结果 Chrome 会把缓冲到的每一段都写进自己的磁盘缓存（实测播 15 秒写 22MB），
-       盘一慢或被杀软扫一遍，视频就「播几秒开始转圈」。局域网/本机重新拉一遍本来就是毫秒级，
-       换来的风险不值当。 */
     'cache-control': 'no-store'
   };
   const range = parseRange(req.headers.range, st.size);
@@ -522,6 +534,22 @@ async function serveMedia(req, res, rel, root) {
     'content-range': 'bytes ' + range.start + '-' + range.end + '/' + st.size
   }));
   pipeFile(file, res, { start: range.start, end: range.end });
+}
+
+/* ── 转码缓存：wma / ape / wv / flv 转出来的 mp3 / mp4 放在数据库旁边 ── */
+function tcDir() {
+  return path.join(path.dirname(dataFilePath()), 'tc');
+}
+
+/* 只认 transcode.js 生成的 40 位 sha1 + 目标扩展名，再在缓存目录内二次确认 */
+async function serveTc(req, res, name) {
+  if (!TC.NAME_RE.test(name)) return send(res, 404, 'not found');
+  const file = path.join(tcDir(), name);
+  if (path.dirname(path.normalize(file)) !== path.normalize(tcDir())) return send(res, 403, 'forbidden');
+  let st;
+  try { st = await fsp.stat(file); } catch (e) { return send(res, 404, 'not found'); }
+  if (!st.isFile()) return send(res, 404, 'not found');
+  sendRangeFile(req, res, file, st);
 }
 
 /* 读文件并把内容写到响应里。
@@ -733,7 +761,10 @@ const server = http.createServer(async function (req, res) {
     sess = ck || readSession(bearerOf(req));
     viaCookie = !!ck;
     if (!sess) {
-      const scope = p.indexOf('/api/media/') === 0 ? 'media' : (p.indexOf('/api/cover/') === 0 ? 'cover' : '');
+      /* 转码缓存也是媒体，用同一张 media 票据（<audio>/<video> 带不了 Authorization 头） */
+      const scope = (p.indexOf('/api/media/') === 0 || p.indexOf('/api/tc/') === 0)
+        ? 'media'
+        : (p.indexOf('/api/cover/') === 0 ? 'cover' : '');
       if (scope) ticket = readTicket(u.searchParams.get('t'), scope);
     }
   }
@@ -957,6 +988,65 @@ const server = http.createServer(async function (req, res) {
     return serveMedia(req, res, p.slice('/api/media/'.length), root);
   }
 
+  /* ── 转码：Chromium 解不了的格式（wma/ape/wv/flv）先转成 mp3/mp4 再播 ──
+     转换是 CPU 活，一个文件可能要几十秒，所以先让前端拿一个「准备好了」的应答，
+     再自己去 /api/tc/<name> 拉流；请求期间保持连接，前端只显示「正在转换」。 */
+  if (p === '/api/prepare') {
+    if (req.method !== 'POST') return send(res, 405, 'POST only');
+    const root = userActiveRoot(uid);
+    if (!root) return send(res, 404, 'server mode off');
+    if (!writeAllowed(ip, 5, 'tc')) return send(res, 429, 'too many requests');
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > 8192) return send(res, 413, 'too large');
+    }
+    let rel = '';
+    try { rel = String((JSON.parse(body) || {}).rel || ''); } catch (e) { return send(res, 400, 'bad json'); }
+    if (!rel) return send(res, 400, 'missing rel');
+    const ext = path.extname(rel).slice(1).toLowerCase();
+    if (!TC.needs(ext) || !MEDIA_EXT.has(ext)) return send(res, 400, 'bad format');
+    let file;
+    try { file = inside(root, rel); } catch (e) { return send(res, 403, 'forbidden'); }
+    let st;
+    try { st = await fsp.stat(file); } catch (e) { return send(res, 404, 'not found'); }
+    if (!st.isFile()) return send(res, 404, 'not found');
+    /* 客户端切走了就没人要这个文件：连接一断就把请求当成取消信号，转码内核会把
+       排队中/正在跑的任务一起停掉。不这么做的话，一个 40 集的 flv 专辑连点几集，
+       会排出一长串没人要的转码任务，还白占 HTTP 连接（同域只有 6 条）。 */
+    const ctrl = new AbortController();
+    /* 盯 res 的 close：req 的 'close' 在请求体读完时就会触发一次（Node 16 起语义变了），
+       而那时我们才刚开始 await，注册上去已经错过；res 在响应结束前不会 close，
+       客户端中途断开必然触发它。 */
+    const onGone = function () { if (!res.writableEnded) ctrl.abort(); };
+    res.on('close', onGone);
+    try {
+      const r = await TC.prepare({ file: file, rel: rel, stat: st, cacheDir: tcDir(), signal: ctrl.signal });
+      return json(res, { url: '/api/tc/' + path.basename(r.file), ext: r.ext, cached: r.cached });
+    } catch (err) {
+      /* 连接已经断了（或者就是被我们取消的）：没人在等这个响应 */
+      if (!err || err.code === 'aborted' || res.destroyed || res.writableEnded) return;
+      console.log('[tc] 准备失败 ' + rel + '：' + err.message);
+      /* 501 让前端能一眼区分「服务器没装 ffmpeg」和「文件转不动」 */
+      return send(res, err.code === 'no-ffmpeg' ? 501 : 500, err.code || 'ffmpeg-failed');
+    } finally {
+      res.off('close', onGone);
+    }
+  }
+
+  if (p.indexOf('/api/tc/') === 0) return serveTc(req, res, p.slice('/api/tc/'.length));
+
+  /* 时长探测：只读文件头不转码，前端给 wma/flv 这类曲目算时长用 */
+  if (p === '/api/duration') {
+    const root = userActiveRoot(uid);
+    if (!root) return send(res, 404, 'server mode off');
+    const rel = u.searchParams.get('rel') || '';
+    if (!rel) return send(res, 400, 'missing rel');
+    let file;
+    try { file = inside(root, rel); } catch (e) { return send(res, 403, 'forbidden'); }
+    return json(res, { d: await TC.probeDuration(file) });
+  }
+
   const rel = p === '/' ? 'index.html' : p.replace(/^[/]+/, '');
   if (!/^(index[.]html|css[/]|js[/]|build[/])/.test(rel)) return send(res, 404, 'not found');
   let file;
@@ -1011,4 +1101,9 @@ server.listen(port, host, function () {
     console.log('  ' + (u.role === 'admin' ? '*' : ' ') + ' ' + u.username + '  资源库 ' + libs.length + ' 个');
   });
   if (DEBUG_REQ) console.log('调试日志已开（FM_DEBUG=1）：/api/media、/api/progress 等逐个记一行');
+  console.log('ffmpeg · ' + (TC.findFfmpeg() || '未找到（wma / ape / wv / flv 将无法播放，可设 FM_FFMPEG 指定）'));
+  /* 转码缓存清理：翻目录和首屏不抢 IO，延后几秒再做 */
+  setTimeout(function () {
+    TC.sweep(tcDir(), TC.DEFAULT_MAX).catch(function () {});
+  }, 8000);
 });

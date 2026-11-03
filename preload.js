@@ -34,6 +34,13 @@ contextBridge.exposeInMainWorld('fmNative', {
   deleteCover: (dirName) => ipcRenderer.invoke('fm:deleteCover', dirName),
   openLib: (id) => ipcRenderer.invoke('fm:openLib', id),
   reveal: (rel) => ipcRenderer.invoke('fm:reveal', rel),
+  /* 转码：wma/ape/wv/flv 先转成 mp3/mp4 再播，返回 { url } 或 { error }。
+     id 用来取消：页面切到别的集时调 cancelPrepare(id)，主进程会停掉这次转码 */
+  prepare: (rel, id) => ipcRenderer.invoke('fm:prepare', rel, id),
+  cancelPrepare: (id) => ipcRenderer.send('fm:tcCancel', id),
+  probeDur: (rel) => ipcRenderer.invoke('fm:probeDur', rel),
+  /* 转码进度（同一时间只有一个任务在跑），页面据此显示百分比 */
+  onTc: (cb) => ipcRenderer.on('fm:tc', (e, info) => { try { cb(info); } catch (err) {} }),
   /* saveMeta 只用于导出 .fm-meta.json 快照；读写分类/进度一律走 meta / metaPatch */
   saveMeta: (libPath, json) => ipcRenderer.invoke('fm:saveMeta', libPath, json),
   loadMeta: (libPath) => ipcRenderer.invoke('fm:loadMeta', libPath),

@@ -119,7 +119,9 @@
       else if (r.status === 401) { notifyRemoteAuth(); setLink('auth'); }
       else if (r.status >= 500) goOffline();
       return r;
-    }, function () {
+    }, function (e) {
+      /* 主动取消（切集时 abort）不是断网，别把连接状态改成 offline */
+      if (e && e.name === 'AbortError') throw e;
       goOffline();
       throw new Error(U.NET_FAIL);
     });
@@ -933,7 +935,102 @@
     return 'fm://app/__media/' + rel.split('/').map(encodeURIComponent).join('/');
   }
 
-  async function src(rel) {
+  function extOf(rel) {
+    const s = String(rel || '');
+    const dot = s.lastIndexOf('.');
+    return dot < 0 ? '' : s.slice(dot + 1).toLowerCase();
+  }
+
+  /* 转码失败要能被界面区分开：带 code 的 Error
+     （no-ffmpeg / ffmpeg-failed / bad-format / busy / no-encoder / aborted） */
+  function tcError(code, message) {
+    const e = new Error(message || '转换失败');
+    e.code = code || 'ffmpeg-failed';
+    return e;
+  }
+
+  /* ── 转码：Chromium 解不了的格式先转成 mp3 / mp4 再播 ──
+     只有桌面本地库（IPC）和服务器模式（HTTP）能转，纯浏览器本地目录没有 ffmpeg。
+     成功返回 { url, ext, cached }，不需要转码时返回 null。
+     opts.signal 用来取消：用户切到别的集时，上一个文件就别再转了。 */
+  let tcSeq = 0;
+
+  async function prepare(rel, opts) {
+    if (!FM.media.needsTranscode(extOf(rel))) return null;
+    const signal = opts && opts.signal;
+    if (signal && signal.aborted) throw tcError('aborted');
+    if (mode === 'desktop' && window.fmNative && window.fmNative.prepare) {
+      /* IPC 本身没法取消，只能带个 id 过去：切集时再发一条 cancel 让主进程停掉 ffmpeg */
+      const id = 'tc' + (++tcSeq);
+      const onAbort = function () {
+        if (window.fmNative.cancelPrepare) window.fmNative.cancelPrepare(id);
+      };
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+      let r;
+      try {
+        r = await window.fmNative.prepare(rel, id);
+      } finally {
+        if (signal) signal.removeEventListener('abort', onAbort);
+      }
+      if (signal && signal.aborted) throw tcError('aborted');
+      if (!r) throw tcError('ffmpeg-failed');
+      if (r.error) throw tcError(r.error, r.message);
+      return r;
+    }
+    if (mode === 'server') {
+      let res;
+      try {
+        res = await apiFetch('/api/prepare', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ rel: rel }),
+          signal: signal
+        });
+      } catch (e) {
+        /* fetch 的取消会抛 AbortError，统一换成带 code 的 tcError，上层不用关心细节 */
+        if (e && e.name === 'AbortError') throw tcError('aborted');
+        throw e;
+      }
+      if (!res.ok) {
+        let txt = '';
+        try { txt = (await res.text()).trim(); } catch (e) {}
+        /* 501 = 服务器上没装 ffmpeg；429 = 切集太快被限流（一秒 5 次）。
+           这两种都不是「文件坏了」，文案要分开，别让用户去查文件 */
+        if (res.status === 429) throw tcError('busy', txt);
+        throw tcError(res.status === 501 ? 'no-ffmpeg' : (/^(ffmpeg-failed|bad-format)$/.test(txt) ? txt : 'ffmpeg-failed'), txt);
+      }
+      const data = await res.json();
+      /* <audio>/<video> 带不了请求头：桌面远程模式要靠票据挂在 query 上 */
+      return { url: await signedUrl(data.url), ext: data.ext, cached: !!data.cached };
+    }
+    /* 走到这里说明确实需要转码，但当前是纯浏览器目录（files / handle）——没有 ffmpeg。
+       给个能指向出路的错误，别让它一路走到 <audio> 才报「播放失败」。 */
+    throw tcError('no-encoder');
+  }
+
+  /* ── 时长：只读文件头，不转码（转码格式的曲目靠它拿时长）── */
+  async function duration(rel) {
+    try {
+      if (mode === 'desktop' && window.fmNative && window.fmNative.probeDur) {
+        return Number(await window.fmNative.probeDur(rel)) || 0;
+      }
+      if (mode === 'server') {
+        const r = await apiFetch('/api/duration?rel=' + encodeURIComponent(rel), { cache: 'no-store' });
+        if (!r.ok) return 0;
+        const j = await r.json();
+        return Number(j && j.d) || 0;
+      }
+    } catch (e) {}
+    return 0;
+  }
+
+  async function src(rel, opts) {
+    /* 需要转码的格式只在显式要求时才转：ui.js 的时长探测也会调 src()，
+       默认转码会让「打开一张 wma 专辑」并发转几十集。 */
+    if (opts && opts.prepare) {
+      const tc = await prepare(rel, { signal: opts.signal });
+      if (tc && tc.url) return { url: tc.url, revoke: null, transcoded: true };
+    }
     /* 安卓壳：已下载的曲目优先播本机 127.0.0.1 文件，不直连服务器、不耗流量 */
     if (APP && FM.android && FM.android.downloaded && FM.android.downloaded(rel)) {
       const local = FM.android.localUrl ? FM.android.localUrl(rel) : '';
@@ -971,7 +1068,7 @@
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, canSyncMeta, pushProgress, refreshLibs,
     loadFavs, setFav, setFavTrack,
-    scan, getFile, src, grant, adoptFiles, supportsPicker,
+    scan, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,
     libs: () => libs.slice(),
     active: () => activeLib,
