@@ -816,6 +816,15 @@
     try { return window.matchMedia('(max-width:760px)').matches; } catch (e) { return false; }
   }
 
+  /* 「按专辑 / 按分类」这种改整库结构的操作只在桌面端给：
+     手机上一来一行小按钮容易误触，二来手机端没有扫描入口，改完看不到结果。
+     按「设备」判断而不是窗口宽度——桌面浏览器窗口拉窄了照样要能改 */
+  function canEditGroup() {
+    if (FM.android) return false;
+    if (FM.fs.desktop) return true;
+    return !/Android|iPhone|iPod|iPad|Mobile/i.test(navigator.userAgent || '');
+  }
+
   /* 收藏页布局随宽度切换：跨过断点时重画一次（窗口拉宽回桌面卡片） */
   let favNarrow = isNarrow();
   /* 手机断点也记一份：跨过 760 时首页/分类页的结构（tab 行、快捷入口）要换一套 */
@@ -3413,6 +3422,15 @@
     const items = [
       { label: '我的资源库', icon: 'library', onClick: openLibDrawer }
     ];
+    /* 这个菜单只出现在手机顶栏；分组方式只在桌面端改，这里不给入口 */
+    const curLib = FM.fs.active();
+    if (curLib && canEditGroup()) {
+      items.push({
+        label: '分组方式：' + (curLib.dirGroup ? '按分类' : '按专辑'),
+        icon: 'grid',
+        onClick: function () { toggleDirGroup(curLib, function () { renderAll({ quiet: true }); }); }
+      });
+    }
     /* 手机端不给扫描入口：整库扫描跑在主机上，手机点一次就是主机全盘 readdir + stat。
        主机扫过之后手机这边会自动同步（见 syncScanIfNewer），不需要手动触发 */
     if (!FM.android) items.push({ label: '重新扫描', icon: 'refresh', onClick: doScan });
@@ -3563,10 +3581,13 @@
 
     /* 顶部说明：把「两级」这个开关讲清楚，不然一排按钮没人知道是干什么的 */
     const tips = U.el('div', { class: 'lib-drawer-tips' });
-    tips.appendChild(U.el('div', {
-      class: 'lib-drawer-tip',
-      text: '行上的「按专辑」= 每个文件夹是一张专辑（默认）；换成「按分类」后，一级文件夹变成分类、二级文件夹才是专辑。'
-    }));
+    /* 手机上不给改分组，这条操作指引也就别显示了 */
+    if (canEditGroup()) {
+      tips.appendChild(U.el('div', {
+        class: 'lib-drawer-tip',
+        text: '行尾的「按专辑」= 每个文件夹是一张专辑（默认），点它可切成「按分类」：一级文件夹变分类、二级文件夹才是专辑。'
+      }));
+    }
     const body = U.el('div', { class: 'lib-drawer-body' }, [tips, list_]);
 
     const foot = U.el('div', { class: 'lib-drawer-foot' });
@@ -3642,8 +3663,10 @@
           ? '当前：一级文件夹当分类、二级文件夹当专辑。点击改为「每个文件夹 = 一张专辑」'
           : '当前：每个文件夹 = 一张专辑。点击改为「一级文件夹 = 分类，二级 = 专辑」';
         row.innerHTML = libRowHtml(l) +
-          '<button class="lib-mode' + (l.dirGroup ? ' on' : '') + '" type="button" title="' + esc(modeTitle) + '">' +
-          (l.dirGroup ? '按分类' : '按专辑') + '</button>' +
+          (canEditGroup()
+            ? '<button class="lib-mode' + (l.dirGroup ? ' on' : '') + '" type="button" title="' + esc(modeTitle) + '">' +
+              (l.dirGroup ? '按分类' : '按专辑') + '</button>'
+            : '') +
           (l.fixed ? '' : '<button class="icon-btn lib-more" title="更多">' + icon('more') + '</button>');
         const mode = row.querySelector('.lib-mode');
         if (mode) mode.addEventListener('click', function (e) { e.stopPropagation(); toggleDirGroup(l, draw); });
@@ -3677,20 +3700,23 @@
       items.push({ label: '在文件夹中打开', icon: 'folder', onClick: function () { FM.fs.openLib(l.id); } });
     }
     /* 分组口径：两个选项二选一，文案直接说「文件夹会变成什么」，
-       比「一层 / 两层分组」这种术语好懂。当前口径右侧打勾，点另一个才生效 */
-    items.push({ sep: true });
-    items.push({
-      label: '每个文件夹 = 一张专辑',
-      icon: 'folder',
-      right: l.dirGroup ? '' : 'check',
-      onClick: function () { if (!l.dirGroup) return; toggleDirGroup(l, redraw); }
-    });
-    items.push({
-      label: '一级文件夹 = 分类（二级是专辑）',
-      icon: 'grid',
-      right: l.dirGroup ? 'check' : '',
-      onClick: function () { if (l.dirGroup) return; toggleDirGroup(l, redraw); }
-    });
+       比「一层 / 两层分组」这种术语好懂。当前口径右侧打勾，点另一个才生效。
+       手机上不提供改分组的入口（见 canEditGroup） */
+    if (canEditGroup()) {
+      items.push({ sep: true });
+      items.push({
+        label: '每个文件夹 = 一张专辑',
+        icon: 'folder',
+        right: l.dirGroup ? '' : 'check',
+        onClick: function () { if (!l.dirGroup) return; toggleDirGroup(l, redraw); }
+      });
+      items.push({
+        label: '一级文件夹 = 分类（二级是专辑）',
+        icon: 'grid',
+        right: l.dirGroup ? 'check' : '',
+        onClick: function () { if (l.dirGroup) return; toggleDirGroup(l, redraw); }
+      });
+    }
     items.push({ sep: true });
     items.push({
       label: '移除资源库', icon: 'trash', danger: true,
@@ -3794,15 +3820,15 @@
   /* 服务器模式：浏览器弹不出对方的目录选择框，改成让人填路径 */
   function addLibByPath() {
     const input = U.el('input', { class: 'input', placeholder: '例如 E:/学习资料/喜马拉雅mp3' });
-    /* 添加时就能把分组口径定好：层级深的库（作者/系列/专辑）不用再回头找开关 */
+    /* 添加时就能把分组口径定好：层级深的库（作者/系列/专辑）不用再回头找开关。
+       手机上不给改分组，这个勾选也就不显示 */
     const chk = U.el('input', { type: 'checkbox' });
     const opt = U.el('label', { class: 'lib-dirgroup-opt' }, [
       chk, U.el('span', { text: '一级文件夹当分类、二级当专辑（不勾选则每个文件夹都是一张专辑）' })
     ]);
-    const body = U.el('div', {}, [
-      U.el('div', { class: 'field' }, [U.el('label', { text: '服务器上的目录' }), input]),
-      opt
-    ]);
+    const fields = [U.el('div', { class: 'field' }, [U.el('label', { text: '服务器上的目录' }), input])];
+    if (canEditGroup()) fields.push(opt);
+    const body = U.el('div', {}, fields);
     body.insertAdjacentHTML('beforeend',
       '<div style="font-size:11.5px;color:var(--dim);line-height:1.6">填运行服务的那台机器上的绝对路径——浏览器这边选不了对方的文件夹。' +
       '加完会写进那台机器的 config.json，桌面版下次刷新也能看到。</div>');

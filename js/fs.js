@@ -443,6 +443,8 @@
         const txt = String((await r.text()) || '').trim();
         /* 404 = 服务端还没这条路由（进程是旧代码），说清楚要重启哪一边，别把 "not found" 甩给用户 */
         if (r.status === 404) throw new Error('服务端版本过旧：请重启运行中的 tools/serve.js 后再试');
+        if (r.status === 401) throw new Error('登录已过期，请重新登录后再试');
+        if (r.status === 403) throw new Error('没有权限修改这个资源库的分组方式');
         throw new Error(txt.slice(0, 80) || '设置失败');
       }
     } else {
