@@ -136,6 +136,27 @@ async function assertPublicUrl(raw) {
   return u;
 }
 
+/* 文本响应也卡体积：图片有 2MB 上限，文本同样不该整包读进内存 */
+const MAX_TEXT_BYTES = 4 * 1024 * 1024;
+async function readTextCapped(res, limit) {
+  const lim = limit > 0 ? limit : MAX_TEXT_BYTES;
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const t = await res.text();
+    return t.length > lim ? t.slice(0, lim) : t;
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder('utf-8');
+  let out = '', size = 0;
+  for (;;) {
+    const step = await reader.read();
+    if (step.done) break;
+    size += step.value ? step.value.length : 0;
+    out += dec.decode(step.value, { stream: true });
+    if (size > lim) { try { await reader.cancel(); } catch (e) {} break; }
+  }
+  return out + dec.decode();
+}
+
 async function fetchText(url, headers) {
   /* 后台任务不能无限挂着：网络半死不活时 20 秒就放弃，下次扫描再试 */
   const res = await fetch(url, {
@@ -143,7 +164,7 @@ async function fetchText(url, headers) {
     redirect: 'follow',
     signal: AbortSignal.timeout(20000)
   });
-  return { status: res.status, text: await res.text() };
+  return { status: res.status, text: await readTextCapped(res) };
 }
 
 /* 取图：每一跳都重新校验地址（跳转也可能被引到内网），并卡住体积 */

@@ -25,6 +25,8 @@
   let granted = false;
   let serverMode = false;      // 由 tools/serve.js 的 config.json 库列表提供的服务器模式
   let serverVersion = '';      // 服务端 package.json 的版本号（浏览器直连时用来显示）
+  let userRole = '';           // 服务端多用户下当前登录用户的角色（admin / user）
+  let serverReached = false;   // 同源探测时走到了 serve.js 的 /api/config（说明是服务端会话，与是否已有资源库无关）
   let favSet = new Set();      // 当前用户 + 当前库的收藏专辑 id
   let trackFavSet = new Set(); // 当前用户 + 当前库的收藏曲目 id
   let favLibId = '';           // favSet 属于哪个库（拉取失败时判断要不要清空）
@@ -34,7 +36,8 @@
   const REMOTE = NATIVE && window.fmNative.remote && window.fmNative.remote.base
     ? window.fmNative.remote : null;
   const API_BASE = REMOTE ? REMOTE.base : '';
-  const API_TOKEN = REMOTE ? REMOTE.token : '';
+  /* 会变：服务端在响应头里下发续期后的新 token（见 adoptToken） */
+  let API_TOKEN = REMOTE ? REMOTE.token : '';
   const DESKTOP_FS = NATIVE && !REMOTE;   // 真的在读写本机目录
 
   /* ── 远程链路状态：断线自动探测，恢复后通知界面刷新 ── */
@@ -89,6 +92,7 @@
         headers: API_TOKEN ? { Authorization: 'Bearer ' + API_TOKEN } : {}
       });
       clearTimeout(t);
+      adoptToken(r);
       if (r.ok) { ok = true; }
       else if (r.status === 401) { setLink('auth'); return; }   // 授权失效：别无限重试，让用户重连
     } catch (e) {
@@ -109,6 +113,20 @@
     if (FM.ui && FM.ui.toast) FM.ui.toast('远程服务器未授权，请在资源库菜单里重新连接', 'warn');
   }
 
+  /* 滑动续期的新 token 走响应头：存回 fm.db，下次启动 / 重载页面还用这份 */
+  function adoptToken(r) {
+    if (!REMOTE || !r || !r.headers) return;
+    let t = '';
+    try { t = r.headers.get('x-fm-token') || ''; } catch (e) { return; }
+    if (!t || t === API_TOKEN) return;
+    API_TOKEN = t;
+    try {
+      if (window.fmNative && window.fmNative.setRemote) {
+        window.fmNative.setRemote({ base: API_BASE, token: t });
+      }
+    } catch (e) {}
+  }
+
   function apiFetch(path, opts) {
     const o = Object.assign({}, opts || {});
     const headers = Object.assign({}, o.headers || {});
@@ -116,6 +134,7 @@
     o.headers = headers;
     return fetch(API_BASE + path, o).then(function (r) {
       if (!REMOTE) return r;
+      adoptToken(r);
       if (r.ok) markOnline();
       else if (r.status === 401) { notifyRemoteAuth(); setLink('auth'); }
       else if (r.status >= 500) goOffline();
@@ -219,25 +238,39 @@
   function pickViaInput() {
     return new Promise(function (res, rej) {
       const input = document.getElementById('dirInput');
-      const onChange = function () {
+      let done = false;
+      /* 取消选择框时 Chrome / Safari 只触发 cancel、不触发 change；
+         不一起监听的话这个 Promise 会永远挂着，添加资源库的流程就卡在那儿了。 */
+      const finish = function (fn, v) {
+        if (done) return;
+        done = true;
         input.removeEventListener('change', onChange);
-        if (!input.files || !input.files.length) return rej(new Error('cancelled'));
-        res(Array.from(input.files));
+        input.removeEventListener('cancel', onCancel);
+        fn(v);
+      };
+      const onChange = function () {
+        if (!input.files || !input.files.length) return finish(rej, new Error('cancelled'));
+        finish(res, Array.from(input.files));
         input.value = '';
       };
+      const onCancel = function () { finish(rej, new Error('cancelled')); };
       input.addEventListener('change', onChange);
+      input.addEventListener('cancel', onCancel);
       input.click();
     });
   }
 
-  /* 同源探测：只有 serve.js 读到 libs（config.json）时才会回 server:true */
+  /* 同源探测：serve.js 的 /api/config 只在「读到 libs」时才回 server:true；
+     但即便该用户还没加任何资源库，只要走到了这个接口，就说明是服务端会话（需要登录/登出）。
+     所以这里额外记 serverReached，专用于判断「是不是连到了服务端」，和 server（是否有库）解耦。 */
   async function detectServer() {
     try {
       const res = await apiFetch('/api/config', { cache: 'no-store' });
-      if (!res.ok) return null;
+      if (!res.ok) { serverReached = false; return null; }
       const j = await res.json();
+      serverReached = true;
       return j && j.server ? j : null;
-    } catch (e) { return null; }
+    } catch (e) { serverReached = false; return null; }
   }
 
   /* ── 当前库 ── */
@@ -264,14 +297,21 @@
      dirGroup 继续同步写回，老渲染层读到的还是对的。 */
   const DIR_MODES = ['flat', 'cat', 'auto'];
   function normDirMode(v) { return DIR_MODES.indexOf(v) >= 0 ? v : 'flat'; }
-  function libFromView(l) {
-    const dirMode = normDirMode(l.dirMode === undefined ? (l.dirGroup ? 'cat' : 'flat') : l.dirMode);
+  /* prev：本地已知的同 id 库。老服务端不下发 dirMode，只有布尔 dirGroup——
+     它的 dirGroup 认不出 auto（会把 auto 读成 false），拿它覆盖会把界面上的
+     「自动」冲回「默认」。所以服务端没说清时，优先保留本地记得的值 */
+  function libFromView(l, prev) {
+    const known = l.dirMode === 'cat' || l.dirMode === 'auto' || l.dirMode === 'flat';
+    const dirMode = known
+      ? l.dirMode
+      : (prev && prev.dirMode ? prev.dirMode : (l.dirGroup ? 'cat' : 'flat'));
     /* 其余字段（temp / fixed …）原样带着：纯网页的临时目录靠 temp 走 files 模式 */
     return Object.assign({}, l, {
       id: l.id, name: l.name, path: l.path || '', missing: !!l.missing, fixed: !!l.fixed,
       dirMode: dirMode, dirGroup: dirMode !== 'flat'
     });
   }
+  function prevLib(id) { return libs.find(function (x) { return x.id === id; }) || null; }
   function readWebLibs() {
     const v = FM.store.read('libs', []);
     return Array.isArray(v) ? v.filter(l => l && l.id).map(libFromView) : [];
@@ -285,7 +325,7 @@
   async function load() {
     if (DESKTOP_FS) {
       const res = await window.fmNative.libs();
-      libs = (res.libs || []).map(libFromView);
+      libs = (res.libs || []).map(function (l) { return libFromView(l, prevLib(l.id)); });
       activeId = res.active;
     } else {
       const srv = await detectServer();
@@ -297,11 +337,16 @@
       if (srv) {
         serverMode = true;
         serverVersion = srv.version || '';
+        /* 多用户下取当前登录用户的角色：前端据此决定普通用户能否进入「资源库设置」 */
+        try {
+          const meR = await apiFetch('/api/me', { cache: 'no-store' });
+          if (meR.ok) { const m = await meR.json(); userRole = m.role || ''; }
+        } catch (e) {}
         if (srv.multi) {
           try {
             const r = await apiFetch('/api/libs', { cache: 'no-store' });
             const data = await r.json();
-            libs = (data.libs || []).map(libFromView);
+            libs = (data.libs || []).map(function (l) { return libFromView(l, prevLib(l.id)); });
             activeId = data.active;
           } catch (e) {
             libs = [];
@@ -400,7 +445,7 @@
       if (!r.ok) return false;
       data = await r.json();
     } catch (e) { return false; }
-    const next = (data.libs || []).map(libFromView);
+    const next = (data.libs || []).map(function (l) { return libFromView(l, prevLib(l.id)); });
     const same = next.length === libs.length && next.every(function (l, i) {
       const o = libs[i];
       return o && o.id === l.id && o.name === l.name && o.missing === l.missing && o.dirMode === l.dirMode;
@@ -421,7 +466,7 @@
     });
     if (!r.ok) throw new Error((await r.text()) || '资源库操作失败');
     const data = await r.json();
-    libs = (data.libs || []).map(libFromView);
+    libs = (data.libs || []).map(function (l) { return libFromView(l, prevLib(l.id)); });
     activeId = data.active;
     syncActive();
     applyMode();
@@ -454,6 +499,14 @@
         if (r.status === 403) throw new Error('没有权限修改这个资源库的分组方式');
         throw new Error(txt.slice(0, 80) || '设置失败');
       }
+      /* 旧服务端只认布尔 on：它会照常回 200，但 mode 被丢掉、存成了「默认」。
+         界面于是先显示「自动」，20 秒后又被 /api/libs 冲回「默认」。
+         所以必须确认它回了 dirMode，没回就是旧进程，直接说清楚要重启 */
+      let saved = null;
+      try { saved = await r.json(); } catch (e) {}
+      if (!saved || typeof saved.dirMode !== 'string') {
+        throw new Error('服务端版本过旧：请重启运行中的 tools/serve.js 后再试');
+      }
     } else {
       const list = readWebLibs();
       const l = list.find(x => x.id === id);
@@ -479,7 +532,7 @@
       const r = await apiFetch('/api/activate?id=' + encodeURIComponent(id), { cache: 'no-store' });
       if (!r.ok) throw new Error('切换资源库失败');
       const data = await r.json();
-      libs = (data.libs || []).map(libFromView);
+      libs = (data.libs || []).map(function (l) { return libFromView(l, prevLib(l.id)); });
       activeId = data.active;
     } else {
       if (lib.temp) throw new Error('当前是临时目录，不支持切换');
@@ -1002,9 +1055,11 @@
          scannedAt 也要带上：它是「谁、什么时候扫的」那个时间戳，客户端拿它和服务端的
          /api/scan/at 比，不能换成客户端本地时间（两边时钟一歪就永远比不对） */
       /* 老服务端不返回这两个字段：留 undefined，别当成「明确的一层口径」，
-         否则 build 会以为分组方式变了，把两层时代建的分类归属当成旧数据清掉 */
+         否则 build 会以为分组方式变了，把两层时代建的分类归属当成旧数据清掉。
+         老服务端只给布尔 dirGroup 时认不出 auto，本地是 auto 就别被它的 false 冲掉 */
       const dirMode = (data.dirMode === undefined && data.dirGroup === undefined) ? undefined
-        : normDirMode(data.dirMode === undefined ? (data.dirGroup ? 'cat' : 'flat') : data.dirMode);
+        : (data.dirMode !== undefined ? normDirMode(data.dirMode)
+          : (activeLib.dirMode === 'auto' ? 'auto' : normDirMode(data.dirGroup ? 'cat' : 'flat')));
       if (dirMode !== undefined) { activeLib.dirMode = dirMode; activeLib.dirGroup = dirMode !== 'flat'; }
       /* stale：服务端等了 2 分钟还没扫完，先把上次的缓存给我们看，
          它那边还在后台接着扫，扫完落盘后 scannedAt 会变，下次能同步到 */
@@ -1021,9 +1076,10 @@
       if (onProgress) onProgress({ phase: 'list', count: 0 });
       const res = await window.fmNative.scan(refresh);
       if (onProgress) onProgress({ phase: 'size', done: res.files.length, total: res.files.length });
-      /* 同上：老主进程/preload 没有这个字段时保留 undefined */
+      /* 同上：老主进程/preload 没有这个字段时保留 undefined；只有布尔时别把本地的 auto 冲掉 */
       const dirMode = (res.dirMode === undefined && res.dirGroup === undefined) ? undefined
-        : normDirMode(res.dirMode === undefined ? (res.dirGroup ? 'cat' : 'flat') : res.dirMode);
+        : (res.dirMode !== undefined ? normDirMode(res.dirMode)
+          : (activeLib.dirMode === 'auto' ? 'auto' : normDirMode(res.dirGroup ? 'cat' : 'flat')));
       if (dirMode !== undefined) { activeLib.dirMode = dirMode; activeLib.dirGroup = dirMode !== 'flat'; }
       return {
         libId, rootName: res.rootName || activeLib.name, root: res.root, mode,
@@ -1218,6 +1274,9 @@
     get link() { return linkState; },
     onLink,
     get server() { return serverMode; },
+    get serverReached() { return serverReached; },
+    get role() { return userRole; },
+    get isAdmin() { return userRole === 'admin'; },
     get favIds() { return favSet; },
     get favTrackIds() { return trackFavSet; },
     get version() { return serverVersion; },

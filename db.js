@@ -283,14 +283,15 @@ function clearFavs(db, uid, libId) {
 const META_VERSION = 3;
 const META_LIMIT = { cats: 200, albumMeta: 500, progress: 500, durations: 500 };
 
-/* 库目录规范化：Windows 大小写不敏感、反斜杠/正斜杠混用，不统一的话两端会各写一份 */
+/* 库目录规范化：Windows / macOS 默认都大小写不敏感，反斜杠/正斜杠混用；
+   不统一的话同一目录换个大小写写法就会存成两条库（分类、进度各看各的）。 */
 function libRootKey(p) {
   const s = String(p || '').trim();
   if (!s) return '';
   let out = s;
   if (path.isAbsolute(s)) { try { out = path.resolve(s); } catch (e) {} }
   out = out.replace(/\\/g, '/').replace(/\/+$/, '');
-  if (process.platform === 'win32') out = out.toLowerCase();
+  if (process.platform === 'win32' || process.platform === 'darwin') out = out.toLowerCase();
   return out;
 }
 

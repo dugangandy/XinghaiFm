@@ -5,6 +5,18 @@
   let cache = Object.create(null);
   const dirty = new Set();
   let broken = false;
+  let brokenNotified = false;
+  let onBroken = null;
+
+  /* 写不进去（配额满 / 隐私模式）时通知一次：原来 broken 标记没有消费者，
+     进度和分类悄悄丢在控制台里，用户完全无感。 */
+  function markBroken(where, e) {
+    broken = true;
+    console.warn('[store] 写入失败', where, e);
+    if (brokenNotified) return;
+    brokenNotified = true;
+    try { if (onBroken) onBroken(e); } catch (e2) {}
+  }
 
   /* 命名空间：浏览器直连服务器时按用户隔离本地缓存（fm:v1:<uid>:*）。
      从服务端种下的 fm_uid cookie 同步读取，避免异步竞态。桌面/本地模式为空。 */
@@ -58,8 +70,7 @@
     keys.forEach(function (k) {
       try { localStorage.setItem(FQ(k), JSON.stringify(cache[k])); }
       catch (e) {
-        console.warn('[store] 写入失败', k, e);
-        broken = true;
+        markBroken(k, e);
       }
     });
     dirty.clear();
@@ -75,6 +86,7 @@
   FM.store = {
     read, write, touch, drop, flush, setNamespace,
     onPersist: fn => { onPersist = fn; },
+    onBroken: fn => { onBroken = fn; },
     isBroken: () => broken,
     PREFIX: P,
     get namespace() { return ns; }

@@ -16,6 +16,16 @@
   let cache = new Map();
   let coverVer = new Map();     // 目录名 -> 换图版本号（加在 URL 上，逼浏览器重新取图）
   let loaded = false;
+  let blobRevs = [];            // 当前 urlOf 里那批 blob URL 的回收函数
+
+  /* blob URL 不能立刻回收：DOM 里可能还挂着上一轮的地址。延迟 60 秒，
+     足够界面完成一次 apply / render，又不至于反复 load 时无限累积。 */
+  function scheduleRevoke(list) {
+    if (!list || !list.length) return;
+    setTimeout(function () {
+      list.forEach(function (fn) { try { fn(); } catch (e) {} });
+    }, 60000);
+  }
 
   /* 只留字母数字，书名里的书名号、空格、感叹号、竖线都不参与比较 */
   function norm(s) {
@@ -67,9 +77,11 @@
     } catch (e) { return null; }
   }
 
-  /* 网页版没有自定义协议，只能把图片读成 blob URL */
+  /* 网页版没有自定义协议，只能把图片读成 blob URL。
+     每个 URL 都把回收函数带出来，否则重读索引时旧 URL 全泄漏。 */
   async function blobUrls(entries) {
     const out = new Map();
+    const revs = [];
     const list = entries.slice();
     let cursor = 0;
     async function worker() {
@@ -77,22 +89,26 @@
         const e = list[cursor++];
         try {
           const r = await FM.fs.src(DIR + '/' + e.file);
-          out.set(e.key, r.url);
+          if (r && r.url) out.set(e.key, r.url);
+          if (r && r.revoke) revs.push(r.revoke);
         } catch (err) {}
       }
     }
     const workers = [];
     for (let i = 0; i < Math.min(6, list.length); i++) workers.push(worker());
     await Promise.all(workers);
-    return out;
+    return { map: out, revs: revs };
   }
 
   async function load() {
     raw = await readIndex();
     loaded = true;
+    const oldRevs = blobRevs;
+    blobRevs = [];
     urlOf = new Map();
     index = [];
-    if (!raw || typeof raw !== 'object') return 0;
+    /* 索引读不出来（目录暂时不可访问等）就保留上一轮的 URL，别把还能显示的封面回收了 */
+    if (!raw || typeof raw !== 'object') { blobRevs = oldRevs; return 0; }
 
     const entries = Object.keys(raw)
       .filter(function (k) { return raw[k] && raw[k].file; })
@@ -106,13 +122,16 @@
     } else if (FM.fs.native) {
       entries.forEach(function (e) { urlOf.set(e.key, urlFor(e.file)); });
     } else {
-      urlOf = await blobUrls(entries);
+      const got = await blobUrls(entries);
+      urlOf = got.map;
+      blobRevs = got.revs;
     }
     entries.forEach(function (e) {
       const url = urlOf.get(e.key);
       if (url) index.push({ key: e.key, norm: e.norm, url: url });
     });
     cache = new Map();
+    scheduleRevoke(oldRevs);
     return index.length;
   }
 

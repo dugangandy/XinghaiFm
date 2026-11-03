@@ -366,7 +366,12 @@ function prepare(opts) {
 
   const ready = function () {
     return fsp.stat(target).then(function (st) {
-      return st.isFile() && st.size > 0 ? { file: target, ext: ext, cached: true } : null;
+      if (!(st.isFile() && st.size > 0)) return null;
+      /* 命中就摸一下 mtime：sweep() 按 mtime 清「最久未用」的缓存，
+         只按转码完成时间排会把常听的老文件先删掉。 */
+      const now = new Date();
+      fsp.utimes(target, now, now).catch(function () {});
+      return { file: target, ext: ext, cached: true };
     }, function () { return null; });
   };
 

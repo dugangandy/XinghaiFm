@@ -251,6 +251,11 @@
 
     FM.ui.init();
 
+    /* 本地缓存写不进去（配额满 / 隐私模式）：提示一次，别让改动悄悄丢 */
+    FM.store.onBroken(function () {
+      try { FM.ui.toast('本地缓存已满或不可用，改动可能无法保存', 'warn'); } catch (e) {}
+    });
+
     /* 分类/收藏/进度/时长有变化就攒着写一次盘 */
     FM.store.onPersist(function (keys) {
       const catsChanged = keys.some(function (k) { return k === 'cats' || k.indexOf('cats:') === 0; });

@@ -265,26 +265,30 @@ function readSession(token) {
    按用途分范围、不同寿命：封面图 10 分钟就够；媒体要覆盖单集时长——整本一个文件的有声书
    可能一两个小时，签太短会让中途拖动进度条直接 403。 */
 const TICKET_TTL = { cover: 10 * 60, media: 2 * 3600 };
-function makeTicket(uid, scope) {
+function makeTicket(uid, scope, ver) {
   const exp = Math.floor(Date.now() / 1000) + (TICKET_TTL[scope] || TICKET_TTL.media);
-  const payload = 't.' + exp + '.' + uid + '.' + scope;
+  const payload = 't.' + exp + '.' + uid + '.' + scope + '.' + (Number(ver) || 0);
   return payload + '.' + sign(payload, DB.secret(db));
 }
 function readTicket(t, scope) {
   if (!t) return null;
   const parts = String(t).split('.');
-  if (parts.length !== 5 || parts[0] !== 't') return null;
+  if (parts.length !== 6 || parts[0] !== 't') return null;
   const exp = parseInt(parts[1], 10);
   const uid = parts[2];
-  if (!(exp > 0) || !uid) return null;
+  const ver = parseInt(parts[4], 10);
+  if (!(exp > 0) || !uid || !(ver >= 0)) return null;
   /* 票据分范围：封面票不能拿来读媒体，反之亦然 */
   if (parts[3] !== scope) return null;
-  const payload = 't.' + exp + '.' + uid + '.' + scope;
+  const payload = 't.' + exp + '.' + uid + '.' + scope + '.' + ver;
   const want = Buffer.from(sign(payload, DB.secret(db)));
-  const got = Buffer.from(parts[4]);
+  const got = Buffer.from(parts[5]);
   if (want.length !== got.length || !crypto.timingSafeEqual(want, got)) return null;
   if (Math.floor(Date.now() / 1000) > exp) return null;
-  if (!DB.getUser(db, uid)) return null;
+  const u = DB.getUser(db, uid);
+  if (!u) return null;
+  /* 改过密码（token_version 变了）→ 旧票据也立即作废，不用等它自然过期 */
+  if ((Number(u.token_version) || 0) !== ver) return null;
   return { uid: uid, exp: exp, scope: scope };
 }
 function bearerOf(req) {
@@ -300,21 +304,41 @@ function uidCookie(uid) {
   return 'fm_uid=' + encodeURIComponent(uid) + '; Path=/; SameSite=Lax; Max-Age=' + SESSION_IDLE;
 }
 
-/* 同一 IP 10 分钟内错 5 次，锁 10 分钟 */
+/* 同一用户名 10 分钟内错 5 次，锁 10 分钟。
+   键里不放 IP：经 SSH 隧道进来的请求 remoteAddress 全是 127.0.0.1，
+   带上 IP 等于所有人共享一个计数，一个人输错几次就把别人（尤其 admin）一起锁死。 */
+const FAIL_WINDOW = 600000;
+const FAIL_LIMIT = 5;
+const FAIL_MAX = 4096;        /* 上限：防止有人拿随机用户名把 Map 刷爆 */
 const fails = new Map();
-function lockedFor(ip) {
-  const rec = fails.get(ip);
+function failKey(username) { return String(username || '').trim().toLowerCase(); }
+function lockedFor(key) {
+  const rec = fails.get(key);
   if (!rec) return 0;
-  const left = rec.until - Date.now();
-  return left > 0 ? Math.ceil(left / 1000) : 0;
-}
-function noteFail(ip) {
   const now = Date.now();
-  const rec = fails.get(ip) || { count: 0, since: now, until: 0 };
-  if (now - rec.since > 600000) { rec.count = 0; rec.since = now; }
+  if (rec.until > now) return Math.ceil((rec.until - now) / 1000);
+  /* 锁过期、统计窗口也过了：校验时顺手删掉，别让 Map 只长不缩 */
+  if (now - rec.since > FAIL_WINDOW) fails.delete(key);
+  return 0;
+}
+function pruneFails(now) {
+  for (const [k, v] of fails) {
+    if (v.until < now && now - v.since > FAIL_WINDOW) fails.delete(k);
+  }
+  /* 极端情况（随机用户名刷锁）：按插入顺序丢掉最早的一批 */
+  if (fails.size > FAIL_MAX) {
+    let n = fails.size - FAIL_MAX;
+    for (const k of fails.keys()) { if (n-- <= 0) break; fails.delete(k); }
+  }
+}
+function noteFail(key) {
+  const now = Date.now();
+  const rec = fails.get(key) || { count: 0, since: now, until: 0 };
+  if (now - rec.since > FAIL_WINDOW) { rec.count = 0; rec.since = now; }
   rec.count++;
-  if (rec.count >= 5) { rec.until = now + 600000; rec.count = 0; rec.since = now; }
-  fails.set(ip, rec);
+  if (rec.count >= FAIL_LIMIT) { rec.until = now + FAIL_WINDOW; rec.count = 0; rec.since = now; }
+  fails.set(key, rec);
+  if (fails.size > 256) pruneFails(now);
 }
 
 const MIME = {
@@ -388,6 +412,29 @@ const CSP = [
   "form-action 'self'"
 ].join('; ');
 
+/* 登录类请求体上限。这两个入口未认证可达，其它接口都有自己的上限，
+   这里不设的话，公网上一个超大 body 就能把进程内存吃光。 */
+const MAX_LOGIN_BODY = 64 * 1024;
+/* 读完返回字符串；超限返回 null（调用方直接断开连接，别再继续收） */
+async function readBody(req, limit) {
+  let body = '';
+  try {
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > limit) {
+        /* 必须直接销毁 socket：for-await 的 return 只会 destroy 请求流，
+           而 IncomingMessage.destroy() 不关 socket，剩下的 body 会继续进来，
+           连接和内存都挂着不释放。 */
+        try { req.socket.destroy(); } catch (e) {}
+        return null;
+      }
+    }
+  } catch (e) {
+    return null;
+  }
+  return body;
+}
+
 function send(res, code, body, headers) {
   const h = Object.assign({
     'cache-control': 'no-store',
@@ -401,23 +448,33 @@ function send(res, code, body, headers) {
   const canZip = buf && buf.length > 1024 && !h['content-encoding'] &&
     /text|json|javascript|css|svg/.test(type) && wantsGzip(reqOf.get(res));
   if (canZip) {
-    h['content-encoding'] = 'gzip';
-    h['vary'] = 'Accept-Encoding';
+    /* 压缩成功之后才写头：先 writeHead 的话，头里已经声明 content-encoding: gzip，
+       压缩失败再发原始 buf，客户端会收到解不出来的响应（Node 也不允许写完头再改）。 */
+    const zh = Object.assign({}, h, { 'content-encoding': 'gzip', 'vary': 'Accept-Encoding' });
     /* 小包同步压（1ms 级）+ 缓存；大包（整库清单动辄几 MB）必须异步，
        否则压缩的几百毫秒里视频流发不出去，播放端就卡住等 */
     if (buf.length <= 64 * 1024) {
       const out = gzipOf(buf);
-      h['content-length'] = String(out.length);
-      res.writeHead(code, h);
+      zh['content-length'] = String(out.length);
+      res.writeHead(code, zh);
       return res.end(out);
     }
-    res.writeHead(code, h);          // 不设 content-length，让 Node 用分块传输
     const t0g = Date.now();
     gzipAsync(buf).then(function (out) {
       const ms = Date.now() - t0g;
       if (ms > 200 || DEBUG_REQ) console.log('[gzip] ' + (buf.length >> 10) + 'KB → ' + (out.length >> 10) + 'KB，' + ms + 'ms');
-      if (!res.writableEnded) res.end(out);
-    }, function () { if (!res.writableEnded) res.end(buf); });
+      if (res.writableEnded || res.destroyed) return;
+      zh['content-length'] = String(out.length);
+      res.writeHead(code, zh);
+      res.end(out);
+    }, function (e) {
+      /* 还没写头，可以干净地退回明文 */
+      console.warn('[gzip] 压缩失败，改发明文：' + (e && e.message));
+      if (res.writableEnded || res.destroyed) return;
+      if (h['content-length'] == null) h['content-length'] = String(buf.length);
+      res.writeHead(code, h);
+      res.end(buf);
+    });
     return;
   }
   if (buf && h['content-length'] == null) h['content-length'] = String(buf.length);
@@ -447,7 +504,8 @@ function loginPage(err, next) {
     'button{margin-top:14px;width:100%;padding:10px;border:0;border-radius:10px;background:linear-gradient(120deg,#22d3ee,#6366f1);color:#04070d;font-weight:700;cursor:pointer}' +
     'p.err{color:#fca5a5;font-size:12px;margin:0 0 12px}' +
     'input+input{margin-top:10px}';
-  return '<!doctype html><meta charset="utf-8"><title>星海 FM</title><style>' + style + '</style>' +
+  /* 空的 data: 图标：登录页没有 favicon，浏览器会额外请求 /favicon.ico 换一个 404 */
+  return '<!doctype html><meta charset="utf-8"><link rel="icon" href="data:,"><title>星海 FM</title><style>' + style + '</style>' +
     '<form method="post" action="/__auth">' +
       '<h1>星海 FM</h1>' +
       (err ? '<p class="err">' + escHtml(err) + '</p>' : '') +
@@ -824,17 +882,19 @@ const server = http.createServer(async function (req, res) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    /* 滑动续期的新 token 走响应头下发，跨源时得显式放行，否则桌面端读不到 */
+    res.setHeader('Access-Control-Expose-Headers', 'x-fm-token');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   }
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
   /* 桌面端登录：用户名 + 密码换长期 token */
   if (p === '/api/login' && req.method === 'POST') {
-    let body = '';
-    for await (const chunk of req) body += chunk;
+    const body = await readBody(req, MAX_LOGIN_BODY);
+    if (body === null) { req.destroy(); return; }
     let username = '', pw = '';
     try { const j = JSON.parse(body || '{}'); username = j.username || j.user || ''; pw = j.password || ''; } catch (e) {}
-    const key = ip + '|' + username;
+    const key = failKey(username);
     const lock = lockedFor(key);
     if (lock) return send(res, 429, '尝试过多，请 ' + lock + ' 秒后再试');
     if (NO_AUTH) { const fu = DB.getUser(db, DB.firstUserId(db) || ''); const t0 = Math.floor(Date.now() / 1000); return json(res, { token: fu ? makeToken(t0, t0 + SESSION_ABS, fu.id, fu.token_version) : '' }); }
@@ -850,13 +910,13 @@ const server = http.createServer(async function (req, res) {
 
   if (!NO_AUTH && p === '/__auth') {
     if (req.method === 'POST') {
-      let body = '';
-      for await (const chunk of req) body += chunk;
+      const body = await readBody(req, MAX_LOGIN_BODY);
+      if (body === null) { req.destroy(); return; }
       const form = new URLSearchParams(body);
       const username = form.get('user') || '';
       const pw = form.get('pw') || '';
       const next = safeNext(form.get('next'));
-      const key = ip + '|' + username;
+      const key = failKey(username);
       const lock = lockedFor(key);
       if (lock) return send(res, 429, loginPage('尝试过多，请 ' + lock + ' 秒后再试', next), { 'content-type': 'text/html; charset=utf-8' });
       const user = DB.findUser(db, username);
@@ -905,11 +965,18 @@ const server = http.createServer(async function (req, res) {
   }
   /* 让前端能同步拿到当前用户（用于本地缓存命名空间），no-auth 也补一份 */
   if (cookieOf(req, 'fm_uid') !== uid) { try { res.appendHeader('set-cookie', uidCookie(uid)); } catch (e) {} }
-  /* 滑动续期：活跃就往后推，但不超过首次登录算起的硬上限 */
+  /* 滑动续期：活跃就往后推，但不超过首次登录算起的硬上限。
+     cookie 用 Set-Cookie；桌面端走 Bearer 拿不到 cookie，得在响应头里下发新 token，
+     否则 iat 永远停在登录那一刻，7 天后天天用也会被踢下线。 */
   if (sess) {
     const tick = Math.floor(Date.now() / 1000);
     if (tick - sess.iat > REISSUE_AFTER) {
-      res.setHeader('set-cookie', sessionCookie(makeToken(tick, sess.abs, sess.uid, sess.ver)));
+      const fresh = makeToken(tick, sess.abs, sess.uid, sess.ver);
+      if (viaCookie) res.appendHeader('set-cookie', sessionCookie(fresh));
+      else {
+        res.setHeader('x-fm-token', fresh);
+        res.setHeader('access-control-expose-headers', 'x-fm-token');
+      }
     }
   }
 
@@ -922,7 +989,7 @@ const server = http.createServer(async function (req, res) {
        只有桌面端（fm://app + Bearer，没有 cookie）才需要换票据 */
     if (NO_AUTH || viaCookie) return json(res, { t: '', exp: 0, cookie: true });
     const scope = u.searchParams.get('scope') === 'cover' ? 'cover' : 'media';
-    return json(res, { t: makeTicket(uid, scope), exp: Math.floor(Date.now() / 1000) + TICKET_TTL[scope], scope: scope });
+    return json(res, { t: makeTicket(uid, scope, me ? me.token_version : 0), exp: Math.floor(Date.now() / 1000) + TICKET_TTL[scope], scope: scope });
   }
   if (p === '/api/config') {
     const libs = userLibs(uid);
@@ -1089,7 +1156,11 @@ const server = http.createServer(async function (req, res) {
       data.dirGroup = DB.libDirGroup(db, root);
       /* 封面不再扫描时自动拉取：交给用户在网页「编辑封面」里手动上传/抓取/删除 */
       return json(res, data);
-    } catch (e) { return send(res, 500, e.message); }
+    } catch (e) {
+      /* 别把 e.message 原样回给客户端：里面常带磁盘绝对路径 */
+      console.log('[scan] 扫描失败：' + e.message);
+      return send(res, 500, 'scan failed');
+    }
   }
   if (p === '/api/covers') {
     const root = userActiveRoot(uid);
@@ -1130,7 +1201,10 @@ const server = http.createServer(async function (req, res) {
     try {
       const entry = await covers.saveCoverForDir(root, payload.dirName, payload.payload || {});
       return json(res, { ok: true, entry: entry });
-    } catch (e) { return send(res, 500, e.message); }
+    } catch (e) {
+      console.log('[cover] 保存失败：' + e.message);
+      return send(res, 500, 'save failed');
+    }
   }
   if (p === '/api/cover' && (req.method === 'DELETE' || (req.method === 'POST' && /delete/.test(p)))) {
     const root = userActiveRoot(uid);
