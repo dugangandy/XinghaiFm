@@ -12,7 +12,8 @@
   /* 安卓壳：没有 showDirectoryPicker，也没有本地目录，只能走服务端 */
   const APP = !!(typeof window !== 'undefined' && window.fmAndroid);
   const MEDIA = FM.media.ALL;
-  const MAX_DEPTH = 3;
+  /* 与主进程 / serve.js 保持一致：分类/专辑/子目录/… 里的音频都要收进来 */
+  const MAX_DEPTH = 6;
   const SKIP = /^[._]|^(fm|\$RECYCLE\.BIN|System Volume Information|node_modules)$/i;
 
   let libs = [];               // [{ id, name, path, missing, fixed, temp }]
@@ -426,15 +427,24 @@
     const val = !!on;
     const lib = libs.find(l => l.id === id) || activeLib;
     if (DESKTOP_FS) {
+      /* 老客户端没有这条通道：invoke 会报 "No handler registered"，这里先说人话 */
+      if (typeof window.fmNative.setLibDirGroup !== 'function') {
+        throw new Error('客户端版本过旧：请完全退出并重新打开星海 FM');
+      }
       const r = await window.fmNative.setLibDirGroup(id, val);
-      if (r !== val) throw new Error('开关未写入');
+      if (r !== val) throw new Error('开关未写入（资源库可能已被移除）');
     } else if (serverMode) {
       const r = await apiFetch('/api/libdirgroup', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ id: id, on: val })
       });
-      if (!r.ok) throw new Error((await r.text()) || '设置失败');
+      if (!r.ok) {
+        const txt = String((await r.text()) || '').trim();
+        /* 404 = 服务端还没这条路由（进程是旧代码），说清楚要重启哪一边，别把 "not found" 甩给用户 */
+        if (r.status === 404) throw new Error('服务端版本过旧：请重启运行中的 tools/serve.js 后再试');
+        throw new Error(txt.slice(0, 80) || '设置失败');
+      }
     } else {
       const list = readWebLibs();
       const l = list.find(x => x.id === id);
@@ -457,7 +467,10 @@
       const r = await apiFetch('/api/activate?id=' + encodeURIComponent(id), { cache: 'no-store' });
       if (!r.ok) throw new Error('切换资源库失败');
       const data = await r.json();
-      libs = (data.libs || []).map(l => ({ id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed }));
+      libs = (data.libs || []).map(l => ({
+        id: l.id, name: l.name, path: '', missing: !!l.missing, fixed: !!l.fixed,
+        dirGroup: !!l.dirGroup
+      }));
       activeId = data.active;
     } else {
       if (lib.temp) throw new Error('当前是临时目录，不支持切换');

@@ -62,6 +62,9 @@
   let rootName = '';
   let scannedAt = 0;
   let libId = '';
+  /* 当前内存模型是按哪种口径分组的（false=一层子目录当专辑，true=两层）。
+     索引缓存里要记这个字段：口径变了，缓存就不能直接拿来 restore */
+  let dirGroupMode = false;
 
   /* ── 分类：按资源库分开 ──
      分类最初是给喜马拉雅有声书用的，别的库不该继承同一份清单。
@@ -261,6 +264,7 @@
     scannedAt = Number(scan.scannedAt) || Date.now();
 
     const dirGroup = !!scan.dirGroup;
+    dirGroupMode = dirGroup;
     const groups = groupFiles(scan.files, dirGroup);
 
     const metas = db.albumMeta();
@@ -442,6 +446,7 @@
       rootName: rootName,
       root: rootKey,
       scannedAt: scannedAt,
+      dirGroup: dirGroupMode,
       albums: albums.map(a => ({
         id: a.id, key: a.key, path: a.path || '', dirCat: a.dirCat || '',
         dirName: a.dirName, title: a.title, origTitle: a.origTitle,
@@ -460,6 +465,7 @@
     rootName = cached.rootName || '';
     rootKey = String(cached.root || cached.rootName || '');
     scannedAt = cached.scannedAt || 0;
+    dirGroupMode = !!cached.dirGroup;
     const metas = db.albumMeta();
     const rawCats = db.catsFor(libId);
     const cats = ensureCats();
@@ -768,6 +774,7 @@
   FM.lib = {
     build, restore, saveIndex, clear,
     ensureCats, groupFiles, dirCatId,
+    isDirGroup: () => dirGroupMode,
     albums: () => albums,
     tracks: () => tracks,
     allAlbums,

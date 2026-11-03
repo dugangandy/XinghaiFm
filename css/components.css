@@ -696,7 +696,7 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 
 /* 弹出菜单（要比模态遮罩 90 高，资源库设置里的「⋯」才点得到） */
 .menu-pop{
-  position:fixed;z-index:95;min-width:186px;padding:6px;
+  position:fixed;z-index:95;min-width:186px;max-width:calc(100vw - 24px);padding:6px;
   border-radius:14px;border:1px solid var(--line-2);
   background:rgba(12,16,27,.96);backdrop-filter:blur(20px);
   box-shadow:0 30px 60px -20px #000;
@@ -939,6 +939,25 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .lib-cur{
   flex:none;font-size:10px;padding:2px 8px;border-radius:99px;letter-spacing:.04em;
   color:#9becff;background:rgba(34,211,238,.14);border:1px solid rgba(34,211,238,.3);
+}
+/* 资源库行上的「两级」开关：一层子目录当分类、二层当专辑 */
+.lib-mode{
+  flex:none;font-size:10.5px;padding:3px 9px;border-radius:99px;letter-spacing:.03em;
+  color:var(--dim);background:rgba(255,255,255,.04);border:1px solid var(--line);
+  cursor:pointer;transition:color .18s,border-color .18s,background .18s;
+}
+.lib-mode:hover{color:var(--txt-2);border-color:var(--line-2)}
+.lib-mode.on{color:#9becff;background:rgba(34,211,238,.14);border-color:rgba(34,211,238,.32)}
+/* 添加资源库弹窗里的分组口径勾选 */
+.lib-dirgroup-opt{
+  display:flex;align-items:flex-start;gap:8px;margin:12px 0 8px;
+  font-size:12px;line-height:1.5;color:var(--txt-2);cursor:pointer;
+}
+.lib-dirgroup-opt input{margin:2px 0 0;flex:none;accent-color:var(--cyan)}
+/* 窄屏：行内已经高亮当前库，「当前」徽标可以省掉，把位置让给分组按钮 */
+@media (max-width:420px){
+  .lib-list .lib-cur{display:none}
+  .lib-list .lib-mode{padding:2px 7px;font-size:10px}
 }
 .lib-empty{padding:26px 8px;text-align:center;color:var(--dim);font-size:12.5px}
 

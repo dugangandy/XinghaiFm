@@ -24,7 +24,10 @@ const MEDIA = new Set([
   'm4a', 'm4b', 'mp3', 'aac', 'flac', 'wav', 'ogg', 'opus', 'wma', 'ape', 'wv',
   'mp4', 'm4v', 'mov', 'webm', 'ogv', 'flv'
 ]);
-const MAX_DEPTH = 3;
+/* 递归深度上限。一次 walk 的结果要同时服务两种分组口径（「按目录分两级」开关只影响
+   分组，不影响扫描缓存），所以留足余量：分类/专辑/子目录/CD1/… 里的音频都要能收到，
+   再深的目录按同一张专辑归并，不会因为开关切换就要重新扫盘 */
+const MAX_DEPTH = 6;
 const SKIP = /^[._]|^(fm|dist|build|node_modules|\$RECYCLE\.BIN|System Volume Information)$/i;
 
 let win = null;
@@ -590,10 +593,10 @@ function bindIpc() {
     return Object.assign({}, scan, { dirGroup: DB.libDirGroup(getDb(), lib.path) });
   });
 
-  /* 「按目录分两级」开关：只改元数据，不动扫描缓存 */
+  /* 「按目录分两级」开关：只改元数据，不动扫描缓存。
+     id 必须精确命中，找不到就返回 false——别回退到当前库，否则传错 id 会悄悄改掉另一个库 */
   ipcMain.handle('fm:setLibDirGroup', function (e, id, on) {
-    const cfg = getConfig();
-    const lib = cfg.libs.find(l => l.id === id) || activeLib();
+    const lib = getConfig().libs.find(l => l.id === id);
     if (!lib) return false;
     DB.setLibDirGroup(getDb(), lib.path, !!on);
     return !!on;

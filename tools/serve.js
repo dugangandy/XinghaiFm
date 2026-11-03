@@ -63,7 +63,8 @@ const MEDIA_EXT = new Set([
   'm4a', 'm4b', 'mp3', 'aac', 'flac', 'wav', 'ogg', 'opus', 'wma', 'ape', 'wv',
   'mp4', 'm4v', 'mov', 'webm', 'ogv', 'flv'
 ]);
-const MAX_DEPTH = 3;
+/* 同上（main.js）：扫描结果按库缓存、与分组开关无关，深度留足余量 */
+const MAX_DEPTH = 6;
 const SKIP_DIR = /^[._]|^(fm|dist|build|node_modules|[$]RECYCLE[.]BIN|System Volume Information)$/i;
 const SESSION_COOKIE = 'fm_sess';
 const SESSION_IDLE = 7 * 24 * 3600;   // 多久不用就失效（滑动）

@@ -1286,9 +1286,15 @@
     const st = L.albumStat(a);
     const filtered = albumTracksFiltered(a);
     const trackHtml = trackListHtml(filtered);
-    const cats = L.cats().filter(c => a.cats.indexOf(c.id) >= 0);
+    /* 「按分类」分组下，一级文件夹自己会做成一张散集专辑（path 不带 /）。
+       它的标题就是分类名，再挂一个同名分类 tag 等于自己标自己，纯噪音——
+       这类专辑不显示 tag；二级专辑才挂分类 tag。 */
+    const topCatAlbum = L.isDirGroup() && !!a.dirCat && String(a.path || '').indexOf('/') < 0;
+    const cats = topCatAlbum ? [] : L.cats().filter(c => a.cats.indexOf(c.id) >= 0);
     const catTags = cats.map(c => '<span class="tag cat">' + esc(c.name) + '</span>').join('');
-    const tagHtml = a.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join('');
+    const tagHtml = topCatAlbum ? '' : a.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join('');
+    const heroTags = (catTags + tagHtml)
+      ? '<div class="hero-tags">' + catTags + tagHtml + '</div>' : '';
     const done = a.count > 0 && st.doneCount >= a.count;
 
     const wrap = U.el('div');
@@ -1302,7 +1308,7 @@
           '<div class="hero-heading">' +
             '<div class="hero-kicker">ALBUM · ' + albumType(a) + '</div>' +
             '<h1 class="hero-title" title="' + esc(a.title) + '">' + esc(a.title) + '</h1>' +
-            '<div class="hero-tags">' + catTags + tagHtml + '</div>' +
+            heroTags +
           '</div>' +
           '<div class="hero-meta"><span>' + a.count + ' 集</span><span class="dot"></span><span>' + fmtS(a.size) + '</span>' +
             (st.dur ? '<span class="dot"></span><span>' + fmtD(st.dur) + '</span>' : '') +
@@ -3555,16 +3561,22 @@
     x.onclick = function () { close(); };
     head.append(titleBox, x);
 
-    const body = U.el('div', { class: 'lib-drawer-body' }, [list_]);
+    /* 顶部说明：把「两级」这个开关讲清楚，不然一排按钮没人知道是干什么的 */
+    const tips = U.el('div', { class: 'lib-drawer-tips' });
+    tips.appendChild(U.el('div', {
+      class: 'lib-drawer-tip',
+      text: '行上的「按专辑」= 每个文件夹是一张专辑（默认）；换成「按分类」后，一级文件夹变成分类、二级文件夹才是专辑。'
+    }));
+    const body = U.el('div', { class: 'lib-drawer-body' }, [tips, list_]);
 
     const foot = U.el('div', { class: 'lib-drawer-foot' });
     /* 单目录模式、或服务端没开 --allow-lib-edit 时，列表是只读的，不给「添加」 */
     const canAdd = !FM.fs.server || FM.fs.libs().some(function (l) { return !l.fixed; });
     if (FM.fs.remote && !canAdd) {
-      body.insertBefore(U.el('div', {
+      tips.appendChild(U.el('div', {
         class: 'lib-drawer-tip',
         text: '无法修改远程资源库。如需修改本地资源库，请先断开远程连接。'
-      }), list_);
+      }));
     }
     if (canAdd) {
       const add = U.el('button', { class: 'btn', html: icon('plus') + '<span>添加资源库</span>' });
@@ -3623,12 +3635,22 @@
       list.forEach(function (l) {
         const cur = l.id === FM.fs.activeId;
         const row = U.el('div', { class: 'lib-row' + (cur ? ' current' : '') + (l.missing ? ' missing' : '') });
+        /* 分组口径按钮：文字写「当前是什么」而不是「点了会变成什么」，
+           默认的平铺库显示「一层」，避免被误读成已经启用两层分组。
+           只写 fm.db 的元数据、不碰主机目录，所以 fixed 库也允许点 */
+        const modeTitle = l.dirGroup
+          ? '当前：一级文件夹当分类、二级文件夹当专辑。点击改为「每个文件夹 = 一张专辑」'
+          : '当前：每个文件夹 = 一张专辑。点击改为「一级文件夹 = 分类，二级 = 专辑」';
         row.innerHTML = libRowHtml(l) +
+          '<button class="lib-mode' + (l.dirGroup ? ' on' : '') + '" type="button" title="' + esc(modeTitle) + '">' +
+          (l.dirGroup ? '按分类' : '按专辑') + '</button>' +
           (l.fixed ? '' : '<button class="icon-btn lib-more" title="更多">' + icon('more') + '</button>');
+        const mode = row.querySelector('.lib-mode');
+        if (mode) mode.addEventListener('click', function (e) { e.stopPropagation(); toggleDirGroup(l, draw); });
         const more = row.querySelector('.lib-more');
         if (more) more.addEventListener('click', function (e) { e.stopPropagation(); libRowMenu(e.currentTarget, l, draw, handle); });
         row.addEventListener('click', function (e) {
-          if (e.target.closest('.lib-more') || cur) return;
+          if (e.target.closest('.lib-more') || e.target.closest('.lib-mode') || cur) return;
           if (l.missing) { toast('资源库目录不存在，请先重新定位', 'warn'); return; }
           close();
           switchLib(l.id);
@@ -3650,16 +3672,25 @@
       });
     }
     items.push({ label: '重命名', icon: 'edit', onClick: function () { renameLibFlow(l, redraw); } });
-    /* 目录层级深的库：一层子目录当分类、二层子目录当专辑 */
-    items.push({
-      label: '按目录分两级' + (l.dirGroup ? '（已开启）' : ''),
-      icon: l.dirGroup ? 'check' : 'grid',
-      onClick: function () { toggleDirGroup(l, redraw); }
-    });
     if (FM.fs.native) {
       items.push({ label: '重新定位…', icon: 'folder', onClick: function () { relocateFlow(l, redraw); } });
       items.push({ label: '在文件夹中打开', icon: 'folder', onClick: function () { FM.fs.openLib(l.id); } });
     }
+    /* 分组口径：两个选项二选一，文案直接说「文件夹会变成什么」，
+       比「一层 / 两层分组」这种术语好懂。当前口径右侧打勾，点另一个才生效 */
+    items.push({ sep: true });
+    items.push({
+      label: '每个文件夹 = 一张专辑',
+      icon: 'folder',
+      right: l.dirGroup ? '' : 'check',
+      onClick: function () { if (!l.dirGroup) return; toggleDirGroup(l, redraw); }
+    });
+    items.push({
+      label: '一级文件夹 = 分类（二级是专辑）',
+      icon: 'grid',
+      right: l.dirGroup ? 'check' : '',
+      onClick: function () { if (l.dirGroup) return; toggleDirGroup(l, redraw); }
+    });
     items.push({ sep: true });
     items.push({
       label: '移除资源库', icon: 'trash', danger: true,
@@ -3675,7 +3706,7 @@
     try {
       await FM.fs.setDirGroup(l.id, on);
       l.dirGroup = on;
-      toast(on ? '已按目录分两级：一层是分类、二层是专辑' : '已恢复平铺：一层子目录就是专辑');
+      toast(on ? '已改为「按分类」：一级文件夹是分类、二级文件夹是专辑' : '已改为「按专辑」：每个文件夹是一张专辑');
       if (FM.fs.activeId === l.id) await runScan({ silent: true });
       else renderAll({ quiet: true });
       if (after) after();
@@ -3763,8 +3794,14 @@
   /* 服务器模式：浏览器弹不出对方的目录选择框，改成让人填路径 */
   function addLibByPath() {
     const input = U.el('input', { class: 'input', placeholder: '例如 E:/学习资料/喜马拉雅mp3' });
+    /* 添加时就能把分组口径定好：层级深的库（作者/系列/专辑）不用再回头找开关 */
+    const chk = U.el('input', { type: 'checkbox' });
+    const opt = U.el('label', { class: 'lib-dirgroup-opt' }, [
+      chk, U.el('span', { text: '一级文件夹当分类、二级当专辑（不勾选则每个文件夹都是一张专辑）' })
+    ]);
     const body = U.el('div', {}, [
-      U.el('div', { class: 'field' }, [U.el('label', { text: '服务器上的目录' }), input])
+      U.el('div', { class: 'field' }, [U.el('label', { text: '服务器上的目录' }), input]),
+      opt
     ]);
     body.insertAdjacentHTML('beforeend',
       '<div style="font-size:11.5px;color:var(--dim);line-height:1.6">填运行服务的那台机器上的绝对路径——浏览器这边选不了对方的文件夹。' +
@@ -3778,23 +3815,25 @@
           label: '添加', cls: 'btn-primary', onClick: function () {
             const v = input.value.trim();
             if (!v) { toast('请输入目录路径', 'warn'); return false; }
-            runAddLib(v);
+            runAddLib(v, chk.checked);
           }
         }
       ]
     });
   }
 
-  async function runAddLib(path) {
+  async function runAddLib(path, dirGroup) {
     try {
       setScanBusy(true, '添加资源库…');
       const lib = await FM.fs.add(path || undefined);
       if (!lib) return;
+      /* 开关只写元数据，失败不该拦住添加流程 */
+      if (dirGroup) { try { await FM.fs.setDirGroup(lib.id, true); } catch (e) {} }
       P.stop();
       resetView();
       await enterLib({ force: true });
       renderAll();
-      toast('已添加资源库「' + lib.name + '」');
+      toast('已添加资源库「' + lib.name + '」' + (dirGroup ? '（按目录分两级）' : ''));
     } catch (e) {
       if (e && e.name === 'AbortError') return;
       toast(e.message || '添加资源库失败', 'warn');
@@ -3924,6 +3963,12 @@
     if (now - stampCheckedAt < (Number(gap) || 30000)) return false;
     stampCheckedAt = now;
     const id = FM.fs.activeId;
+    /* 口径变了（别的设备翻了「两层」开关）就立刻按新口径重算一遍，不必等服务端重扫 */
+    const cached = FM.db.index(id);
+    const wantGroup = !!(FM.fs.active() && FM.fs.active().dirGroup);
+    if (cached && !!cached.dirGroup !== wantGroup) {
+      try { return await runScan({ silent: true, quiet: true, libId: id }); } catch (e) { return false; }
+    }
     let at = 0;
     try { at = await FM.fs.scanStamp(); } catch (e) { return false; }
     /* 服务端那份比本地索引新才同步；期间切了库就作废。
@@ -3941,6 +3986,13 @@
     /* 先把库里的元数据（分类 / 整理 / 进度）拉下来，分类才带得出来：桌面走 IPC、网页和手机走接口 */
     if (FM.fs.canSyncMeta()) { try { await FM.fs.pullMeta(); } catch (e) {} }
     const cached = o.force ? null : FM.db.index(id);
+    /* 分组口径跟缓存对不上（另一台设备翻了「两层」开关）：这份缓存是按旧口径算的，
+       直接 restore 会显示错的专辑数，重扫一遍（读宿主扫描缓存，不走盘） */
+    const wantGroup = !!(FM.fs.active() && FM.fs.active().dirGroup);
+    if (cached && cached.albums && cached.albums.length && !!cached.dirGroup !== wantGroup) {
+      await runScan({ silent: true, libId: id });
+      return;
+    }
     if (cached && cached.albums && cached.albums.length) {
       try { await FM.covers.load(); } catch (e) {}
       L.restore(id);
