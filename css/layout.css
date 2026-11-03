@@ -264,15 +264,24 @@ body.is-server #libSwitch .lib-caret{display:none}
   position:fixed;left:0;right:0;bottom:0;z-index:40;
   height:var(--pb-h);padding:0 22px;
   display:flex;align-items:center;gap:18px;
-  /* 整条满宽毛玻璃同理：背后是会动的背景层，blur 每帧重算一次全宽 */
-  background:linear-gradient(180deg,rgba(9,13,22,.97),rgba(5,8,14,.98));
-  border-top:1px solid var(--line);
-  box-shadow:0 -20px 50px -30px rgba(0,0,0,.95);
+  /* 半透明毛玻璃：整条浮在内容之上，滚动内容从底下透出来。
+     背后是会动的背景层，blur 每帧要重算一次全宽，所以只给这一条开，
+     模糊半径也压在 18px（.hw 那档再放大）。 */
+  background:linear-gradient(180deg,rgba(12,17,28,.72),rgba(6,9,16,.84));
+  border-top:1px solid rgba(255,255,255,.09);
+  box-shadow:0 -26px 54px -30px rgba(0,0,0,.98),inset 0 1px 0 rgba(255,255,255,.055);
+  -webkit-backdrop-filter:blur(18px) saturate(140%);
+  backdrop-filter:blur(18px) saturate(140%);
 }
-/* 有硬件加速才恢复毛玻璃 */
+/* 不支持毛玻璃的内核（老 WebView）：退回接近不透明的底色，保证文字仍然可读 */
+@supports not ((backdrop-filter:blur(2px)) or (-webkit-backdrop-filter:blur(2px))){
+  .playerbar{background:linear-gradient(180deg,rgba(9,13,22,.97),rgba(5,8,14,.98))}
+}
+/* 有硬件加速：玻璃再厚一档、底色再透一点 */
 .hw .playerbar{
-  background:linear-gradient(180deg,rgba(9,13,22,.86),rgba(5,8,14,.94));
-  backdrop-filter:blur(26px) saturate(160%);
+  background:linear-gradient(180deg,rgba(12,17,28,.62),rgba(6,9,16,.78));
+  -webkit-backdrop-filter:blur(28px) saturate(165%);
+  backdrop-filter:blur(28px) saturate(165%);
 }
 .playerbar::before{
   content:"";position:absolute;top:-1px;left:0;right:0;height:1px;
@@ -294,6 +303,11 @@ body.is-server #libSwitch .lib-caret{display:none}
 .pb-left:hover .pb-cover{filter:brightness(1.12)}
 .pb-left:hover .pb-title{color:#fff}
 .pb-sub{font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:30vw}
+/* 手机端第二行「当前/总时长」：桌面端不出现（桌面看下方完整的 scrub 行） */
+.pb-time{display:none;font-variant-numeric:tabular-nums;color:var(--dim)}
+/* 手机端播放条上的队列入口：桌面隐藏
+   （选择器要压过 components.css 里的 .icon-btn{display:grid}） */
+.playerbar .pb-queue{display:none}
 .pb-fav{width:32px;height:32px;color:var(--dim)}
 .pb-fav .i{width:17px;height:17px}
 .pb-fav.on{color:var(--pink)}
