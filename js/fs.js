@@ -810,6 +810,22 @@
       data.dirCatDropped.forEach(function (n) { if (n && !set.has(n)) { set.add(n); ch = true; } });
       if (ch) { FM.store.write(k, Array.from(set).slice(-200)); FM.store.touch(k); }
     }
+    /* 上次收听那一集：服务端按用户记着，换设备 / 重装后能带回来。
+       只在本机这个库没有记录时才采用，免得把刚切的一集盖回旧的；
+       新用户服务端是空的，这里什么都不做，底栏也就不会凭空出现。
+       注意 progress 不参与这个判断：它是库属性，别人听过的也在里面 */
+    if (data.lastTrack && activeId) {
+      const st = FM.db.state();
+      const has = !!(st.lastTracks && st.lastTracks[activeId]);
+      if (!has) {
+        const next = Object.assign({}, st, { lastTrackId: data.lastTrack });
+        const map = Object.assign({}, st.lastTracks);
+        map[activeId] = data.lastTrack;
+        next.lastTracks = map;
+        FM.db.setState(next);
+        FM.store.touch('state');
+      }
+    }
     return touched;
   }
 
@@ -843,6 +859,8 @@
     if (add.durations) Object.assign(base.durations || (base.durations = {}), add.durations);
     /* 目录分类黑名单是整份名单，后推的覆盖先推的（都是本地当前完整列表） */
     if (add.dirCatDropped) base.dirCatDropped = add.dirCatDropped;
+    /* 上次收听那一集：按用户存（服务端 settings），不跟库共享 */
+    if (add.lastTrack) base.lastTrack = add.lastTrack;
     return base;
   }
 
@@ -889,6 +907,7 @@
         if (patch.progress) one.progress = patch.progress;
         if (patch.durations) one.durations = patch.durations;
         if (patch.dirCatDropped) one.dirCatDropped = patch.dirCatDropped;
+        if (patch.lastTrack) one.lastTrack = patch.lastTrack;
       }
       keys.slice(i, i + META_BATCH).forEach(function (k) { one.albumMeta[k] = meta[k]; });
       out.push(one);

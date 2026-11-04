@@ -89,6 +89,22 @@ test('catsDeleted：按 id 精确删除，跨库不误伤（删分类后重进�
   DB.metaApply(db, ROOT, { catsDeleted: ['nope'] });
 });
 
+test('lastTrack 按用户存：新用户是空的，不同用户互不串', () => {
+  const db = fresh();
+  DB.setUserLastTrack(db, 'u1', 'lib-a', 't1');
+  assert.equal(DB.userLastTrack(db, 'u1', 'lib-a'), 't1');
+  /* 同库的另一个用户（共享资源库）：自己没有记录，返回空 —— 前端就不会显示底栏 */
+  assert.equal(DB.userLastTrack(db, 'u2', 'lib-a'), '');
+  /* 同一个用户换库也不串 */
+  assert.equal(DB.userLastTrack(db, 'u1', 'lib-b'), '');
+  /* 覆盖写 */
+  DB.setUserLastTrack(db, 'u1', 'lib-a', 't2');
+  assert.equal(DB.userLastTrack(db, 'u1', 'lib-a'), 't2');
+  /* 参数不全时不落库 */
+  assert.equal(DB.setUserLastTrack(db, '', 'lib-a', 't3'), 0);
+  assert.equal(DB.userLastTrack(db, 'u1', ''), '');
+});
+
 test('dirCatDropped：删掉的目录分类名单落库，跨端不会再自动长回来', () => {
   const db = fresh();
   DB.metaApply(db, ROOT, { dirCatDropped: ['技术', '历史'] });

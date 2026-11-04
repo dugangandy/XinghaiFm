@@ -716,26 +716,15 @@
      只存一份全局 lastTrackId 时，在 A 库听完切到 B 库再切回来，记的已经是 B 库那一集，
      A 库的底栏就恢复不出来了。全局那份留着兜底（老数据、按库记录失效时用）。
 
-     最后一层兜底看播放进度：进度是跨端同步的（fm.db 的 progress），
-     lastTrack* 只存在本机 localStorage —— 换手机、重装、清了缓存之后本机没有记录，
-     但「上次听到哪一集」在进度里还留着，从那儿捞出来，底栏才不会空着。 */
+     这里只认「本用户自己」的记录：本机没有时由服务端按用户下发（fs.applyMeta 落到
+     state.lastTracks）。不要退回去看 progress —— 进度是库属性（多用户共享），
+     拿它当上次收听会让新登录的用户一进来就看到别人听过的节目。 */
   function lastTrackOf(libId) {
     const s = FM.db.state();
     const byLib = libId && s.lastTracks ? s.lastTracks[libId] : '';
     let t = byLib ? FM.lib.track(byLib) : null;
     if (!t && s.lastTrackId) t = FM.lib.track(s.lastTrackId);
-    if (t) return t;
-    const all = FM.db.progress();
-    let best = null;
-    let bestAt = 0;
-    Object.keys(all).forEach(function (id) {
-      const p = all[id];
-      if (!p || !(Number(p.t) > bestAt)) return;
-      const x = FM.lib.track(id);      /* 不属于当前库的直接跳过 */
-      if (!x) return;
-      best = x; bestAt = Number(p.t);
-    });
-    return best;
+    return t || null;
   }
 
   function restoreLast() {
@@ -767,6 +756,9 @@
       patch.lastTracks = map;
     }
     persistState(patch);
+    /* 也记到服务端（按用户，不跟库共享）：换设备 / 重装后还能恢复上次收听，
+       而新用户那边是空的，不会凭空出现底栏 */
+    try { if (FM.fs && FM.fs.pushMeta) FM.fs.pushMeta({ lastTrack: track.id }); } catch (e) {}
   }
   ev.on('track', rememberTrack);
   ev.on('loop', () => {});

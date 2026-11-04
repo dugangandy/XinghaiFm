@@ -1144,7 +1144,11 @@ const server = http.createServer(async function (req, res) {
     if (req.method === 'GET') {
       if (!lib) return json(res, { empty: true });
       ensureMetaMigrated(lib);
-      return json(res, DB.metaSnapshot(db, lib.path));
+      /* lastTrack 是「这个用户在这个库」的最后收听，不算库属性：
+         新用户登录时它是空的，前端就不会凭空显示底栏 */
+      return json(res, Object.assign(DB.metaSnapshot(db, lib.path), {
+        lastTrack: DB.userLastTrack(db, uid, lib.id)
+      }));
     }
     if (req.method !== 'POST') return send(res, 405, 'GET or POST only');
     /* 单独一档额度：拖拽归类 + 进度上报同时来的时候，别互相把额度吃掉 */
@@ -1168,7 +1172,14 @@ const server = http.createServer(async function (req, res) {
     const target = userLibs(uid).find(function (l) { return l.id === patch.libId; }) || lib;
     if (!target) return send(res, 404, 'no library');
     ensureMetaMigrated(target);
-    try { return json(res, { ok: true, counts: DB.metaApply(db, target.path, patch) }); }
+    try {
+      const counts = DB.metaApply(db, target.path, patch);
+      /* 「上次收听」按用户存（不是库属性），普通用户也能写自己的 */
+      if (typeof patch.lastTrack === 'string' && patch.lastTrack) {
+        DB.setUserLastTrack(db, uid, target.id, patch.lastTrack);
+      }
+      return json(res, { ok: true, counts: counts });
+    }
     catch (e) { console.log('[meta] 写入失败：' + e.message); return send(res, 500, 'write failed'); }
   }
   if (p === '/api/progress') {

@@ -329,7 +329,12 @@
         const ready = function () {
           /* 先把上次没写进库的改动补发，再拉服务端快照：
              顺序反了会用服务端的旧值把本地刚补发的内容盖回去 */
-          FM.fs.flushPending().then(function () { pullMetaFromDisk(); });
+          FM.fs.flushPending()
+            .then(function () { return pullMetaFromDisk(); })
+            /* 服务端按用户下发的「上次收听」这时才落到本地（换设备 / 重装靠它），
+               所以拉完再补一次；本机已有记录的话前面同步那次已经显示了，这里幂等 */
+            .then(function () { restoreLastTrack(); })
+            .catch(function () {});
           /* 库刚就绪：启动那次没恢复出来的「上次收听」在这里补上，底栏才出现 */
           restoreLastTrack();
           scheduleMetaWrite(2000, true);

@@ -644,6 +644,20 @@ function durationUpsert(db, root, patch) {
   return tx(db, function () { return durationWrite(db, key, patch); });
 }
 
+/* ── 每个用户在每个库里最后收听的那一集 ──
+   progress 是「库」的属性（按路径共享），拿它当「上次收听」会让新登录的用户
+   一进来就看见别人听过的节目，底栏凭空出现。最后收听按用户存：
+   换设备 / 重装能带过去，新用户是空的，就不显示。 */
+function userLastTrack(db, uid, libId) {
+  if (!uid || !libId) return '';
+  return getSetting(db, 'lastTrack:' + uid + ':' + libId) || '';
+}
+function setUserLastTrack(db, uid, libId, trackId) {
+  if (!uid || !libId || !trackId) return 0;
+  setSetting(db, 'lastTrack:' + uid + ':' + libId, String(trackId));
+  return 1;
+}
+
 /* ── 目录分类黑名单（用户主动删掉的自动分类） ──
    以前只写在客户端 localStorage：在手机 / 网页上删掉一个目录分类，桌面端扫描时
    又会按目录名自动建回来，还会把专辑重新挂上去 —— 典型的「本地删了、服务端不知道」。
@@ -810,6 +824,7 @@ module.exports = {
   progressMap, progressUpsert,
   durationMap, durationUpsert,
   droppedDirCats, setDroppedDirCats,
+  userLastTrack, setUserLastTrack,
   metaSnapshot, metaApply,
   metaMigrated, markMetaMigrated, migrateLegacyMeta, clearLibMeta,
   getRemote, setRemote, migrate
