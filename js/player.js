@@ -712,10 +712,19 @@
     if (document.visibilityState === 'hidden') saveProgress(true);
   });
 
-  function restoreLast() {
+  /* 上次收听的那一集：优先按资源库取（lastTracks[libId]）。
+     只存一份全局 lastTrackId 时，在 A 库听完切到 B 库再切回来，记的已经是 B 库那一集，
+     A 库的底栏就恢复不出来了。全局那份留着兜底（老数据、按库记录失效时用）。 */
+  function lastTrackOf(libId) {
     const s = FM.db.state();
-    if (!s.lastTrackId) return false;
-    const t = FM.lib.track(s.lastTrackId);
+    const byLib = libId && s.lastTracks ? s.lastTracks[libId] : '';
+    let t = byLib ? FM.lib.track(byLib) : null;
+    if (!t && s.lastTrackId) t = FM.lib.track(s.lastTrackId);
+    return t || null;
+  }
+
+  function restoreLast() {
+    const t = lastTrackOf(FM.lib.libId);
     if (!t) return false;
     setKind(t.kind === 'video' ? 'video' : 'audio');
     const list = FM.lib.albumTracks(t.albumId);
@@ -724,14 +733,25 @@
     index = i;
     cur = t;
     ev.emit('track', t, { restored: true });
-    ev.emit('time', 0, t.duration || 0);
+    /* 底栏直接显示上次听到的位置（不自动播放，也不会自动 seek；
+       用户点播放时 load() 自己会从 progress 接上） */
+    const p = FM.lib.progressOf(t.id);
+    ev.emit('time', (p && !p.done && p.p > 0) ? p.p : 0, t.duration || (p && p.d) || 0);
     updateSession(t);
     return true;
   }
 
   function rememberTrack(track) {
     if (!track) return;
-    persistState({ lastTrackId: track.id, lastAlbumId: track.albumId });
+    const patch = { lastTrackId: track.id, lastAlbumId: track.albumId };
+    /* 按库记一份：切库会清空播放器（stop），切回来时靠它把底栏放回来 */
+    const libId = FM.lib.libId;
+    if (libId) {
+      const map = Object.assign({}, FM.db.state().lastTracks);
+      map[libId] = track.id;
+      patch.lastTracks = map;
+    }
+    persistState(patch);
   }
   ev.on('track', rememberTrack);
   ev.on('loop', () => {});

@@ -2699,6 +2699,20 @@
     document.body.classList.toggle('has-player', !!on);
   }
 
+  /* 把这个库「上次听到的那一集」放回底栏（不自动播放）。
+     启动和切换资源库两条路都走它：切库时 P.stop() 会清空当前曲目，
+     以前切回来就再也不恢复，底栏一直是空的，看着像播放器丢了。
+     幂等：已有当前曲目（用户正在听 / 刚点了播放）就不覆盖。 */
+  function restorePlayerBar() {
+    if (P.current) return false;
+    try {
+      /* 不要再手动 paintTrack：restoreLast 会 emit 'track'，界面自己画；
+         多补一次反而把底栏里刚恢复出来的进度（paintTime 0）又抹成 0:00 */
+      if (P.restoreLast()) return true;
+    } catch (e) { console.warn('[ui] 恢复上次播放失败', e); }
+    return false;
+  }
+
   /* 只刷「心」相关的节点：播放条/全屏页的收藏键、专辑的「已收藏」tag、底部专辑卡的心。
      切收藏绝不能走整个 paintTrack —— 那里会重画封面、把进度条 paintTime(0,…) 归零，
      看着就像进度条被刷了一遍。 */
@@ -4104,6 +4118,8 @@
       resetView();
       await enterLib({});
       renderAll();
+      /* 切库会 P.stop() 清空播放器：回到这个库时把上次听到的那集放回底栏（不自动播放） */
+      restorePlayerBar();
       await endLibSwitch(seq, started);
       toast('已切换到「' + lib.name + '」');
     } catch (e) {
@@ -4427,6 +4443,7 @@
     init, renderAll, flushBootRender, paintTrack, syncMode, downloadsChanged,
     autoRescan, runScan, enterLib, switchLib, addLibFlow, needRescan, syncScanIfNewer,
     openLibMenu, openLibDrawer, renderStat, renderWelcome, renderBrokenLib,
+    restorePlayerBar,
     toast, openSheet, closeSheet,
     get refs() { return refs; }
   };

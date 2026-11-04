@@ -273,12 +273,7 @@
        这时 hasLib 为 false，库要等 FM.fs.load() 之后才就绪，这次必然落空；
        所以库就绪时（ready）还要再补一次，否则底栏会一直空着，看着像播放器丢了。
        幂等：已经有当前曲目（用户已经点了播放）就不覆盖。 */
-    function restoreLastTrack() {
-      if (FM.player.current) return;
-      try {
-        if (FM.player.restoreLast()) FM.ui.paintTrack(FM.player.current);
-      } catch (e) { console.warn('[boot] 恢复上次播放失败', e); }
-    }
+    function restoreLastTrack() { FM.ui.restorePlayerBar(); }
     if (hasLib) restoreLastTrack();
 
     /* 后台补完封面：重读索引，卡片换成真封面，界面不闪 */
