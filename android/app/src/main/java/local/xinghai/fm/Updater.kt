@@ -80,7 +80,26 @@ object Updater {
         if (appCtx != null) return
         appCtx = c.applicationContext
         restore()
+        /* 已经装上去了（重启后版本对上了）：这份 APK 留着只会占空间 */
+        if (state == READY && version.isNotEmpty() && expectedCode() in 1..appCode(c)) {
+            runCatching { File(currentPath).delete() }
+            state = IDLE
+            reason = ""
+            version = ""
+            currentPath = ""
+            loaded = 0
+            total = 0
+        }
     }
+
+    private fun appCode(c: Context): Long = try {
+        val info = c.packageManager.getPackageInfo(c.packageName, 0)
+        if (Build.VERSION.SDK_INT >= 28) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION") info.versionCode.toLong()
+        }
+    } catch (e: Exception) { 0L }
 
     /* 进程重启后把上次下好的包认回来：用户点开设置就能直接「安装」 */
     private fun restore() {
@@ -345,6 +364,9 @@ object Updater {
                 push(true)
                 return
             } catch (e: Cancelled) {
+                /* 用户取消：半截文件不留（cancel() 那边也在删，这边兜住「删的时候还在写」的竞态） */
+                runCatching { tmp.delete() }
+                runCatching { meta.delete() }
                 return
             } catch (e: Auth) {
                 if (seq.get() == aid) { call = null; fail("auth") }

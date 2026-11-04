@@ -730,6 +730,14 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .menu-item.tall .menu-right{margin-left:auto;align-self:center}
 /* 倍速菜单：紧凑的档位列表，当前档高亮打勾（参考 B 站播放器） */
 .menu-right{display:flex;margin-left:auto;color:var(--cyan)}
+/* 单行右侧小字（如「检查更新」后面的版本号/下载进度）：不换行、不被挤压 */
+.menu-tail{
+  flex:none;margin-left:auto;font-size:11px;letter-spacing:.02em;color:var(--dim);
+  white-space:nowrap;font-variant-numeric:tabular-nums;
+}
+.upd-item{flex-wrap:nowrap}
+.upd-item > span{white-space:nowrap}
+.upd-item .menu-tail{color:var(--cyan)}
 .menu-pop.menu-rate{min-width:0;padding:4px;border-radius:12px}
 .menu-rate .menu-item{
   height:30px;padding:0 9px 0 12px;gap:16px;border-radius:8px;

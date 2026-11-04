@@ -333,7 +333,8 @@
     const el = U.el('div', { class: 'menu-pop' + (o.cls ? ' ' + o.cls : '') });
     items.forEach(function (it) {
       if (it.sep) { el.appendChild(U.el('div', { class: 'menu-sep' })); return; }
-      /* head：一小段分组标题（比如「目录结构」）；sub：主标题下面那行弱化的括号说明 */
+      /* head：一小段分组标题（比如「目录结构」）；sub：主标题下面那行弱化的括号说明；
+         rightText：同一行右侧的小字（如更新的版本号），不占第二行 */
       if (it.head) { el.appendChild(U.el('div', { class: 'menu-head', text: it.head })); return; }
       const b = U.el('button', { class: 'menu-item' + (it.danger ? ' danger' : '') + (it.sub ? ' tall' : '') + (it.cls ? ' ' + it.cls : '') });
       b.innerHTML = (o.noIcon ? '' : icon(it.icon || 'chevron')) +
@@ -341,7 +342,8 @@
           ? '<span class="menu-main"><span class="menu-label">' + esc(it.label) + '</span>' +
             '<span class="menu-sub">（' + esc(it.sub) + '）</span></span>'
           : '<span>' + esc(it.label) + '</span>') +
-        (it.right ? '<span class="menu-right">' + icon(it.right) + '</span>' : '');
+        (it.right ? '<span class="menu-right">' + icon(it.right) + '</span>' : '') +
+        (it.rightText != null ? '<span class="menu-right menu-tail">' + esc(it.rightText) + '</span>' : '');
       b.addEventListener('click', function () { closeMenu(); it.onClick && it.onClick(); });
       el.appendChild(b);
     });
@@ -3541,15 +3543,12 @@
       items.push({ label: '服务器设置…', icon: 'chevron', onClick: function () { FM.android.openSettings(); } });
     }
     items.push({ sep: true });
-    /* 在线更新只在 APK 里有（下载/安装都得壳配合）；菜单项下面那行先占位，
-       静默查到新版本后直接改文案，不用重开菜单 */
+    /* 在线更新只在 APK 里有（下载/安装都得壳配合）。版本号走右侧小字、不占第二行；
+       静默查到新版本后直接改那行字，不用重开菜单 */
     if (FM.android && FM.android.native) {
       items.push({
-        label: '检查更新', icon: 'refresh', cls: 'upd-item', sub: updMenuSub(),
-        onClick: function () {
-          if (!FM.android.canUpdate) { toast('当前版本不支持在线更新，请手动安装最新 APK', 'warn'); return; }
-          openUpdateDialog();
-        }
+        label: '检查更新', icon: 'refresh', cls: 'upd-item', rightText: updMenuTail(),
+        onClick: onUpdateMenu
       });
     }
     items.push({ label: '关于星海 FM', icon: 'headphones', onClick: openAbout });
@@ -3597,25 +3596,34 @@
     return Math.max(0, Math.min(100, Math.floor((st.loaded || 0) * 100 / total)));
   }
 
-  /* 菜单项那行小字：版本号 / 下载中 / 待安装，按当前状态给最有用的一句 */
-  function updMenuSub() {
-    if (!FM.android.canUpdate) return '请手动安装新包';
+  /* 进度里的小数位有意义（4.6 MB 和 5 MB 差别不小），fmtSize 只给整数就用这套 */
+  function updSize(n) {
+    if (!n) return '—';
+    const mb = n / 1048576;
+    if (mb >= 1) return mb.toFixed(1) + ' MB';
+    return Math.max(1, Math.round(n / 1024)) + ' KB';
+  }
+
+  /* 菜单项右侧那行小字：版本号 / 下载中 / 待安装，单行显示不折行 */
+  function updMenuTail() {
+    if (!FM.android.canUpdate) return '需手动更新';
     const s = upd.info, st = upd.state;
-    if (st && s && st.version === s.version) {
+    const fresh = updHasNew();
+    if (fresh && st && st.version === s.version) {
       if (st.state === 'downloading') return '下载中 ' + updPct(st) + '%';
       if (st.state === 'ready' || st.state === 'installing' || st.state === 'need_permission') return '待安装';
     }
-    if (updHasNew()) return 'v' + s.version;
-    if (s && s.has === false) return '无可用的安装包';
+    if (fresh) return 'v' + s.version;
+    if (s && s.has === false) return '无安装包';
     if (s) return '已是最新';
-    return '检查中…';
+    return '';
   }
 
   function updPaintMenu() {
     const el = updMenu;
     if (!el || !el.isConnected) return;
-    const sub = el.querySelector('.upd-item .menu-sub');
-    if (sub) sub.textContent = '（' + updMenuSub() + '）';
+    const tail = el.querySelector('.upd-item .menu-tail');
+    if (tail) tail.textContent = updMenuTail();
   }
 
   function updFetch(force) {
@@ -3636,7 +3644,8 @@
   function updPreDownload(s) {
     if (!s || !s.has) return;
     const st = upd.state;
-    if (st && st.version === s.version && st.state !== 'idle' && st.state !== 'failed') return;
+    /* 下载中/已下好就别重复起任务；失败的也静默留着，等用户点重试 */
+    if (st && st.version === s.version && st.state !== 'idle') return;
     let wifi = false;
     try { wifi = !!FM.android.isWifi(); } catch (e) {}
     if (!wifi) return;
@@ -3678,11 +3687,44 @@
     });
   }
 
+  function toastLatest(s) {
+    if (s == null) { toast('暂时无法检查更新', 'warn'); return; }
+    if (s.has === false) { toast('服务器上没有可用的安装包', 'warn'); return; }
+    toast('已是最新版本 v' + appVersion());
+  }
+
+  /* 点菜单项：手动检查总是回源（服务器上刚放了新包也能立刻看到），
+     但本地服务器通常几十毫秒就回来——先弹「检查中」再关掉会闪一下，
+     所以给 300ms 宽限：结果先到就只弹 toast（或只弹下载框），不闪。 */
+  function onUpdateMenu() {
+    if (!FM.android.canUpdate) {
+      toast('当前版本不支持在线更新，请手动安装最新 APK', 'warn');
+      return;
+    }
+    /* 缓存里已经有新版：不用再等，直接弹（里面能看进度/直接安装） */
+    if (upd.info && upd.at && Date.now() - upd.at < 60000 && updHasNew()) {
+      openUpdateDialog();
+      return;
+    }
+    let timer = setTimeout(function () {
+      timer = null;
+      openUpdateDialog();      /* 慢到这么久还没结果：先给个「正在检查」的框 */
+    }, 300);
+    updFetch(true).then(function (s) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      updPullState();
+      if (updHasNew()) { openUpdateDialog(); return; }
+      if (upd.dialog) return;  /* 检查框已经弹出来了：让它自己的收尾逻辑处理 */
+      toastLatest(s);
+    });
+  }
+
   const UPD_REASON = {
     network: '下载失败，请检查网络后重试',
     space: '手机存储空间不足，清理后再试',
     checksum: '安装包不完整，请重试',
     auth: '登录已过期，请重新登录',
+    bad: '服务器上的安装包已不可用，请稍后重试',
     bad_apk: '安装包校验失败，请重新下载',
     signature: '安装包签名与当前 App 不一致，请卸载后重装',
     io: '安装包打不开，请重新下载'
@@ -3727,7 +3769,8 @@
 
     function phaseOf() {
       const s = upd.info || {}, st = upd.state || {};
-      if (!s.version) return 'checking';
+      /* 服务端明确回了「没有包」也算查完，别一直停在「正在检查」 */
+      if (!s.version) return s.has === false ? 'latest' : 'checking';
       if (!updHasNew()) return 'latest';
       if (!st.version || st.version !== s.version) return 'idle';
       const k = st.state;
@@ -3756,18 +3799,21 @@
       verBox.innerHTML = s.version
         ? '<b>v' + esc(s.version) + '</b><span>当前 v' + esc(current) + '</span>'
         : '<b>正在检查…</b><span>当前 v' + esc(current) + '</span>';
-      sizeBox.textContent = total > 0 ? fmtS(total) : '';
+      sizeBox.textContent = total > 0 ? updSize(total) : '';
       bar.style.width = (phase === 'checking' ? 0 : Math.max(phase === 'ready' ? 100 : pct, phase === 'download' ? 2 : 0)) + '%';
 
       note.textContent = '';
       if (phase === 'checking') { left.textContent = '正在检查更新…'; right.textContent = ''; }
-      else if (phase === 'latest') { left.textContent = '已是最新版本 v' + esc(current); right.textContent = ''; }
+      else if (phase === 'latest') {
+        left.textContent = s.has === false ? '服务器上没有可用的安装包' : '已是最新版本 v' + current;
+        right.textContent = '';
+      }
       else if (phase === 'download') {
         left.textContent = '下载中 ' + pct + '%';
-        right.textContent = fmtS(loaded) + ' / ' + fmtS(total);
+        right.textContent = updSize(loaded) + ' / ' + updSize(total);
       } else if (phase === 'ready') {
         left.textContent = st.state === 'installing' ? '已交给系统安装器…' : '下载完成，点「安装」覆盖升级';
-        right.textContent = fmtS(total);
+        right.textContent = updSize(total);
         if (st.state !== 'installing') note.textContent = '安装完成后 App 会自动重启';
       } else if (phase === 'need') {
         left.textContent = '需要允许「安装未知应用」';
@@ -3778,7 +3824,7 @@
         right.textContent = '';
       } else {
         left.textContent = '准备下载';
-        right.textContent = total > 0 ? fmtS(total) : '';
+        right.textContent = total > 0 ? updSize(total) : '';
       }
 
       const acts = [];
@@ -3811,10 +3857,16 @@
       checkUpdate({ force: true }).then(function (s) {
         if (!modal.mask.isConnected) return;
         if (!updHasNew()) {
-          if (s && s.has === false) toast('服务器上没有可用的安装包', 'warn');
-          else if (!s) toast('暂时无法检查更新', 'warn');
-          else toast('已是最新版本 v' + current);
-          modal.close();
+          /* 不自动关窗：网络慢时「弹一下就消失」很跳，留着给用户看一眼结论 */
+          if (!s) {
+            left.textContent = '暂时无法检查更新，请检查网络后重试';
+            right.textContent = '';
+            bar.style.width = '0';
+            note.textContent = '';
+            setActions([{ label: '关闭', cls: 'btn-primary' }]);
+            return;
+          }
+          paint();
           return;
         }
         updPullState();
