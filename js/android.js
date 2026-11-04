@@ -96,6 +96,14 @@
     try { NATIVE.setFullscreen(next); } catch (e) {}
   }
 
+  /* 播放详情页锁竖屏：只有音频那一页要禁横屏。
+     视频走原生播放器、列表页/下载页都照旧跟随系统；
+     旧 APK 没有这个桥方法（网页热更新、壳不更新），调用直接忽略 */
+  function lockPortrait(on) {
+    if (typeof NATIVE.lockPortrait !== 'function') return;
+    try { NATIVE.lockPortrait(!!on); } catch (e) {}
+  }
+
   /* 曲目列表 → 壳里的下载队列。返回交给原生的条数；0 表示没提交（桌面/浏览器没这能力），
      真正入队几条由原生判定（已下载/已在队列的会跳过），结果由原生的 toast 告诉用户 */
   function download(list) {
@@ -231,6 +239,17 @@
     return false;
   }
 
+  /* 原生推来的下载进度/状态 → 更新弹窗与菜单项。网页还没就绪时推的那几条先存着，
+     弹窗打开时会再用 updateState() 主动拉一次，不会漏状态。 */
+  let lastUpdate = null;
+  function onUpdateProgress(json) {
+    let data = null;
+    try { data = json ? JSON.parse(json) : null; } catch (e) {}
+    if (!data || !data.state) return;
+    lastUpdate = data;
+    try { if (FM.ui && FM.ui.updateProgress) FM.ui.updateProgress(data); } catch (e) {}
+  }
+
   FM.android = {
     native: true,
     canDownload: true,
@@ -249,15 +268,42 @@
     onChange,
     syncMedia,
     mediaAction,
+    onUpdateProgress,
     back,
     fullscreen,
+    lockPortrait,
     playVideo,
     onNativeVideo,
     get fullscreenOn() { return document.body.classList.contains('app-fs'); },
     openSettings: function () { try { NATIVE.openSettings(); } catch (e) {} },
     openDownloads: function () { try { NATIVE.openDownloads(); } catch (e) {} },
     base: function () { try { return NATIVE.baseUrl(); } catch (e) { return ''; } },
-    version: function () { try { return NATIVE.version(); } catch (e) { return ''; } }
+    version: function () { try { return NATIVE.version(); } catch (e) { return ''; } },
+
+    /* ── 在线更新 ──
+       下载/校验/安装都在壳里，网页只负责展示：进度靠原生回调 onUpdateProgress 推回来。
+       旧 APK 没有这些桥方法（网页是热更新的，壳不是），canUpdate 用来降级提示。 */
+    get canUpdate() { return typeof NATIVE.downloadApk === 'function'; },
+    downloadApk: function (url, version, etag) {
+      if (typeof NATIVE.downloadApk !== 'function') return false;
+      try { NATIVE.downloadApk(url || '', version || '', etag || ''); } catch (e) { return false; }
+      return true;
+    },
+    installApk: function () {
+      if (typeof NATIVE.installApk !== 'function') return false;
+      try { NATIVE.installApk(); } catch (e) { return false; }
+      return true;
+    },
+    cancelUpdate: function () {
+      try { if (typeof NATIVE.cancelDownload === 'function') NATIVE.cancelDownload(); } catch (e) {}
+    },
+    updateState: function () {
+      try { return typeof NATIVE.updateState === 'function' ? (NATIVE.updateState() || '') : ''; } catch (e) { return ''; }
+    },
+    /* 不计费网络（Wi-Fi/以太网）：菜单查到新版时据此决定要不要静默预下载 */
+    isWifi: function () {
+      try { return typeof NATIVE.isWifi === 'function' ? !!NATIVE.isWifi() : false; } catch (e) { return false; }
+    }
   };
 
   /* 播放进度 → 锁屏/通知栏进度条（节流到 1s；seek 大跳变或切集后首帧立即推） */
@@ -306,4 +352,10 @@
   }, 1200);
   /* 已下载清单在首帧前拉一次，曲目列表第一眼就带标记 */
   refreshDownloads();
+
+  /* 启动时静默查一次更新：有新版本弹一次轻提示（同一版本只提示一次），
+     Wi-Fi 下顺带把包预下载好。放 5 秒后再发，别跟首屏和播放队列抢带宽。 */
+  setTimeout(function () {
+    try { if (FM.ui && FM.ui.checkUpdate) FM.ui.checkUpdate({ notify: true }); } catch (e) {}
+  }, 5000);
 })(window.FM);

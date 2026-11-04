@@ -57,4 +57,6 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    /* 在线更新：把私有目录里的 APK 交给系统安装器，需要 FileProvider */
+    implementation("androidx.core:core:1.13.1")
 }

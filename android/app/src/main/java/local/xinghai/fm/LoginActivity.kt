@@ -11,6 +11,7 @@
 package local.xinghai.fm
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
@@ -86,6 +87,11 @@ class LoginActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = BG
         window.navigationBarColor = BG
+        /* 覆盖安装完被 UpdateReceiver 拉起来：界面已经回来了，把「点击打开」通知收掉 */
+        runCatching {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager)
+                ?.cancel(UpdateReceiver.NOTI_ID)
+        }
         val base = prefs().getString("base", "").orEmpty()
         val token = prefs().getString("token", "").orEmpty()
         /* 登录过：一进来就是 slogan 页，别让登录表单闪一下（原来先 buildUi 再校验，

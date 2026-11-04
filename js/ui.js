@@ -363,6 +363,7 @@
       document.addEventListener('click', onDocClick);
       menuOff = function () { document.removeEventListener('click', onDocClick); };
     }, 0);
+    return el;
   }
 
   function openModal(opt) {
@@ -2568,8 +2569,7 @@
     if (el.classList.contains('sheet-cover')) {
       const c = el.querySelector('.sc-char');
       if (c) c.textContent = char;
-      const d = refs.sheetDisc;
-      if (d) { const dc = d.querySelector('.disc-char'); if (dc) dc.textContent = char.charAt(0); }
+      /* 无封面的黑胶只画盘面，盘心不写首字 */
       if (refs.sheet) refs.sheet.classList.toggle('no-cover', !(album && album.cover));
     } else {
       const sp = el.querySelector('span');
@@ -2658,6 +2658,10 @@
     refs.sheet.classList.toggle('is-video', isVideo);
     refs.vStage.classList.toggle('vhidden', !isVideo);
     if (refs.pbKind) refs.pbKind.hidden = !isVideo;
+    /* 竖屏锁只跟「播放页开着 + 当前是音频」有关：切到视频就放开，视频由原生播放器管横竖 */
+    if (FM.android && FM.android.lockPortrait) {
+      FM.android.lockPortrait(!isVideo && refs.sheet.classList.contains('open'));
+    }
     if (isVideo) {
       FM.viz.stop();
       wakeUi();
@@ -3260,6 +3264,8 @@
     /* 盖住背景时把背景动画层停掉：它们每帧都在重算，会把视频拖到几帧 */
     document.body.classList.add('sheet-open');
     if (P.kind === 'video') { wakeUi(); return; }
+    /* 音频播放详情页在壳里锁竖屏：这一页布局只按竖屏排，横过来会挤成一团 */
+    if (FM.android && FM.android.lockPortrait) FM.android.lockPortrait(true);
     FM.viz.attach();
     FM.viz.resume();
     FM.viz.start();
@@ -3267,6 +3273,8 @@
 
   function closeSheet() {
     if (FM.android && FM.android.fullscreenOn) FM.android.fullscreen(false);
+    /* 收起播放页就放开方向锁，列表页照旧跟随系统重力感应 */
+    if (FM.android && FM.android.lockPortrait) FM.android.lockPortrait(false);
     setCinema(false);
     hideUiNow();
     refs.sheet.classList.remove('open');
@@ -3533,12 +3541,292 @@
       items.push({ label: '服务器设置…', icon: 'chevron', onClick: function () { FM.android.openSettings(); } });
     }
     items.push({ sep: true });
+    /* 在线更新只在 APK 里有（下载/安装都得壳配合）；菜单项下面那行先占位，
+       静默查到新版本后直接改文案，不用重开菜单 */
+    if (FM.android && FM.android.native) {
+      items.push({
+        label: '检查更新', icon: 'refresh', cls: 'upd-item', sub: updMenuSub(),
+        onClick: function () {
+          if (!FM.android.canUpdate) { toast('当前版本不支持在线更新，请手动安装最新 APK', 'warn'); return; }
+          openUpdateDialog();
+        }
+      });
+    }
     items.push({ label: '关于星海 FM', icon: 'headphones', onClick: openAbout });
     /* 退出登录只对浏览器直连服务器有意义（与 syncMode() 的判定保持一致） */
     if (!FM.fs.desktop && !FM.android && FM.fs.serverReached) {
       items.push({ label: '退出登录', icon: 'logout', danger: true, onClick: function () { location.href = '/__auth/logout'; } });
     }
-    openMenu(refs.btnSettings, items);
+    updMenu = openMenu(refs.btnSettings, items);
+    if (FM.android && FM.android.native && FM.android.canUpdate) {
+      /* 展开菜单就查一次（60 秒内复用上次结果），回来后只改那行小字 */
+      checkUpdate({}).then(updPaintMenu);
+    }
+  }
+
+  /* ── 在线更新（只有 APK 有）─────────────────────────────
+     更新源就是手机连的这台服务器：/api/app/version 扫 out/ 下最新的 APK。
+     展开设置菜单静默问一次，有新版本把版本号写在菜单项上；不计费网络下顺手预下载，
+     点开弹窗时可能已经是「安装」。下载/校验/安装都在壳里，网页只管展示与文案。 */
+  const upd = {
+    info: null,      /* /api/app/version 的结果 */
+    at: 0,           /* 上次查询时间：60 秒内复用，别每次开菜单都请求 */
+    fetching: null,  /* 进行中的请求（连点菜单不重复发） */
+    state: null,     /* 原生下载状态（updateState / onUpdateProgress） */
+    dialog: null     /* 打开着的更新弹窗 */
+  };
+  let updMenu = null;
+
+  function updCode(v) {
+    const p = String(v || '').split('.');
+    return (parseInt(p[0], 10) || 0) * 10000 + (parseInt(p[1], 10) || 0) * 100 + (parseInt(p[2], 10) || 0);
+  }
+
+  /* 服务端版本必须严格大于当前壳版本才算更新：
+     低版本装不上去（INSTALL_FAILED_VERSION_DOWNGRADE），别去撞那个错 */
+  function updHasNew() {
+    const s = upd.info;
+    if (!s || !s.has || !s.code) return false;
+    const cur = updCode(appVersion());
+    return cur > 0 && s.code > cur;
+  }
+
+  function updPct(st) {
+    const total = st && st.total > 0 ? st.total : 0;
+    if (!total) return 0;
+    return Math.max(0, Math.min(100, Math.floor((st.loaded || 0) * 100 / total)));
+  }
+
+  /* 菜单项那行小字：版本号 / 下载中 / 待安装，按当前状态给最有用的一句 */
+  function updMenuSub() {
+    if (!FM.android.canUpdate) return '请手动安装新包';
+    const s = upd.info, st = upd.state;
+    if (st && s && st.version === s.version) {
+      if (st.state === 'downloading') return '下载中 ' + updPct(st) + '%';
+      if (st.state === 'ready' || st.state === 'installing' || st.state === 'need_permission') return '待安装';
+    }
+    if (updHasNew()) return 'v' + s.version;
+    if (s && s.has === false) return '无可用的安装包';
+    if (s) return '已是最新';
+    return '检查中…';
+  }
+
+  function updPaintMenu() {
+    const el = updMenu;
+    if (!el || !el.isConnected) return;
+    const sub = el.querySelector('.upd-item .menu-sub');
+    if (sub) sub.textContent = '（' + updMenuSub() + '）';
+  }
+
+  function updFetch(force) {
+    if (!(FM.android && FM.android.canUpdate)) return Promise.resolve(null);
+    const now = Date.now();
+    if (!force && upd.info && now - upd.at < 60000) return Promise.resolve(upd.info);
+    if (upd.fetching) return upd.fetching;
+    upd.fetching = fetch('/api/app/version', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (d) { upd.info = d || null; upd.at = Date.now(); return upd.info; })
+      .catch(function () { return upd.info; })
+      .then(function (d) { upd.fetching = null; return d; });
+    return upd.fetching;
+  }
+
+  /* 静默预下载：查到新版且在不计费网络（Wi-Fi / 以太网）上就先下好。
+     失败不打扰用户，状态留在壳里，点开弹窗看得见、可重试。 */
+  function updPreDownload(s) {
+    if (!s || !s.has) return;
+    const st = upd.state;
+    if (st && st.version === s.version && st.state !== 'idle' && st.state !== 'failed') return;
+    let wifi = false;
+    try { wifi = !!FM.android.isWifi(); } catch (e) {}
+    if (!wifi) return;
+    FM.android.downloadApk(s.url, s.version, s.etag || '');
+  }
+
+  /* 原生状态 → 网页。下载中每 300ms 一条，弹窗和菜单项跟着刷 */
+  function updateProgress(data) {
+    if (!data || !data.state) return;
+    upd.state = data;
+    updPaintMenu();
+    if (upd.dialog) upd.dialog.paint();
+  }
+
+  function updPullState() {
+    try {
+      const raw = FM.android.updateState();
+      const d = raw ? JSON.parse(raw) : null;
+      if (d && d.state) upd.state = d;
+    } catch (e) {}
+  }
+
+  /* 启动 / 展开菜单共用：查到新版可选弹一次轻提示（同一版本只提示一次） */
+  function checkUpdate(opts) {
+    const o = opts || {};
+    if (!(FM.android && FM.android.canUpdate)) return Promise.resolve(null);
+    return updFetch(!!o.force).then(function (s) {
+      updPullState();
+      if (!updHasNew()) return s;
+      updPreDownload(s);
+      if (o.notify) {
+        try {
+          if (localStorage.getItem('fm_upd_notified') === s.version) return s;
+          localStorage.setItem('fm_upd_notified', s.version);
+        } catch (e) {}
+        toast('发现新版本 v' + s.version + '，设置 → 检查更新');
+      }
+      return s;
+    });
+  }
+
+  const UPD_REASON = {
+    network: '下载失败，请检查网络后重试',
+    space: '手机存储空间不足，清理后再试',
+    checksum: '安装包不完整，请重试',
+    auth: '登录已过期，请重新登录',
+    bad_apk: '安装包校验失败，请重新下载',
+    signature: '安装包签名与当前 App 不一致，请卸载后重装',
+    io: '安装包打不开，请重新下载'
+  };
+
+  /* ── 更新弹窗：检查中 / 下载中 / 待安装 / 需要权限 / 失败 都在同一个框里换按钮 ── */
+  function openUpdateDialog() {
+    if (upd.dialog) { upd.dialog.paint(); return; }
+    const current = appVersion();
+    const body = U.el('div', { class: 'upd-box' });
+    const verBox = U.el('div', { class: 'upd-ver' });
+    const sizeBox = U.el('span', { class: 'upd-size' });
+    const bar = U.el('i');
+    const left = U.el('span');
+    const right = U.el('span');
+    const note = U.el('p', { class: 'upd-note', text: '' });
+    body.appendChild(U.el('div', { class: 'upd-head' }, [verBox, sizeBox]));
+    body.appendChild(U.el('div', { class: 'upd-track' }, [bar]));
+    body.appendChild(U.el('div', { class: 'upd-meta' }, [left, right]));
+    body.appendChild(note);
+
+    const modal = openModal({
+      title: '检查更新',
+      body: body,
+      actions: [],
+      onClose: function () { if (upd.dialog && upd.dialog.mask === modal.mask) upd.dialog = null; }
+    });
+    const foot = modal.box.querySelector('.modal-foot');
+
+    function setActions(list) {
+      foot.innerHTML = '';
+      list.forEach(function (a) {
+        const b = U.el('button', { class: 'btn ' + (a.cls || ''), text: a.label });
+        b.onclick = function () {
+          let keep = false;
+          if (a.onClick) keep = a.onClick() === false;
+          if (!keep) modal.close();
+        };
+        foot.appendChild(b);
+      });
+    }
+
+    function phaseOf() {
+      const s = upd.info || {}, st = upd.state || {};
+      if (!s.version) return 'checking';
+      if (!updHasNew()) return 'latest';
+      if (!st.version || st.version !== s.version) return 'idle';
+      const k = st.state;
+      if (k === 'downloading') return 'download';
+      if (k === 'ready' || k === 'installing') return 'ready';
+      if (k === 'need_permission') return 'need';
+      if (k === 'failed') return 'error';
+      return 'idle';
+    }
+
+    function startDownload() {
+      const s = upd.info;
+      if (!s || !s.version) return false;
+      FM.android.downloadApk(s.url, s.version, s.etag || '');
+      paint();
+      return false;
+    }
+
+    function paint() {
+      const s = upd.info || {}, st = upd.state || {};
+      const phase = phaseOf();
+      const total = phase === 'checking' ? 0 : ((st.version === s.version && st.total > 0) ? st.total : (s.size || 0));
+      const loaded = phase === 'ready' ? total : (st.version === s.version ? (st.loaded || 0) : 0);
+      const pct = phase === 'ready' ? 100 : updPct(st);
+
+      verBox.innerHTML = s.version
+        ? '<b>v' + esc(s.version) + '</b><span>当前 v' + esc(current) + '</span>'
+        : '<b>正在检查…</b><span>当前 v' + esc(current) + '</span>';
+      sizeBox.textContent = total > 0 ? fmtS(total) : '';
+      bar.style.width = (phase === 'checking' ? 0 : Math.max(phase === 'ready' ? 100 : pct, phase === 'download' ? 2 : 0)) + '%';
+
+      note.textContent = '';
+      if (phase === 'checking') { left.textContent = '正在检查更新…'; right.textContent = ''; }
+      else if (phase === 'latest') { left.textContent = '已是最新版本 v' + esc(current); right.textContent = ''; }
+      else if (phase === 'download') {
+        left.textContent = '下载中 ' + pct + '%';
+        right.textContent = fmtS(loaded) + ' / ' + fmtS(total);
+      } else if (phase === 'ready') {
+        left.textContent = st.state === 'installing' ? '已交给系统安装器…' : '下载完成，点「安装」覆盖升级';
+        right.textContent = fmtS(total);
+        if (st.state !== 'installing') note.textContent = '安装完成后 App 会自动重启';
+      } else if (phase === 'need') {
+        left.textContent = '需要允许「安装未知应用」';
+        right.textContent = '';
+        note.textContent = '开启后返回，再点一次安装';
+      } else if (phase === 'error') {
+        left.textContent = UPD_REASON[st.reason] || '下载失败，请重试';
+        right.textContent = '';
+      } else {
+        left.textContent = '准备下载';
+        right.textContent = total > 0 ? fmtS(total) : '';
+      }
+
+      const acts = [];
+      if (phase === 'latest') acts.push({ label: '知道了', cls: 'btn-primary' });
+      else if (phase === 'download') acts.push({ label: '取消', onClick: function () { FM.android.cancelUpdate(); } });
+      else if (phase === 'idle') acts.push({ label: '下载', cls: 'btn-primary', onClick: startDownload });
+      else if (phase === 'ready') {
+        if (st.state === 'installing') {
+          acts.push({ label: '关闭' });
+        } else {
+          acts.push({ label: '稍后' });
+          acts.push({ label: '安装', cls: 'btn-primary', onClick: function () { FM.android.installApk(); return false; } });
+        }
+      } else if (phase === 'need') {
+        acts.push({ label: '关闭' });
+        acts.push({ label: '去开启权限', cls: 'btn-primary', onClick: function () { FM.android.installApk(); return false; } });
+      } else if (phase === 'error') {
+        acts.push({ label: '关闭' });
+        acts.push({ label: '重试', cls: 'btn-primary', onClick: startDownload });
+      }
+      setActions(acts);
+    }
+
+    upd.dialog = { mask: modal.mask, paint: paint };
+
+    /* 已有结果就直接按状态画；没有则强制查一次（缓存可能已经过期） */
+    updPullState();
+    paint();
+    if (!upd.info || !updHasNew()) {
+      checkUpdate({ force: true }).then(function (s) {
+        if (!modal.mask.isConnected) return;
+        if (!updHasNew()) {
+          if (s && s.has === false) toast('服务器上没有可用的安装包', 'warn');
+          else if (!s) toast('暂时无法检查更新', 'warn');
+          else toast('已是最新版本 v' + current);
+          modal.close();
+          return;
+        }
+        updPullState();
+        paint();
+        const st = upd.state || {};
+        if (st.version !== s.version || st.state === 'idle') startDownload();
+        else if (st.state === 'failed') startDownload();   /* 上次失败的，点开就续传 */
+      });
+    } else {
+      const st = upd.state || {};
+      if (st.version !== upd.info.version || st.state === 'idle') startDownload();
+    }
   }
 
   /* 版本号来源三端不同：Electron 读 app 版本，APK 读壳版本，浏览器读服务端 package.json */
@@ -4848,6 +5136,7 @@
     openLibMenu, openLibDrawer, renderStat, renderWelcome, renderBrokenLib,
     restorePlayerBar, applyPrefs,
     toast, openSheet, closeSheet,
+    checkUpdate, updateProgress,
     get refs() { return refs; }
   };
 })(window.FM);

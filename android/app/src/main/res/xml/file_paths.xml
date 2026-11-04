@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 在线更新只暴露应用私有的 files/update 目录（Updater.kt 把 APK 落在这里），
+     别的目录一概不给 FileProvider，系统安装器也只能读到这一个包。 -->
+<paths>
+    <files-path name="update" path="update/" />
+</paths>

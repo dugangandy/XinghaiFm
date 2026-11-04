@@ -253,18 +253,10 @@
   <div class="sheet-glow" id="sheetGlow"></div>
   <div class="sheet-art" id="sheetArt" aria-hidden="true"><img class="sheet-art-img" id="sheetArtImg" alt=""></div>
   <div class="sheet-art-veil" aria-hidden="true"></div>
-  <div class="sheet-disc" id="sheetDisc" aria-hidden="true">
-    <div class="disc-vinyl">
-      <div class="disc-label"><span class="disc-char"></span></div>
-      <div class="disc-hole"></div>
-    </div>
-    <div class="disc-arm"></div>
-  </div>
   <canvas class="viz" id="viz"></canvas>
   <div class="sheet-inner">
     <header class="sheet-top">
       <button class="icon-btn" id="btnCollapse" title="收起 (Esc)"><svg class="i"><use href="#i-down"/></svg></button>
-      <span class="sheet-kicker">NOW PLAYING</span>
       <button class="icon-btn" id="btnSheetQueue" title="播放队列"><svg class="i"><use href="#i-list"/></svg></button>
     </header>
 
@@ -272,6 +264,16 @@
       <div class="sheet-cover" id="sheetCover" data-char="声">
         <span class="sc-char"></span>
         <i class="sc-ring"></i>
+      </div>
+
+      <!-- 无封面时用黑胶唱片占同一个方形位（仅移动端显示）；
+         盘心只留彩色标签和中心孔，不写首字，免得看着像一张假封面 -->
+      <div class="sheet-disc" id="sheetDisc" aria-hidden="true">
+        <div class="disc-vinyl">
+          <div class="disc-label"></div>
+          <div class="disc-hole"></div>
+        </div>
+        <div class="disc-arm"></div>
       </div>
 
       <!-- 视频模式：画面 + 浮层控件（B 站式） -->

@@ -211,7 +211,13 @@ function main() {
   const outDir = path.join(ROOT, "out");
   fs.mkdirSync(outDir, { recursive: true });
   const target = path.join(outDir, "XinghaiFM-" + version + "-" + variant + ".apk");
-  fs.copyFileSync(apk, target);
+  /* 先写 .part 再改名：serve.js 的 /api/app/version 会扫 out/ 找最新包，
+     拷贝到一半的半截文件绝不能被当成新版本推给手机。 */
+  const part = target + ".part";
+  try { fs.unlinkSync(part); } catch (e) {}
+  fs.copyFileSync(apk, part);
+  try { fs.unlinkSync(target); } catch (e) {}
+  fs.renameSync(part, target);
 
   const size = (fs.statSync(target).size / 1024 / 1024).toFixed(1);
   console.log("\n  ✓ " + path.relative(ROOT, target).replace(/\\/g, "/") + "  (" + size + " MB)\n");

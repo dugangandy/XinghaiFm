@@ -229,17 +229,18 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
     padding:calc(12px + var(--sat)) 18px calc(16px + var(--sab));
     gap:8px;justify-content:flex-start;
   }
+  /* 沉浸式封面：封面图从屏幕顶端铺下来、顶栏压在图上，标题落在封面下沿之后 */
   .sheet-top{position:static;margin-bottom:calc(var(--art-h) - 50px)}
   .sheet-art{display:block;height:var(--art-h)}
   .sheet-art-veil{display:block}
   .sheet-stage{flex:none;margin:0}
   /* 音频模式用沉浸式封面，原封面卡片不再单独显示 */
   .sheet:not(.is-video) .sheet-cover{display:none}
-  .sheet-cover{width:min(66vw,34vh);border-radius:20px}
-  /* 无封面：唱片定格在封面区正中，position:fixed 不占流式高度（不影响下方标题/进度/控制按钮） */
+  /* 无封面：唱片居中落在沉浸式封面区里，跟上方顶栏、下方标题都留出空档；
+     fixed 定位不占流式高度，不会把标题/进度/控制按钮往下推 */
   .sheet.no-cover:not(.is-video) .sheet-disc{
     display:block;position:fixed;left:50%;top:calc(var(--art-h) * .5);
-    transform:translate(-50%,-50%);width:min(66vw,34vh);z-index:1;
+    transform:translate(-50%,-50%);width:min(60vw,31vh);
   }
   .sc-char{font-size:clamp(40px,9vh,64px)}
 
@@ -330,17 +331,26 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
      用 visibility 而不是 display: 留着占位，NOW PLAYING 才还是正中间 */
   .sheet-top #btnSheetQueue{visibility:hidden;pointer-events:none}
 
-  /* 底部专辑卡：玻璃拟态面板，整卡可点进专辑详情 */
+  /* 底部专辑卡：浮在页面底色之上的玻璃面板，整卡可点进专辑详情。
+     页面底色已经暗到 #05070e，卡面得比它亮一档、再加一圈亮边和高光，
+     不然整块跟背景糊在一起；不用 backdrop-filter，手机 GPU 扛不住 */
   .sheet-album-card.sm-only:not([hidden]){
     display:flex;align-items:center;gap:13px;
     width:100%;margin-top:auto;padding:15px 14px;min-height:96px;
     border-radius:18px;cursor:pointer;
-    background:rgba(255,255,255,.05);
-    border:1px solid rgba(255,255,255,.08);
-    box-shadow:0 14px 34px -22px #000,inset 0 1px 0 rgba(255,255,255,.05);
+    background:
+      linear-gradient(152deg,rgba(255,255,255,.135),rgba(255,255,255,.062) 48%,rgba(255,255,255,.035));
+    border:1px solid rgba(255,255,255,.17);
+    box-shadow:
+      0 20px 44px -26px rgba(0,0,0,.95),
+      inset 0 1px 0 rgba(255,255,255,.2),
+      inset 0 -20px 32px -26px rgba(0,0,0,.85);
     transition:background .2s var(--ease),transform .2s var(--ease);
   }
-  .sheet-album-card.sm-only:not([hidden]):active{transform:scale(.985);background:rgba(255,255,255,.08)}
+  .sheet-album-card.sm-only:not([hidden]):active{
+    transform:scale(.985);
+    background:linear-gradient(152deg,rgba(255,255,255,.19),rgba(255,255,255,.1) 48%,rgba(255,255,255,.06));
+  }
   .ac-cover{
     position:relative;width:56px;height:56px;flex:none;border-radius:14px;overflow:hidden;
     display:grid;place-items:center;
@@ -368,8 +378,8 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
     flex:0 1 auto;min-width:0;
     display:inline-flex;align-items:center;height:19px;padding:0 8px;
     border-radius:99px;font-size:10.5px;font-weight:500;letter-spacing:.02em;
-    color:var(--dim);background:rgba(255,255,255,.055);
-    border:1px solid rgba(255,255,255,.1);
+    color:var(--txt-2);background:rgba(255,255,255,.1);
+    border:1px solid rgba(255,255,255,.15);
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   }
   /* 专辑收藏：常驻右侧的心形图标，收藏后变实心 */
@@ -425,7 +435,15 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   }
   .sheet-top{grid-area:top;margin-bottom:0}
   .sheet-stage{grid-area:stage;margin:0;flex:none}
+  /* 横屏是左右两栏，竖屏那套「封面铺在上半屏」的沉浸式形态用不上：
+     背景只留整幅主色洗底，封面用左栏那张方形卡片 */
+  .sheet-art .sheet-art-img{display:none!important}
+  .sheet:not(.is-video):not(.no-cover) .sheet-cover{display:grid}
   .sheet-cover{width:min(46vh,230px)}
+  /* 横屏唱片放回左栏的流式位置（竖屏那套 fixed 居中在这里会飘到页面顶部） */
+  .sheet.no-cover:not(.is-video) .sheet-disc{
+    position:relative;left:auto;top:auto;transform:none;width:min(42vh,210px);
+  }
   .sheet-meta{grid-area:meta;text-align:left}
   .sheet-meta h2{font-size:clamp(18px,3.6vh,22px)}
   .sheet-meta p{margin-top:4px;font-size:11px;height:18px}

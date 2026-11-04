@@ -403,7 +403,8 @@ const MIME = {
   '.mov': 'video/quicktime',
   '.webm': 'video/webm',
   '.ogv': 'video/ogg',
-  '.flv': 'video/x-flv'
+  '.flv': 'video/x-flv',
+  '.apk': 'application/vnd.android.package-archive'
 };
 
 /* gzip：只压文本类，压过的结果按内容哈希缓存，重复请求不再压一遍 */
@@ -736,14 +737,19 @@ async function serveMedia(req, res, rel, root) {
    之前试过 private, max-age=3600 想让 seek 复用已下载区间，结果 Chrome 会把缓冲到的
    每一段都写进自己的磁盘缓存（实测播 15 秒写 22MB），盘一慢或被杀软扫一遍，
    视频就「播几秒开始转圈」。局域网/本机重新拉一遍本来就是毫秒级，换来的风险不值当。 */
-function sendRangeFile(req, res, file, st) {
+function sendRangeFile(req, res, file, st, extra) {
   res.__media = true;
-  const head = {
+  const h = extra || {};
+  const head = Object.assign({
     'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
     'accept-ranges': 'bytes',
     'cache-control': 'no-store'
-  };
-  const range = parseRange(req.headers.range, st.size);
+  }, h);
+  let range = parseRange(req.headers.range, st.size);
+  /* If-Range：客户端断点续传时会带上拿到的 ETag。文件被换过（ETag 对不上）
+     就不能再续，否则两段不同版本的字节会拼成一个坏包——整包重发。 */
+  const ifRange = String(req.headers['if-range'] || '');
+  if (range && ifRange && ifRange !== String(head.etag || '')) range = null;
   if (range === 'bad') return send(res, 416, null, Object.assign({}, head, { 'content-range': 'bytes */' + st.size }));
   if (!range) {
     res.writeHead(200, Object.assign({}, head, { 'content-length': st.size }));
@@ -770,6 +776,48 @@ async function serveTc(req, res, name) {
   try { st = await fsp.stat(file); } catch (e) { return send(res, 404, 'not found'); }
   if (!st.isFile()) return send(res, 404, 'not found');
   sendRangeFile(req, res, file, st);
+}
+
+/* ── 安卓在线更新：扫描 out/ 下的 APK ─────────────────────────
+ * 手机连的就是这台机器，没必要再引第三方更新服务：npm run dist:apk 的产物留在 out/，
+ * 这里按版本号挑最新的那个发出去。文件名白名单同时用于版本发现和下载，
+ * 避免有人顺着 out/ 读别的文件。
+ * 约定：构建脚本先写 .part 再改名（见 tools/build-apk.js），所以扫到的一定是完整包；
+ * 这里再按体积兜一道，半截文件不会当成新版本推给手机。 */
+const APP_UPDATE_DIR = path.join(APP_ROOT, 'out');
+const APK_NAME_RE = /^XinghaiFM-(\d+\.\d+\.\d+)(?:-(debug|release))?\.apk$/;
+const APK_MIN_SIZE = 100 * 1024;
+
+/* 与 android/app/build.gradle.kts 的 versionCode 公式保持一致 */
+function versionCodeOf(v) {
+  const p = String(v).split('.');
+  return (parseInt(p[0], 10) || 0) * 10000 + (parseInt(p[1], 10) || 0) * 100 + (parseInt(p[2], 10) || 0);
+}
+
+/* 取版本号最大的包（同版本 release 优先）；out/ 不存在或没有可用包时返回 null */
+async function latestApk() {
+  let names;
+  try { names = await fsp.readdir(APP_UPDATE_DIR); } catch (e) { return null; }
+  const list = [];
+  for (let i = 0; i < names.length; i++) {
+    const m = APK_NAME_RE.exec(names[i]);
+    if (m) list.push({ name: names[i], version: m[1], code: versionCodeOf(m[1]), release: m[2] === 'release' ? 1 : 0 });
+  }
+  list.sort(function (a, b) { return (b.code - a.code) || (b.release - a.release); });
+  for (let i = 0; i < list.length; i++) {
+    const it = list[i];
+    let st;
+    try { st = await fsp.stat(path.join(APP_UPDATE_DIR, it.name)); } catch (e) { continue; }
+    if (!st.isFile() || st.size < APK_MIN_SIZE) continue;
+    const mtime = Math.round(st.mtimeMs);
+    return {
+      name: it.name, version: it.version, code: it.code,
+      size: st.size, mtime: mtime,
+      /* 强 ETag：断点续传的 If-Range 比对用，弱校验不能用于范围请求 */
+      etag: '"' + st.size + '-' + mtime + '"'
+    };
+  }
+  return null;
 }
 
 /* 读文件并把内容写到响应里。
@@ -1488,6 +1536,39 @@ const server = http.createServer(async function (req, res) {
     let file;
     try { file = inside(root, rel); } catch (e) { return send(res, 403, 'forbidden'); }
     return json(res, { d: await TC.probeDuration(file) });
+  }
+
+  /* 安卓在线更新：壳拿版本号跟自己的 versionCode 比，有新版本再来下载 */
+  if (p === '/api/app/version') {
+    const apk = await latestApk();
+    if (!apk) return json(res, { has: false, version: '', code: 0, url: '' });
+    return json(res, {
+      has: true,
+      version: apk.version,
+      code: apk.code,
+      name: apk.name,
+      size: apk.size,
+      mtime: apk.mtime,
+      etag: apk.etag,
+      url: '/api/app/download?f=' + encodeURIComponent(apk.name)
+    });
+  }
+
+  /* APK 下载：文件名走白名单正则，路径再 inside 一次，避免拼出 out/ 之外的路径。
+     走 sendRangeFile（Range/206）：弱网断了壳里能接着下，不用整包重来。 */
+  if (p === '/api/app/download') {
+    const f = u.searchParams.get('f') || '';
+    if (!APK_NAME_RE.test(f)) return send(res, 404, 'not found');
+    let file;
+    try { file = inside(APP_UPDATE_DIR, f); } catch (e) { return send(res, 403, 'forbidden'); }
+    let st;
+    try { st = await fsp.stat(file); } catch (e) { return send(res, 404, 'not found'); }
+    if (!st.isFile()) return send(res, 404, 'not found');
+    return sendRangeFile(req, res, file, st, {
+      'etag': '"' + st.size + '-' + Math.round(st.mtimeMs) + '"',
+      'last-modified': new Date(st.mtimeMs).toUTCString(),
+      'content-disposition': 'attachment; filename="' + f + '"'
+    });
   }
 
   const rel = p === '/' ? 'index.html' : p.replace(/^[/]+/, '');

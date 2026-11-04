@@ -18,6 +18,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.StatFs
+import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -40,6 +41,7 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.FileProvider
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -103,6 +105,11 @@ class MainActivity : Activity() {
         askNotificationPermission()
         Dl.watch(onDlChanged)          /* 条目/状态变化 */
         Dl.watchProgress(onDlChanged)  /* 每秒的字节进度 */
+        /* 在线更新：下载状态只在原生这边，进度统一回推给网页弹窗 */
+        Updater.init(this)
+        Updater.onProgress = { json ->
+            js("window.FM && FM.android && FM.android.onUpdateProgress(" + JSONObject.quote(json) + ")")
+        }
         if (serverBase().isEmpty()) showSetup() else mountWeb()
     }
 
@@ -597,6 +604,51 @@ class MainActivity : Activity() {
         packageManager.getPackageInfo(packageName, 0).versionName ?: ""
     }.getOrDefault("")
 
+    /* ── 在线更新：调系统安装器 ──────────────────────────────
+     * 装之前先自己校验一遍（包名/版本/minSdk/签名）：
+     * 签名对不上时系统只会弹一句「应用未安装」，这里能给出人话提示。
+     * 8.0+ 还要用户允许「安装未知应用」，没开就跳过去，回来再点一次安装。 */
+    private fun installUpdate() {
+        Updater.init(this)
+        val f = Updater.currentApk()
+        if (f == null) {
+            Updater.failWith("bad_apk")
+            toast("安装包不存在，请重新下载")
+            return
+        }
+        val bad = Updater.verify(this, Updater.expectedCode())
+        if (bad != null) {
+            Updater.failWith(bad)
+            toast(if (bad == "signature") "安装包签名与当前 App 不一致，请卸载后重装" else "安装包校验失败，请重新下载")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            Updater.needPermission()
+            toast("请先允许安装未知应用")
+            runCatching {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + packageName)))
+            }
+            return
+        }
+        val uri = runCatching {
+            FileProvider.getUriForFile(this, "local.xinghai.fm.fileprovider", f)
+        }.getOrNull()
+        if (uri == null) {
+            Updater.failWith("io")
+            toast("无法读取安装包")
+            return
+        }
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        Updater.markInstalling()
+        runCatching { startActivity(intent) }.onFailure {
+            Updater.failWith("io")
+            toast("没有找到系统安装程序")
+        }
+    }
+
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
@@ -611,10 +663,14 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         web?.onResume()
+        /* 从系统安装器回来（多半是点了取消）：把「正在安装」退回「待安装」，别卡在那 */
+        Updater.backFromInstall()
     }
 
     override fun onDestroy() {
         if (current === this) current = null
+        /* 网页没了就别再往里推更新进度；下载本身在 Updater 里继续跑 */
+        Updater.onProgress = null
         /* 真正退出（返回两下 / 划掉任务）就停服务；只是按 Home 不会走到这里 */
         Dl.unwatch(onDlChanged)
         Dl.unwatchProgress(onDlChanged)
@@ -702,6 +758,18 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun setFullscreen(on: Boolean) = this@MainActivity.setFullscreen(on)
 
+        /* 播放详情页（音频）锁竖屏：只有网页里那一页要禁横屏，
+           视频走原生播放器（VideoPlayerActivity 自己管横竖），列表页也照旧跟随系统。
+           这里只是临时改 requestedOrientation，不改 Activity 的固定横竖屏属性 */
+        @JavascriptInterface
+        fun lockPortrait(on: Boolean) {
+            runOnUiThread {
+                if (appFullscreen) return@runOnUiThread     /* 网页全屏看视频时别抢方向 */
+                requestedOrientation = if (on) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+
         /* 网页点「下载」：传 [{libId,libName,album,rel,title,ext,size}]，交给下载队列 */
         @JavascriptInterface
         fun downloadTracks(json: String) {
@@ -783,5 +851,29 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun version(): String = appVersion()
+
+        /* ── 在线更新 ──
+           url 是 /api/app/version 给的站内相对路径，这里拼上 serverBase 再去下载：
+           只有同源地址才取得到 WebView 的会话 Cookie（见 Updater.run）。 */
+        @JavascriptInterface
+        fun downloadApk(url: String, version: String, etag: String) {
+            Updater.init(this@MainActivity)
+            Updater.download(serverBase(), url, version, etag)
+        }
+
+        @JavascriptInterface
+        fun cancelDownload() = Updater.cancel()
+
+        @JavascriptInterface
+        fun updateState(): String = Updater.stateJson()
+
+        /* 当前是不是不计费网络（Wi-Fi/以太网）：网页据此决定要不要静默预下载 */
+        @JavascriptInterface
+        fun isWifi(): Boolean = Updater.isWifi(this@MainActivity)
+
+        @JavascriptInterface
+        fun installApk() {
+            runOnUiThread { this@MainActivity.installUpdate() }
+        }
     }
 }
