@@ -267,13 +267,19 @@
     });
     window.addEventListener('pagehide', function () { writeMetaNow(); });
 
-    if (hasLib) {
+    /* 上次收听的那一集：恢复出来底栏才有内容（标题、进度、控制键都指着它）。
+       启动时先试一次 —— 本地索引缓存还在的话首屏就能带出播放条。
+       移动端 WebView 的存储会被系统回收（索引缓存没了但 lastTrackId 还在），
+       这时 hasLib 为 false，库要等 FM.fs.load() 之后才就绪，这次必然落空；
+       所以库就绪时（ready）还要再补一次，否则底栏会一直空着，看着像播放器丢了。
+       幂等：已经有当前曲目（用户已经点了播放）就不覆盖。 */
+    function restoreLastTrack() {
+      if (FM.player.current) return;
       try {
-        if (FM.player.restoreLast()) {
-          FM.ui.paintTrack(FM.player.current);
-        }
+        if (FM.player.restoreLast()) FM.ui.paintTrack(FM.player.current);
       } catch (e) { console.warn('[boot] 恢复上次播放失败', e); }
     }
+    if (hasLib) restoreLastTrack();
 
     /* 后台补完封面：重读索引，卡片换成真封面，界面不闪 */
     if (window.fmNative && window.fmNative.onCovers) {
@@ -327,6 +333,8 @@
         if (r.missing) { FM.ui.renderBrokenLib(); reveal(); return; }
         const ready = function () {
           pullMetaFromDisk();
+          /* 库刚就绪：启动那次没恢复出来的「上次收听」在这里补上，底栏才出现 */
+          restoreLastTrack();
           scheduleMetaWrite(2000, true);
         };
         if (r.active !== lastId) {
