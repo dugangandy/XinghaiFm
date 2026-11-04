@@ -1146,7 +1146,7 @@ const server = http.createServer(async function (req, res) {
       ensureMetaMigrated(lib);
       /* lastTrack 是「这个用户在这个库」的最后收听，不算库属性：
          新用户登录时它是空的，前端就不会凭空显示底栏 */
-      return json(res, Object.assign(DB.metaSnapshot(db, lib.path), {
+      return json(res, Object.assign(DB.metaSnapshot(db, lib.path, uid), {
         lastTrack: DB.userLastTrack(db, uid, lib.id)
       }));
     }
@@ -1180,10 +1180,13 @@ const server = http.createServer(async function (req, res) {
     if (!target) return send(res, 404, 'no library');
     ensureMetaMigrated(target);
     try {
-      const counts = DB.metaApply(db, target.path, patch);
-      /* 「上次收听」按用户存（不是库属性），普通用户也能写自己的 */
-      if (typeof patch.lastTrack === 'string' && patch.lastTrack) {
-        DB.setUserLastTrack(db, uid, target.id, patch.lastTrack);
+      /* uid：进度 / 队列 / 偏好按用户存；分类整理照旧按库共享 */
+      const counts = DB.metaApply(db, target.path, patch, uid);
+      /* 「上次收听」按用户存（不是库属性），普通用户也能写自己的；
+         传空串表示「清空」（清空播放队列时会连它一起清） */
+      if (typeof patch.lastTrack === 'string') {
+        if (patch.lastTrack) DB.setUserLastTrack(db, uid, target.id, patch.lastTrack);
+        else DB.clearUserLastTrack(db, uid, target.id);
       }
       return json(res, { ok: true, counts: counts });
     }
@@ -1221,7 +1224,7 @@ const server = http.createServer(async function (req, res) {
     };
     try {
       ensureMetaMigrated(lib);
-      DB.metaApply(db, lib.path, { progress: one });
+      DB.metaApply(db, lib.path, { progress: one }, uid);
     } catch (e) {
       console.log('[progress] 写入失败：' + e.message);
       return send(res, 500, 'write failed');

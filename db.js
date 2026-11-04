@@ -10,7 +10,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const ITERATIONS = 600000;
 const ADMIN_ID = 'u_admin';
 
@@ -121,6 +121,35 @@ function ensureSchema(db) {
     '  track_id TEXT NOT NULL,',
     '  dur REAL NOT NULL DEFAULT 0,',
     '  PRIMARY KEY (lib_root, track_id)',
+    ');',
+    /* v7：收听数据按用户。进度以前是「库属性」（progress 表按 lib_root 共享），
+       多人共用一个库时最近播放 / 继续收听 / 已听集数会串在一起。 */
+    'CREATE TABLE IF NOT EXISTS user_progress (',
+    '  user_id TEXT NOT NULL,',
+    '  lib_root TEXT NOT NULL,',
+    '  track_id TEXT NOT NULL,',
+    '  p REAL NOT NULL DEFAULT 0,',
+    '  d REAL NOT NULL DEFAULT 0,',
+    '  done INTEGER NOT NULL DEFAULT 0,',
+    '  t INTEGER NOT NULL DEFAULT 0,',
+    '  PRIMARY KEY (user_id, lib_root, track_id)',
+    ');',
+    'CREATE INDEX IF NOT EXISTS idx_user_progress ON user_progress(user_id, lib_root);',
+    /* 当前播放队列：单队列，重启 / 换设备后按 id 还原。
+       和进度一样按库目录（lib_root）存：同一目录在两端登记成不同 lib_id 时才算同一个库 */
+    'CREATE TABLE IF NOT EXISTS user_queue (',
+    '  user_id TEXT NOT NULL,',
+    '  lib_root TEXT NOT NULL,',
+    "  tracks TEXT NOT NULL DEFAULT '[]',",
+    '  position INTEGER NOT NULL DEFAULT 0,',
+    '  updated_at INTEGER NOT NULL,',
+    '  PRIMARY KEY (user_id, lib_root)',
+    ');',
+    /* 播放偏好：倍速 / 循环 / 自动回退 / 排序 / 显示隐藏 */
+    'CREATE TABLE IF NOT EXISTS user_prefs (',
+    '  user_id TEXT PRIMARY KEY,',
+    "  data TEXT NOT NULL DEFAULT '{}',",
+    '  updated_at INTEGER NOT NULL',
     ');'
   ].join('\n'));
   /* 旧库补列：token_version（改密码后让该用户旧 token 立即失效） */
@@ -141,6 +170,17 @@ function ensureSchema(db) {
   /* v4：favs 的主键已经覆盖 (user_id, lib_id)，早期的冗余索引清掉 */
   const uv = (db.prepare('PRAGMA user_version').get() || {}).user_version || 0;
   if (uv < 4) { try { db.exec('DROP INDEX IF EXISTS idx_favs_user'); } catch (e) {} }
+  /* v7：共享进度整份归给管理员（只做一次，旧 progress 表留着当回滚依据） */
+  if (uv < 7) {
+    try {
+      db.exec('BEGIN');
+      migrateProgressToAdmin(db);
+      db.exec('COMMIT');
+    } catch (e) {
+      try { db.exec('ROLLBACK'); } catch (e2) {}
+      console.warn('[db] 进度迁移失败：' + e.message);
+    }
+  }
   db.exec('PRAGMA user_version = ' + SCHEMA_VERSION);
 }
 
@@ -247,6 +287,8 @@ function removeUser(db, id) {
   });
   db.prepare('DELETE FROM lib_share_targets WHERE user_id = ?').run(u);
   db.prepare('DELETE FROM libs WHERE user_id = ?').run(u);
+  /* 收听数据是按用户的：进度 / 当前队列 / 播放偏好一起清，别留孤儿 */
+  clearUserData(db, u);
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
 }
 function touchLogin(db, id) { db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), id); }
@@ -615,6 +657,110 @@ function progressUpsert(db, root, patch) {
   return tx(db, function () { return progressWrite(db, key, patch); });
 }
 
+/* ── 用户维度的收听数据：进度 / 当前队列 / 播放偏好 ──
+   进度以前是「库属性」（progress 按 lib_root 共享），多人共用一个库时
+   最近播放 / 继续收听 / 已听集数会串在一起。现在按 (user_id, lib_root) 存；
+   队列与偏好也一起入库，localStorage 只当缓存（换设备能带走）。 */
+function userProgressMap(db, uid, root) {
+  const u = String(uid || '');
+  const key = libRootKey(root);
+  const out = {};
+  if (!u || !key) return out;
+  db.prepare('SELECT track_id, p, d, done, t FROM user_progress WHERE user_id = ? AND lib_root = ?').all(u, key)
+    .forEach(function (r) {
+      out[r.track_id] = { p: r.p, d: r.d, done: !!r.done, t: r.t };
+    });
+  return out;
+}
+function userProgressWrite(db, uid, key, patch) {
+  const u = String(uid || '');
+  if (!u || !key || !patch || typeof patch !== 'object') return 0;
+  const up = db.prepare('INSERT INTO user_progress(user_id, lib_root, track_id, p, d, done, t) VALUES(?,?,?,?,?,?,?) ' +
+    'ON CONFLICT(user_id, lib_root, track_id) DO UPDATE SET p=excluded.p, d=excluded.d, done=excluded.done, t=excluded.t ' +
+    'WHERE excluded.t >= user_progress.t');
+  let n = 0;
+  Object.keys(patch).slice(0, META_LIMIT.progress).forEach(function (id) {
+    const b = patch[id];
+    if (!id || !b) return;
+    up.run(u, key, String(id), Number(b.p) || 0, Number(b.d) || 0, b.done ? 1 : 0, Number(b.t) || 0);
+    n++;
+  });
+  return n;
+}
+
+/* 当前播放队列：单队列，存 track id 数组 + 播放位置（按库目录归一化） */
+function userQueueGet(db, uid, root) {
+  const u = String(uid || '');
+  const key = libRootKey(root);
+  if (!u || !key) return { tracks: [], position: 0 };
+  const r = db.prepare('SELECT tracks, position FROM user_queue WHERE user_id = ? AND lib_root = ?').get(u, key);
+  if (!r) return { tracks: [], position: 0 };
+  let tracks = [];
+  try {
+    const v = JSON.parse(r.tracks || '[]');
+    if (Array.isArray(v)) tracks = v.filter(function (x) { return typeof x === 'string' && x; });
+  } catch (e) {}
+  return { tracks: tracks, position: Math.max(0, Number(r.position) || 0) };
+}
+function userQueueSet(db, uid, root, tracks, position) {
+  const u = String(uid || '');
+  const key = libRootKey(root);
+  if (!u || !key) return 0;
+  const list = (Array.isArray(tracks) ? tracks : [])
+    .filter(function (x) { return typeof x === 'string' && x; }).slice(0, 2000);
+  const pos = list.length ? Math.max(0, Math.min(list.length - 1, Number(position) || 0)) : 0;
+  db.prepare('INSERT INTO user_queue(user_id, lib_root, tracks, position, updated_at) VALUES(?,?,?,?,?) ' +
+    'ON CONFLICT(user_id, lib_root) DO UPDATE SET tracks=excluded.tracks, position=excluded.position, updated_at=excluded.updated_at')
+    .run(u, key, JSON.stringify(list), pos, Date.now());
+  return list.length;
+}
+
+/* 播放偏好：整份 JSON 存，patch 合并（倍速 / 循环 / 自动回退 / 排序 / 显示隐藏） */
+function userPrefsGet(db, uid) {
+  const u = String(uid || '');
+  if (!u) return {};
+  const r = db.prepare('SELECT data FROM user_prefs WHERE user_id = ?').get(u);
+  if (!r) return {};
+  try {
+    const v = JSON.parse(r.data || '{}');
+    return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+  } catch (e) { return {}; }
+}
+function userPrefsWrite(db, uid, data) {
+  const u = String(uid || '');
+  if (!u || !data || typeof data !== 'object') return 0;
+  const next = Object.assign(userPrefsGet(db, u), data);
+  db.prepare('INSERT INTO user_prefs(user_id, data, updated_at) VALUES(?,?,?) ' +
+    'ON CONFLICT(user_id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at')
+    .run(u, JSON.stringify(next), Date.now());
+  return Object.keys(next).length;
+}
+
+/* 删用户时把收听数据一起清掉（进度 / 队列 / 偏好） */
+function clearUserData(db, uid) {
+  const u = String(uid || '');
+  if (!u) return 0;
+  db.prepare('DELETE FROM user_progress WHERE user_id = ?').run(u);
+  db.prepare('DELETE FROM user_queue WHERE user_id = ?').run(u);
+  db.prepare('DELETE FROM user_prefs WHERE user_id = ?').run(u);
+  return 1;
+}
+
+/* 迁移：把共享 progress 整份归给管理员。
+   定位顺序：最早创建的 admin → 第一个用户 → 桌面单机固定 ADMIN_ID。
+   ensureSchema 只在 user_version < 7 时调用它一次，旧 progress 表留着当回滚依据。 */
+function migrateProgressToAdmin(db) {
+  const rows = db.prepare('SELECT lib_root, track_id, p, d, done, t FROM progress').all();
+  if (!rows.length) return 0;
+  const who = db.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at, id LIMIT 1").get()
+    || db.prepare('SELECT id FROM users ORDER BY created_at, id LIMIT 1').get();
+  const uid = who ? who.id : ADMIN_ID;
+  const ins = db.prepare('INSERT INTO user_progress(user_id, lib_root, track_id, p, d, done, t) VALUES(?,?,?,?,?,?,?) ' +
+    'ON CONFLICT(user_id, lib_root, track_id) DO UPDATE SET p=excluded.p, d=excluded.d, done=excluded.done, t=excluded.t');
+  rows.forEach(function (r) { ins.run(uid, r.lib_root, r.track_id, r.p, r.d, r.done, r.t); });
+  return rows.length;
+}
+
 /* ── 时长 ── */
 function durationMap(db, root) {
   const key = libRootKey(root);
@@ -657,6 +803,12 @@ function setUserLastTrack(db, uid, libId, trackId) {
   setSetting(db, 'lastTrack:' + uid + ':' + libId, String(trackId));
   return 1;
 }
+/* 清空队列时一起清掉：否则下次启动又会按「上次收听」把整张专辑塞回队列 */
+function clearUserLastTrack(db, uid, libId) {
+  if (!uid || !libId) return 0;
+  db.prepare('DELETE FROM settings WHERE key = ?').run('lastTrack:' + uid + ':' + libId);
+  return 1;
+}
 
 /* ── 目录分类黑名单（用户主动删掉的自动分类） ──
    以前只写在客户端 localStorage：在手机 / 网页上删掉一个目录分类，桌面端扫描时
@@ -678,33 +830,55 @@ function setDroppedDirCats(db, root, list) {
   return arr.length;
 }
 
-/* ── 整份读取 / 增量写入（HTTP 与 IPC 都走这两个，保证口径一致） ── */
-function metaSnapshot(db, root) {
+/* ── 整份读取 / 增量写入（HTTP 与 IPC 都走这两个，保证口径一致） ──
+   uid：收听类数据（进度 / 队列 / 偏好）按用户存。老调用方不传时兜底到管理员，
+   桌面单机与旧版 preload 因此不会写丢数据。 */
+function metaUid(db, uid) {
+  const u = String(uid || '');
+  if (u) return u;
+  const who = adminUser(db);
+  return who ? who.id : ADMIN_ID;
+}
+function metaSnapshot(db, root, uid) {
   const r = String(root || '');
   const key = libRootKey(r);
-  if (!key) return { v: META_VERSION, root: r, cats: [], albumMeta: {}, progress: {}, durations: {}, dirCatDropped: [] };
+  const u = metaUid(db, uid);
+  if (!key) {
+    return {
+      v: META_VERSION, root: r, cats: [], albumMeta: {}, progress: {}, durations: {},
+      dirCatDropped: [], queue: { tracks: [], position: 0 }, prefs: {}
+    };
+  }
   return {
     v: META_VERSION,
     root: r,
     cats: catsList(db, r),
     albumMeta: albumMetaMap(db, r),
-    progress: progressMap(db, r),
+    progress: userProgressMap(db, u, r),
     durations: durationMap(db, r),
-    dirCatDropped: droppedDirCats(db, r)
+    dirCatDropped: droppedDirCats(db, r),
+    queue: userQueueGet(db, u, r),
+    prefs: userPrefsGet(db, u)
   };
 }
-function metaApply(db, root, patch) {
+function metaApply(db, root, patch, uid) {
   const key = libRootKey(root);
+  const u = metaUid(db, uid);
   const counts = { cats: 0, albumMeta: 0, progress: 0, durations: 0 };
   if (!key || !patch || typeof patch !== 'object') return counts;
   return tx(db, function () {
     if (Array.isArray(patch.cats)) counts.cats = catsWrite(db, key, patch.cats);
     if (Array.isArray(patch.catsDeleted)) catsDelete(db, key, patch.catsDeleted);
     if (patch.albumMeta && typeof patch.albumMeta === 'object') counts.albumMeta = albumMetaWrite(db, key, patch.albumMeta);
-    if (patch.progress && typeof patch.progress === 'object') counts.progress = progressWrite(db, key, patch.progress);
+    /* 进度写用户表；duration 仍是库属性（时长只跟文件有关，人人一样） */
+    if (patch.progress && typeof patch.progress === 'object') counts.progress = userProgressWrite(db, u, key, patch.progress);
     if (patch.durations && typeof patch.durations === 'object') counts.durations = durationWrite(db, key, patch.durations);
-    /* 黑名单不进 counts：它只是设置项，别让既有调用方（服务端 counts 回包）多出字段 */
+    /* 黑名单 / 队列 / 偏好不进 counts：它们只是设置项，别让既有调用方（服务端 counts 回包）多出字段 */
     if (Array.isArray(patch.dirCatDropped)) setDroppedDirCats(db, key, patch.dirCatDropped);
+    if (patch.queue && typeof patch.queue === 'object') {
+      userQueueSet(db, u, key, patch.queue.tracks, patch.queue.position);
+    }
+    if (patch.prefs && typeof patch.prefs === 'object') userPrefsWrite(db, u, patch.prefs);
     return counts;
   });
 }
@@ -720,7 +894,7 @@ function migrateLegacyMeta(db, root, dir) {
   try { meta = JSON.parse(fs.readFileSync(path.join(String(dir), '.fm-meta.json'), 'utf8')); } catch (e) { return 0; }
   if (!meta) return 0;
   /* 库里已经有数据（别的端已经写过）就不再导入，避免把新数据盖回旧快照 */
-  const has = db.prepare('SELECT (SELECT COUNT(*) FROM cats WHERE lib_root = ?1) + (SELECT COUNT(*) FROM album_meta WHERE lib_root = ?1) + (SELECT COUNT(*) FROM progress WHERE lib_root = ?1) AS n')
+  const has = db.prepare('SELECT (SELECT COUNT(*) FROM cats WHERE lib_root = ?1) + (SELECT COUNT(*) FROM album_meta WHERE lib_root = ?1) + (SELECT COUNT(*) FROM progress WHERE lib_root = ?1) + (SELECT COUNT(*) FROM user_progress WHERE lib_root = ?1) AS n')
     .get(key).n || 0;
   if (has > 0) { markMetaMigrated(db, root); return 0; }
   const patch = {};
@@ -749,7 +923,7 @@ function clearLibMeta(db, root) {
   if (!key) return 0;
   return tx(db, function () {
     let n = 0;
-    ['cats', 'album_meta', 'progress', 'durations'].forEach(function (t) {
+    ['cats', 'album_meta', 'progress', 'durations', 'user_progress', 'user_queue'].forEach(function (t) {
       n += db.prepare('DELETE FROM ' + t + ' WHERE lib_root = ?').run(key).changes || 0;
     });
     db.prepare('DELETE FROM settings WHERE key = ?').run('metaMig:' + key);
@@ -824,7 +998,11 @@ module.exports = {
   progressMap, progressUpsert,
   durationMap, durationUpsert,
   droppedDirCats, setDroppedDirCats,
-  userLastTrack, setUserLastTrack,
+  userLastTrack, setUserLastTrack, clearUserLastTrack,
+  userProgressMap, userProgressWrite,
+  userQueueGet, userQueueSet,
+  userPrefsGet, userPrefsWrite,
+  clearUserData, migrateProgressToAdmin, metaUid,
   metaSnapshot, metaApply,
   metaMigrated, markMetaMigrated, migrateLegacyMeta, clearLibMeta,
   getRemote, setRemote, migrate

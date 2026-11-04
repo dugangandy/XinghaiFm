@@ -72,7 +72,7 @@
       vVol: $('vVol'), vVolScrub: $('vVolScrub'), vPip: $('vPip'), vCinema: $('vCinema'), vFull: $('vFull'),
       vCollapse: $('vCollapse'), vQueue: $('vQueue'), vBigPlay: $('vBigPlay'), vLoading: $('vLoading'),
       queuePanel: $('queuePanel'), sheetQueue: $('sheetQueue'), btnSheetQueue: $('btnSheetQueue'),
-      btnQueueClose: $('btnQueueClose'), queueCount: $('queueCount'),
+      btnQueueClose: $('btnQueueClose'), btnQueueClear: $('btnQueueClear'), queueCount: $('queueCount'),
       modalRoot: $('modalRoot'), toastRoot: $('toastRoot'),
       main: $('main'), libLoading: $('libLoading'), libLoadingName: $('libLoadingName'), libLoadingHint: $('libLoadingHint'),
       tcLoading: $('tcLoading'), tcName: $('tcName'), tcHint: $('tcHint')
@@ -2106,7 +2106,7 @@
           else P.playTrack(t);
           break;
         }
-        case 'sort': state.sortDesc = !state.sortDesc; state.page = 0; state.trackShown = PAGE; FM.db.setState(Object.assign(FM.db.state(), { sortDesc: state.sortDesc })); FM.store.touch('state'); renderMain(); break;
+        case 'sort': state.sortDesc = !state.sortDesc; state.page = 0; state.trackShown = PAGE; FM.db.setState(Object.assign(FM.db.state(), { sortDesc: state.sortDesc })); FM.store.touch('state'); FM.fs.pushMeta({ prefs: { sortDesc: state.sortDesc } }); renderMain(); break;
         case 'page': {
           const p = parseInt(actEl.dataset.page, 10);
           if (!isNaN(p)) gotoPage(p);
@@ -2128,7 +2128,7 @@
         case 'app-settings': if (FM.android) FM.android.openSettings(); break;
         case 'lib-menu': openLibMenu(actEl); break;
         case 'relocate-lib': relocateFlow(FM.fs.active(), null); break;
-        case 'toggle-hidden': state.showHidden = !state.showHidden; FM.db.setState(Object.assign(FM.db.state(), { showHidden: state.showHidden })); FM.store.touch('state'); renderAll(); break;
+        case 'toggle-hidden': state.showHidden = !state.showHidden; FM.db.setState(Object.assign(FM.db.state(), { showHidden: state.showHidden })); FM.store.touch('state'); FM.fs.pushMeta({ prefs: { showHidden: state.showHidden } }); renderAll(); break;
         default: break;
       }
       return;
@@ -3035,6 +3035,14 @@
     refs.btnCollapse.addEventListener('click', closeSheet);
     refs.btnSheetQueue.addEventListener('click', toggleQueue);
     refs.btnQueueClose.addEventListener('click', toggleQueue);
+    /* 清空队列：同时把数据库里那份清掉，换设备不会再恢复旧队列 */
+    if (refs.btnQueueClear) {
+      refs.btnQueueClear.addEventListener('click', function () {
+        P.clearQueue();
+        renderQueue();
+        toast('已清空播放队列');
+      });
+    }
     /* 手机端播放条上的队列键：队列面板挂在播放页里，先确保播放页打开，
        打开不了（壳内视频由原生播放器接管）就不动了 */
     refs.pbQueue.addEventListener('click', function () {
@@ -4810,6 +4818,13 @@
     renderMain(opts);
   }
 
+  /* 账号级偏好从数据库回来（换设备 / 另一端刚改过）：跟着刷新排序与隐藏开关 */
+  function applyPrefs() {
+    state.sortDesc = !!FM.db.state().sortDesc;
+    state.showHidden = !!FM.db.state().showHidden;
+    if (FM.lib && FM.lib.albums().length) renderAll({ quiet: true });
+  }
+
   /* 由 app.js 在撤遮罩前调用：把启动期间攒下的那一次渲染补上 */
   function flushBootRender() {
     if (!bootPending) return;
@@ -4825,7 +4840,7 @@
     init, renderAll, flushBootRender, paintTrack, syncMode, downloadsChanged,
     autoRescan, runScan, enterLib, switchLib, addLibFlow, needRescan, syncScanIfNewer,
     openLibMenu, openLibDrawer, renderStat, renderWelcome, renderBrokenLib,
-    restorePlayerBar,
+    restorePlayerBar, applyPrefs,
     toast, openSheet, closeSheet,
     get refs() { return refs; }
   };

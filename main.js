@@ -718,14 +718,16 @@ function bindIpc() {
     const lib = id ? cfg.libs.find(l => l.id === id) : null;
     if (!lib) return null;
     try { DB.migrateLegacyMeta(getDb(), lib.path, lib.path); } catch (err) { console.warn('[meta] 迁移失败', err.message); }
-    return DB.metaSnapshot(getDb(), lib.path);
+    /* 桌面是单用户：收听类数据（进度 / 队列 / 偏好）挂在固定 admin 账号下，
+       和 favs 用的是同一个 uid，换设备搬到服务端也认得出是同一个人 */
+    return DB.metaSnapshot(getDb(), lib.path, adminUid());
   });
   ipcMain.handle('fm:metaPatch', function (e, libId, patch) {
     const cfg = getConfig();
     const id = libId || cfg.active;
     const lib = id ? cfg.libs.find(l => l.id === id) : null;
     if (!lib) return null;
-    try { return DB.metaApply(getDb(), lib.path, patch || {}); }
+    try { return DB.metaApply(getDb(), lib.path, patch || {}, adminUid()); }
     catch (err) { console.warn('[meta] 写入失败', err.message); return null; }
   });
 

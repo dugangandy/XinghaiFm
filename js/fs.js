@@ -814,18 +814,39 @@
        只在本机这个库没有记录时才采用，免得把刚切的一集盖回旧的；
        新用户服务端是空的，这里什么都不做，底栏也就不会凭空出现。
        注意 progress 不参与这个判断：它是库属性，别人听过的也在里面 */
-    if (data.lastTrack && activeId) {
+    if (data.lastTrack !== undefined && activeId) {
       const st = FM.db.state();
-      const has = !!(st.lastTracks && st.lastTracks[activeId]);
-      if (!has) {
-        const next = Object.assign({}, st, { lastTrackId: data.lastTrack });
-        const map = Object.assign({}, st.lastTracks);
+      const map = Object.assign({}, st.lastTracks);
+      if (!data.lastTrack) {
+        /* 别的端清空了队列，上次收听也一起清了：本地跟着清，别再恢复底栏 */
+        if (map[activeId]) {
+          delete map[activeId];
+          const next = Object.assign({}, st, { lastTracks: map });
+          if (next.lastTrackId && !Object.keys(map).length) delete next.lastTrackId;
+          FM.db.setState(next);
+          FM.store.touch('state');
+        }
+      } else if (!map[activeId]) {
+        const next = Object.assign({}, st, { lastTrackId: data.lastTrack, lastTracks: map });
         map[activeId] = data.lastTrack;
-        next.lastTracks = map;
         FM.db.setState(next);
         FM.store.touch('state');
       }
     }
+    /* 当前播放队列：服务端 / 桌面下发后交给播放内核还原（不自动播放），并缓存一份 */
+    if (data.queue && typeof data.queue === 'object' && activeId) {
+      const q = {
+        tracks: Array.isArray(data.queue.tracks) ? data.queue.tracks : [],
+        position: Number(data.queue.position) || 0
+      };
+      FM.store.write('queue:' + activeId, q);
+      FM.store.touch('queue:' + activeId);
+      try {
+        if (FM.player && FM.player.restoreQueue) FM.player.restoreQueue(q);
+      } catch (e) { console.warn('[queue] 恢复失败', e); }
+    }
+    /* 账号级偏好：写回本地缓存并驱动播放内核 / 界面 */
+    if (data.prefs && typeof data.prefs === 'object') applyPrefs(data.prefs);
     return touched;
   }
 
@@ -862,15 +883,87 @@
     if (add.durations) Object.assign(base.durations || (base.durations = {}), add.durations);
     /* 目录分类黑名单是整份名单，后推的覆盖先推的（都是本地当前完整列表） */
     if (add.dirCatDropped) base.dirCatDropped = add.dirCatDropped;
-    /* 上次收听那一集：按用户存（服务端 settings），不跟库共享 */
-    if (add.lastTrack) base.lastTrack = add.lastTrack;
+    /* 上次收听那一集：按用户存（服务端 settings），不跟库共享。
+       空串是有效值（清空队列时用来把服务端那条也清掉），不能用真值判断 */
+    if (add.lastTrack !== undefined) base.lastTrack = add.lastTrack;
+    /* 当前队列整份覆盖（永远推本地完整队列）；偏好按字段合并 */
+    if (add.queue) base.queue = add.queue;
+    if (add.prefs) base.prefs = Object.assign(base.prefs || {}, add.prefs);
     return base;
+  }
+
+  /* 账号级偏好：这些字段跟人走（换设备一致），音量 / 睡眠定时是设备级不在此列 */
+  const PREFS_KEYS = ['rate', 'loop', 'autoRewind', 'sortDesc', 'showHidden'];
+  function pickPrefs(src) {
+    const out = {};
+    if (!src || typeof src !== 'object') return out;
+    PREFS_KEYS.forEach(function (k) {
+      if (src[k] !== undefined && src[k] !== null) out[k] = src[k];
+    });
+    return out;
+  }
+  /* 队列 / 偏好的本机缓存：纯本地目录模式是唯一来源，服务端模式是离线兜底 */
+  function queueCache() {
+    if (!activeId) return null;
+    const v = FM.store.read('queue:' + activeId, null);
+    return (v && typeof v === 'object' && Array.isArray(v.tracks)) ? v : null;
+  }
+  function prefsCache() {
+    const v = FM.store.read('prefs', null);
+    return (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
+  }
+  /* 服务端 / 桌面下发的偏好是权威：写回本地 state（缓存），再让播放内核与界面跟上 */
+  function applyPrefs(prefs) {
+    const picked = pickPrefs(prefs);
+    if (!Object.keys(picked).length) return;
+    FM.store.write('prefs', Object.assign({}, prefsCache() || {}, picked));
+    FM.store.touch('prefs');
+    const next = Object.assign({}, FM.db.state());
+    let ch = false;
+    Object.keys(picked).forEach(function (k) {
+      if (next[k] === picked[k]) return;
+      next[k] = picked[k]; ch = true;
+    });
+    if (!ch) return;
+    FM.db.setState(next);
+    FM.store.touch('state');
+    try { if (FM.player && FM.player.applyPrefs) FM.player.applyPrefs(picked); } catch (e) {}
+    try { if (FM.ui && FM.ui.applyPrefs) FM.ui.applyPrefs(); } catch (e) {}
+  }
+
+  /* 清空队列时连「上次收听」一起清：否则下次启动 restoreLast 会把整张专辑
+     又塞回队列，用户会觉得清空没生效 */
+  function clearLastTrack() {
+    const st = FM.db.state();
+    const next = Object.assign({}, st);
+    delete next.lastTrackId;
+    if (activeId && next.lastTracks) {
+      const map = Object.assign({}, next.lastTracks);
+      delete map[activeId];
+      next.lastTracks = map;
+    }
+    FM.db.setState(next);
+    FM.store.touch('state');
+    pushMeta({ lastTrack: '' });
   }
 
   /* 增量写回：本地缓存先改（乐观 UI），这里只负责把变化推给数据库 */
   function pushMeta(patch) {
     if (!patch || !activeId) return false;
-    if (metaChannel() === 'local') return false;
+    if (metaChannel() === 'local') {
+      /* 纯网页「选本地目录」模式没有数据库：队列 / 偏好只能留在本机。
+         store 的命名空间按账号隔离（fm:v1:<uid>:*），不会串到别的账号 */
+      if (patch.queue) {
+        FM.store.write('queue:' + activeId, patch.queue);
+        FM.store.touch('queue:' + activeId);
+      }
+      if (patch.prefs) {
+        const cur = FM.store.read('prefs', {});
+        FM.store.write('prefs', Object.assign(cur && typeof cur === 'object' ? cur : {}, patch.prefs));
+        FM.store.touch('prefs');
+      }
+      return false;
+    }
     /* 队列里如果还是另一个库的改动，先存成那个库的待发，别往它身上并——
        否则切库后在新库做的分类会被以旧库的 libId 写进旧库 */
     if (metaQueue && metaQueue.libId !== activeId) {
@@ -923,7 +1016,9 @@
         if (patch.progress) one.progress = patch.progress;
         if (patch.durations) one.durations = patch.durations;
         if (patch.dirCatDropped) one.dirCatDropped = patch.dirCatDropped;
-        if (patch.lastTrack) one.lastTrack = patch.lastTrack;
+        if (patch.lastTrack !== undefined) one.lastTrack = patch.lastTrack;
+        if (patch.queue) one.queue = patch.queue;
+        if (patch.prefs) one.prefs = patch.prefs;
       }
       keys.slice(i, i + META_BATCH).forEach(function (k) { one.albumMeta[k] = meta[k]; });
       out.push(one);
@@ -1431,6 +1526,7 @@
 
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, flushPending, canSyncMeta, pushProgress, refreshLibs,
+    queueCache, prefsCache, applyPrefs, pickPrefs, PREFS_KEYS, clearLastTrack,
     setDirGroup, setDirMode, share,
     listUsers, createUser, setUserDisabled, resetUserPassword, deleteUser,
     loadFavs, setFav, setFavTrack,

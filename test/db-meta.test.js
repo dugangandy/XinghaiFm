@@ -16,10 +16,10 @@ function fresh() {
 }
 const ROOT = path.resolve(os.tmpdir(), 'fm-meta-lib');
 
-test('schema 升到 v5，四张元数据表建好', () => {
+test('schema 升到 v7，库元数据表与用户数据表都建好', () => {
   const db = fresh();
-  assert.ok(DB.SCHEMA_VERSION >= 5, 'schema 版本应至少为 5');
-  ['cats', 'album_meta', 'progress', 'durations'].forEach(function (t) {
+  assert.ok(DB.SCHEMA_VERSION >= 7, 'schema 版本应至少为 7');
+  ['cats', 'album_meta', 'progress', 'durations', 'user_progress', 'user_queue', 'user_prefs'].forEach(function (t) {
     const r = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(t);
     assert.ok(r, t + ' 表应存在');
   });
@@ -194,7 +194,7 @@ test('migrateLegacyMeta：按库前缀导入、幂等、库里已有数据不覆
     assert.equal(DB.catsList(db, root)[0].name, '有声书');
     const map = DB.albumMetaMap(db, root);
     assert.deepEqual(Object.keys(map), [root + '|三体'], '别的库的条目不该导进来');
-    assert.equal(DB.progressMap(db, root).t1.p, 42);
+    assert.equal(DB.userProgressMap(db, DB.ADMIN_ID, root).t1.p, 42);
 
     /* 再跑一次：已打过迁移标记，什么都不做 */
     assert.deepEqual(DB.migrateLegacyMeta(db, root, root), 0);
@@ -229,7 +229,7 @@ test('clearLibMeta：库移除后不留孤儿行与迁移标记', () => {
   assert.ok(DB.clearLibMeta(db, ROOT) >= 4);
   assert.deepEqual(DB.catsList(db, ROOT), []);
   assert.deepEqual(DB.albumMetaMap(db, ROOT), {});
-  assert.deepEqual(DB.progressMap(db, ROOT), {});
+  assert.deepEqual(DB.userProgressMap(db, DB.ADMIN_ID, ROOT), {});
   assert.deepEqual(DB.durationMap(db, ROOT), {});
   assert.equal(DB.metaMigrated(db, ROOT), false);
 });
@@ -253,7 +253,8 @@ test('metaSnapshot：整份读回带版本号，空库路径返回空结构', ()
 
   /* 没有库路径时给一份合法的空快照，别返回 undefined 让前端炸 */
   assert.deepEqual(DB.metaSnapshot(db, ''), {
-    v: DB.META_VERSION, root: '', cats: [], albumMeta: {}, progress: {}, durations: {}, dirCatDropped: []
+    v: DB.META_VERSION, root: '', cats: [], albumMeta: {}, progress: {}, durations: {},
+    dirCatDropped: [], queue: { tracks: [], position: 0 }, prefs: {}
   });
 });
 
@@ -265,7 +266,7 @@ test('metaApply：只传一部分时不动其它表', () => {
   });
   DB.metaApply(db, ROOT, { albumMeta: { [ROOT + '|三体']: { pinned: 1 } } });
   assert.equal(DB.catsList(db, ROOT).length, 1, '只推整理字段不该清掉分类');
-  assert.equal(DB.progressMap(db, ROOT).t1.p, 1);
+  assert.equal(DB.userProgressMap(db, DB.ADMIN_ID, ROOT).t1.p, 1);
   assert.equal(DB.albumMetaMap(db, ROOT)[ROOT + '|三体'].pinned, 1);
 
   /* 非数组的 cats（脏客户端）直接忽略，不能把已有分类清空 */
@@ -305,7 +306,7 @@ test('META_LIMIT：分类 / 整理 / 进度 / 时长都按上限截断', () => {
   });
   assert.equal(DB.catsList(db, ROOT).length, DB.META_LIMIT.cats);
   assert.equal(Object.keys(DB.albumMetaMap(db, ROOT)).length, DB.META_LIMIT.albumMeta);
-  assert.equal(Object.keys(DB.progressMap(db, ROOT)).length, DB.META_LIMIT.progress);
+  assert.equal(Object.keys(DB.userProgressMap(db, DB.ADMIN_ID, ROOT)).length, DB.META_LIMIT.progress);
   assert.equal(Object.keys(DB.durationMap(db, ROOT)).length, DB.META_LIMIT.durations);
 
   /* 单个专辑最多留 20 个分类，防止前端塞进超长数组 */
@@ -349,4 +350,81 @@ test('空输入：libRootKey 为空时所有写接口都返回 0 且不落行', 
   assert.deepEqual(DB.metaApply(db, ROOT, null), { cats: 0, albumMeta: 0, progress: 0, durations: 0 });
   assert.equal(DB.clearLibMeta(db, ''), 0);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM cats').get().n, 0);
+});
+
+/* ── v7：收听数据按用户（进度 / 队列 / 偏好） ── */
+
+test('userProgress：不同用户互不干扰，按 t 合并不会被旧上报拨回去', () => {
+  const db = fresh();
+  DB.metaApply(db, ROOT, { progress: { t1: { p: 42, d: 100, t: 500 } } }, 'u_a');
+  DB.metaApply(db, ROOT, { progress: { t1: { p: 10, d: 100, t: 600 } } }, 'u_b');
+  assert.equal(DB.userProgressMap(db, 'u_a', ROOT).t1.p, 42);
+  assert.equal(DB.userProgressMap(db, 'u_b', ROOT).t1.p, 10);
+  /* 同一个用户的旧上报（t 更小）不能把进度往回拨 */
+  DB.metaApply(db, ROOT, { progress: { t1: { p: 1, d: 100, t: 100 } } }, 'u_a');
+  assert.equal(DB.userProgressMap(db, 'u_a', ROOT).t1.p, 42);
+});
+
+test('userQueue / userPrefs：往返、整份覆盖、偏好按字段合并', () => {
+  const db = fresh();
+  DB.userQueueSet(db, 'u_a', ROOT, ['t1', 't2', 't3'], 1);
+  assert.deepEqual(DB.userQueueGet(db, 'u_a', ROOT), { tracks: ['t1', 't2', 't3'], position: 1 });
+  /* 队列是单队列整份覆盖，且位置越界会被夹住 */
+  DB.userQueueSet(db, 'u_a', ROOT, ['t9'], 7);
+  assert.deepEqual(DB.userQueueGet(db, 'u_a', ROOT), { tracks: ['t9'], position: 0 });
+  /* 别的用户 / 别的库各自独立 */
+  assert.deepEqual(DB.userQueueGet(db, 'u_b', ROOT), { tracks: [], position: 0 });
+  assert.deepEqual(DB.userQueueGet(db, 'u_a', ROOT + '-other'), { tracks: [], position: 0 });
+
+  DB.userPrefsWrite(db, 'u_a', { rate: 1.5, loop: 'one' });
+  DB.userPrefsWrite(db, 'u_a', { loop: 'all' });
+  assert.deepEqual(DB.userPrefsGet(db, 'u_a'), { rate: 1.5, loop: 'all' });
+  assert.deepEqual(DB.userPrefsGet(db, 'u_b'), {});
+});
+
+test('metaSnapshot / metaApply：进度按 uid，队列与偏好随快照往返', () => {
+  const db = fresh();
+  DB.metaApply(db, ROOT, {
+    progress: { t1: { p: 7, d: 9, t: 3 } },
+    queue: { tracks: ['t1'], position: 0 },
+    prefs: { sortDesc: true }
+  }, 'u_a');
+  const a = DB.metaSnapshot(db, ROOT, 'u_a');
+  assert.deepEqual(a.progress, { t1: { p: 7, d: 9, done: false, t: 3 } });
+  assert.deepEqual(a.queue, { tracks: ['t1'], position: 0 });
+  assert.deepEqual(a.prefs, { sortDesc: true });
+  /* 另一个用户看同一个库：分类是共享的，收听数据是自己的（空） */
+  const b = DB.metaSnapshot(db, ROOT, 'u_b');
+  assert.deepEqual(b.progress, {});
+  assert.deepEqual(b.queue, { tracks: [], position: 0 });
+  assert.deepEqual(b.prefs, {});
+  assert.deepEqual(b.cats, a.cats);
+});
+
+test('v7 迁移：历史共享进度整份归管理员，普通用户从空开始', () => {
+  const db = fresh();
+  DB.addUser(db, { id: 'u_admin', username: 'admin', role: 'admin', password: 'Abcdefg1' });
+  const u2 = DB.addUser(db, { username: 'other', password: 'Abcdefg1' }).id;
+  /* 造出 v6 状态：旧 progress 表里有数据，user_progress 里没有 */
+  db.prepare('INSERT INTO progress(lib_root, track_id, p, d, done, t) VALUES(?,?,?,?,?,?)')
+    .run(DB.libRootKey(ROOT), 't1', 42, 100, 0, 7);
+  db.exec('PRAGMA user_version = 6');
+  DB.ensureSchema(db);
+  assert.equal(DB.userProgressMap(db, 'u_admin', ROOT).t1.p, 42, '历史进度应归管理员');
+  assert.deepEqual(DB.userProgressMap(db, u2, ROOT), {}, '普通用户不该分到历史进度');
+});
+
+test('删用户时清掉他的进度 / 队列 / 偏好', () => {
+  const db = fresh();
+  const u = DB.addUser(db, { id: 'u_x', username: 'xx', password: 'Abcdefg1' }).id;
+  DB.metaApply(db, ROOT, {
+    progress: { t1: { p: 1, d: 2, t: 3 } },
+    queue: { tracks: ['t1'], position: 0 },
+    prefs: { rate: 2 }
+  }, u);
+  assert.equal(DB.userProgressMap(db, u, ROOT).t1.p, 1);
+  DB.removeUser(db, u);
+  assert.deepEqual(DB.userProgressMap(db, u, ROOT), {});
+  assert.deepEqual(DB.userQueueGet(db, u, ROOT), { tracks: [], position: 0 });
+  assert.deepEqual(DB.userPrefsGet(db, u), {});
 });

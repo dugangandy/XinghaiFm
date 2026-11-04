@@ -335,6 +335,10 @@
                所以拉完再补一次；本机已有记录的话前面同步那次已经显示了，这里幂等 */
             .then(function () { restoreLastTrack(); })
             .catch(function () {});
+          /* 队列：先按本机缓存撑起来，服务端下发后 applyMeta 里会再校正 */
+          try {
+            if (FM.player.restoreQueue && FM.fs.queueCache) FM.player.restoreQueue(FM.fs.queueCache());
+          } catch (e) { console.warn('[boot] 恢复队列失败', e); }
           /* 库刚就绪：启动那次没恢复出来的「上次收听」在这里补上，底栏才出现 */
           restoreLastTrack();
           scheduleMetaWrite(2000, true);

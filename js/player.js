@@ -62,13 +62,18 @@
   let audioOnly = true;
 
   const st = FM.db.state();
-  let rate = snapRate(st.rate || 1);
-  let volume = st.volume == null ? 1 : st.volume;
-  let loop = st.loop || 'all';
+  /* 账号级偏好（倍速 / 循环 / 自动回退）以数据库为准，本机只当缓存：
+     离线首启动时 DB 还没拉到，先用上次缓存的 prefs */
+  const prefCache = (FM.fs && FM.fs.prefsCache && FM.fs.prefsCache()) || {};
+  let rate = snapRate(st.rate || prefCache.rate || 1);
+  let volume = st.volume == null ? 1 : st.volume;      /* 音量是设备级，不跟账号走 */
+  let loop = st.loop || prefCache.loop || 'all';
   let muted = false;
   /* 暂停多久之后恢复才回退：10 秒内基本是误触或短暂中断，退回去反而烦 */
   const AUTO_REWIND_AFTER = 10000;
-  let autoRewind = st.autoRewind == null ? 10 : (Number(st.autoRewind) || 0);
+  let autoRewind = st.autoRewind == null
+    ? (prefCache.autoRewind == null ? 10 : (Number(prefCache.autoRewind) || 0))
+    : (Number(st.autoRewind) || 0);
   let sleepAuto = st.sleepAuto || { on: false, from: '22:00', to: '07:00', minutes: 30 };
 
   function persistState(patch) {
@@ -76,6 +81,11 @@
     Object.assign(s, patch);
     FM.db.setState(s);
     FM.store.touch('state');
+  }
+
+  /* 账号级偏好：本地先落（乐观），再推给数据库；音量 / 睡眠定时是设备级，不进这里 */
+  function pushPrefs(patch) {
+    try { if (FM.fs && FM.fs.pushMeta) FM.fs.pushMeta({ prefs: patch }); } catch (e) {}
   }
 
   function setKind(next) {
@@ -362,7 +372,89 @@
 
   function jumpBy(dt) { seek((media.currentTime || 0) + dt); }
 
+  /* ── 当前队列持久化（按用户 + 库）──
+     队列以前只在内存里，刷新 / 换设备就没了。现在变化 1 秒后推给数据库，
+     启动时先按本机缓存撑起来，服务端下发后再校正。 */
+  let queueSaveTimer = 0;
+  let queueRestored = false;   /* 当前队列来自持久化，不是用户刚点的 */
+  function saveQueueSoon() {
+    clearTimeout(queueSaveTimer);
+    queueSaveTimer = setTimeout(function () {
+      if (!queue.length) return;
+      try {
+        if (FM.fs && FM.fs.pushMeta) {
+          FM.fs.pushMeta({ queue: { tracks: queue.map(function (t) { return t.id; }), position: index } });
+        }
+      } catch (e) {}
+    }, 1000);
+  }
+  function restoreQueue(saved, opts) {
+    const o = opts || {};
+    if (!saved || !Array.isArray(saved.tracks) || !saved.tracks.length) return false;
+    /* 正在放就别动；用户刚手动换过队列也保留（服务端下发的旧值不覆盖） */
+    if (!media.paused && media.src) return false;
+    if (queue.length && !o.force && !queueRestored) return false;
+    const list = saved.tracks.map(function (id) { return FM.lib.track(id); }).filter(Boolean);
+    if (!list.length) return false;
+    const pos = Math.max(0, Math.min(list.length - 1, Number(saved.position) || 0));
+    const same = queue.length === list.length && queue.every(function (t, i) { return t.id === list[i].id; });
+    if (same && index === pos) return false;
+    queue = list;
+    index = pos;
+    queueRestored = true;
+    ev.emit('queue', queue, index);
+    /* 底栏：还没有当前曲目时，用队列里那一集撑起来（不自动播放） */
+    if (!cur) {
+      cur = queue[index];
+      setKind(cur.kind === 'video' ? 'video' : 'audio');
+      ev.emit('track', cur, { restored: true });
+      const p = FM.lib.progressOf(cur.id);
+      ev.emit('time', (p && !p.done && p.p > 0) ? p.p : 0, cur.duration || (p && p.d) || 0);
+      updateSession(cur);
+    }
+    return true;
+  }
+
+  /* 清空队列：正在放就先停，同时把数据库里那份也清掉（否则换设备又恢复旧队列）。
+     「上次收听」一并清掉，不然下次启动 restoreLast 又会把整张专辑塞回来 */
+  function clearQueue() {
+    /* 无条件停：清空列表后底栏还留着上一集、点下一集又没反应，很容易以为坏了 */
+    stop();
+    queue = [];
+    index = 0;
+    queueRestored = false;
+    ev.emit('queue', queue, 0);
+    try {
+      if (FM.fs && FM.fs.pushMeta) FM.fs.pushMeta({ queue: { tracks: [], position: 0 } });
+      if (FM.fs && FM.fs.clearLastTrack) FM.fs.clearLastTrack();
+    } catch (e) {}
+  }
+
+  /* 服务端 / 桌面下发的账号级偏好：只改运行时，不再回推（fs 已写本地 state） */
+  function applyPrefs(prefs) {
+    if (!prefs || typeof prefs !== 'object') return;
+    if (prefs.rate != null) {
+      rate = snapRate(prefs.rate);
+      eachEl(function (el) {
+        el.playbackRate = rate;
+        el.preservesPitch = true;
+        el.mozPreservesPitch = true;
+        el.webkitPreservesPitch = true;
+      });
+      ev.emit('rate', rate);
+    }
+    if (prefs.loop != null && LOOP_LABEL[prefs.loop]) {
+      loop = prefs.loop;
+      ev.emit('loop', loop);
+    }
+    if (prefs.autoRewind != null) {
+      autoRewind = Math.max(0, Math.round(Number(prefs.autoRewind) || 0));
+      ev.emit('rewindset', autoRewind);
+    }
+  }
+
   function setQueue(list, i, opts) {
+    queueRestored = false;      /* 用户主动排的队列：服务端下发不再覆盖 */
     queue = list.slice();
     index = i;
     const o = opts || {};
@@ -389,6 +481,7 @@
   function addToQueue(list) {
     if (!list || !list.length) return;
     if (!queue.length) { setQueue(list, 0, { autoplay: true }); return; }
+    queueRestored = false;
     const have = new Set(queue.map(t => t.id));
     list.forEach(function (t) { if (!have.has(t.id)) { queue.push(t); have.add(t.id); } });
     ev.emit('queue', queue, index);
@@ -397,6 +490,7 @@
   function playTrack(track) {
     if (!track) return;
     if (cur && track.id === cur.id && media.src) { play(); return; }
+    queueRestored = false;
     const inQueue = queue.some(t => t.id === track.id);
     if (inQueue) {
       index = queue.findIndex(t => t.id === track.id);
@@ -449,6 +543,7 @@
   function setAutoRewind(sec) {
     autoRewind = Math.max(0, Math.round(Number(sec) || 0));
     persistState({ autoRewind });
+    pushPrefs({ autoRewind });
     ev.emit('rewindset', autoRewind);
     return autoRewind;
   }
@@ -467,6 +562,7 @@
   }
 
   function next(auto) {
+    queueRestored = false;
     saveProgress(true);
     if (loop === 'one' && auto) {
       media.currentTime = 0; play(); return;
@@ -484,6 +580,7 @@
   function prev() {
     if (!queue.length) return;
     if (media.currentTime > 5 && media.src) { seek(0); return; }
+    queueRestored = false;
     saveProgress(true);
     let n = index - 1;
     if (n < 0) n = loop === 'all' ? queue.length - 1 : 0;
@@ -502,6 +599,7 @@
       el.webkitPreservesPitch = true;
     });
     persistState({ rate });
+    pushPrefs({ rate });
     ev.emit('rate', rate);
   }
 
@@ -549,6 +647,7 @@
   function cycleLoop() {
     loop = LOOPS[(LOOPS.indexOf(loop) + 1) % LOOPS.length];
     persistState({ loop });
+    pushPrefs({ loop });
     ev.emit('loop', loop);
     return loop;
   }
@@ -731,8 +830,13 @@
     const t = lastTrackOf(FM.lib.libId);
     if (!t) return false;
     setKind(t.kind === 'video' ? 'video' : 'audio');
-    const list = FM.lib.albumTracks(t.albumId);
+    /* 已经有队列（持久化恢复出来的，可能是多张专辑拼的）且包含这一集：
+       就沿用队列，别用「整张专辑」把它覆盖掉 */
+    const list = (queue.length && queue.some(function (x) { return x.id === t.id; }))
+      ? queue
+      : FM.lib.albumTracks(t.albumId);
     const i = Math.max(0, list.findIndex(x => x.id === t.id));
+    queueRestored = true;
     queue = list;
     index = i;
     cur = t;
@@ -761,6 +865,8 @@
     try { if (FM.fs && FM.fs.pushMeta) FM.fs.pushMeta({ lastTrack: track.id }); } catch (e) {}
   }
   ev.on('track', rememberTrack);
+  /* 队列一变就攒着存（1 秒防抖）：切集 / 加队列 / 换专辑都会触发 */
+  ev.on('queue', saveQueueSoon);
   ev.on('loop', () => {});
   setRate(rate);
   setVolume(volume);
@@ -831,6 +937,7 @@
     setAutoRewind,
     setAudioOnly,
     restoreLast, saveProgress, onNative,
+    restoreQueue, applyPrefs, clearQueue, saveQueueSoon,
     artworkFor,
     get current() { return cur; },
     get queue() { return queue; },
