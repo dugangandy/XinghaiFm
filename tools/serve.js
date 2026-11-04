@@ -1168,8 +1168,15 @@ const server = http.createServer(async function (req, res) {
         return send(res, 403, '只有管理员可以编辑分类与整理');
       }
     }
-    /* 只认自己名下的库；没带 libId 就落到当前库 */
-    const target = userLibs(uid).find(function (l) { return l.id === patch.libId; }) || lib;
+    /* 只认自己名下的库：带了 libId 就必须精确命中，找不到直接报错——
+       不能回退到当前活动库，否则客户端传错/过期的 libId 会把整理写进另一个库 */
+    let target;
+    if (patch.libId) {
+      target = userLibs(uid).find(function (l) { return l.id === patch.libId; });
+      if (!target) return send(res, 404, 'unknown lib');
+    } else {
+      target = lib;
+    }
     if (!target) return send(res, 404, 'no library');
     ensureMetaMigrated(target);
     try {
@@ -1193,7 +1200,14 @@ const server = http.createServer(async function (req, res) {
     let rec = null;
     try { rec = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
     if (!rec || !rec.id) return send(res, 400, 'missing id');
-    const lib = userLibs(uid).find(l => l.id === rec.libId) || userActiveLib(uid);
+    /* 同上：带了 libId 必须精确命中，别把进度写进另一个库 */
+    let lib;
+    if (rec.libId) {
+      lib = userLibs(uid).find(function (l) { return l.id === rec.libId; });
+      if (!lib) return send(res, 404, 'unknown lib');
+    } else {
+      lib = userActiveLib(uid);
+    }
     const p2 = Number(rec.p), d2 = Number(rec.d);
     if (!isFinite(p2) || p2 < 0) return send(res, 400, 'bad progress');
     if (!lib) return send(res, 404, 'no library');

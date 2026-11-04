@@ -832,6 +832,7 @@
   async function pullMeta() {
     const ch = metaChannel();
     if (ch === 'local') return false;
+    const wantId = activeId;
     let data = null;
     try {
       if (ch === 'ipc') {
@@ -844,6 +845,8 @@
         data = await r.json();
       }
     } catch (e) { return false; }
+    /* 拉取期间切了库：这份快照属于旧库，不能写进新库的本地缓存 */
+    if (activeId !== wantId) return false;
     return applyMeta(data);
   }
 
@@ -868,6 +871,13 @@
   function pushMeta(patch) {
     if (!patch || !activeId) return false;
     if (metaChannel() === 'local') return false;
+    /* 队列里如果还是另一个库的改动，先存成那个库的待发，别往它身上并——
+       否则切库后在新库做的分类会被以旧库的 libId 写进旧库 */
+    if (metaQueue && metaQueue.libId !== activeId) {
+      pendingSave(metaQueue.libId, metaQueue);
+      metaQueue = null;
+      metaRetry = 0;
+    }
     /* 这个库之前有没发出去的改动：一起带上补发。
        mergePatch 会就地改 base，pending 那份是 store 缓存对象，先克隆再合 */
     const stale = pendingAll()[activeId];
@@ -882,6 +892,12 @@
      返回 Promise：调用方要"先补发再拉快照"时必须能等它。 */
   function flushPending() {
     if (metaChannel() === 'local') return Promise.resolve(false);
+    /* 内存队列可能属于切走前的旧库：先落成那个库的待发，别挡住当前库补发 */
+    if (metaQueue && metaQueue.libId !== activeId) {
+      pendingSave(metaQueue.libId, metaQueue);
+      metaQueue = null;
+      metaRetry = 0;
+    }
     if (!activeId || metaSending || metaQueue) return Promise.resolve(false);
     const patch = pendingAll()[activeId];
     if (!patch) return Promise.resolve(false);
@@ -969,7 +985,9 @@
        下次 pullMeta 又拿服务端旧值覆盖本地，断网期间的整理等于白做） */
     if (metaRetry < 1) {
       metaRetry++;
-      metaQueue = mergePatch(patch, metaQueue);
+      /* 队列已被另一个库占用时，本次失败的直接进它自己的待发队列，不能混并 */
+      if (metaQueue && metaQueue.libId !== patch.libId) pendingSave(patch.libId, patch);
+      else metaQueue = mergePatch(patch, metaQueue);
       clearTimeout(metaTimer);
       metaTimer = setTimeout(flushMeta, 2000);
     } else {
