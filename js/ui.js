@@ -2656,12 +2656,18 @@
     let pending = null;      // { kind:'upload', dataUrl } 或 { kind:'xmly', url, albumId, title }
     let deleteMode = false;
     let delBtn = null, saveBtn = null;
+    /* 搜索结果分页：自动获取=第 0 屏；加载更多 page+1；换一换用新 seed 让后端打散同分档 */
+    const PAGE_SIZE = 8;
+    let page = 0, seed = 0, searching = false, lastKw = '';
+    /* 上游每次翻页都会重新抓取，结果会漂移；按 url 去重，避免同一张图重复出现在两屏里 */
+    const shownUrls = new Set();
 
-    const preview = U.el('img', { class: 'cover-img', referrerpolicy: 'no-referrer', style: { width: '116px', height: '116px', objectFit: 'cover', borderRadius: '12px', display: a.cover ? 'block' : 'none' } });
+    const preview = U.el('img', { class: 'cover-img', referrerpolicy: 'no-referrer', style: { display: a.cover ? 'block' : 'none' } });
     if (a.cover) preview.src = a.cover;
-    const previewBox = U.el('div', { style: { width: '116px', height: '116px', flex: 'none', borderRadius: '12px', overflow: 'hidden', background: 'rgba(255,255,255,.06)' } }, [preview]);
-    const candsBox = U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } });
-    const hint = U.el('p', { style: { fontSize: '11px', color: 'var(--dim-2)', margin: '10px 0 0' }, text: '点「保存」才会写入资源库的 .fm-covers/，不会自动生效。' });
+    const previewBox = U.el('div', { class: 'cover-edit-preview' }, [preview]);
+    /* 没搜过之前不占位，免得弹窗一打开就是一块 64px 的空白 */
+    const candsBox = U.el('div', { class: 'cover-edit-cands', style: { display: 'none' } });
+    const hint = U.el('p', { class: 'cover-edit-hint', text: '点「保存」才会写入资源库的 .fm-covers/，不会自动生效。' });
 
     const fileInput = U.el('input', { type: 'file', accept: 'image/*', style: { display: 'none' } });
     fileInput.addEventListener('change', function () {
@@ -2682,16 +2688,43 @@
     /* 关键词输入框：默认专辑名，可改成更准的搜索词 */
     const kwInput = U.el('input', { class: 'input', type: 'text', placeholder: '搜索关键词（默认专辑名）', value: a.title || '' });
     const autoBtn = U.el('button', { class: 'btn btn-ghost', text: '自动获取' });
-    async function searchCover() {
+    const shuffleBtn = U.el('button', { class: 'btn btn-ghost', text: '换一换', title: '用同一个关键词重新搜，换一批结果' });
+    const moreBtn = U.el('button', { class: 'btn btn-ghost', text: '加载更多' });
+    const moreBox = U.el('div', { class: 'cover-edit-more', style: { display: 'none' } }, [shuffleBtn, moreBtn]);
+
+    async function searchCover(opt) {
+      if (searching) return;
+      const o = opt || {};
+      const append = !!o.append;
+      /* 加载更多必须沿用上一屏的关键词：用户可能改了输入框但还没点搜索，
+         否则会把「新词的第 2 页」拼到「旧词的列表」后面 */
+      const kw = (append && lastKw) ? lastKw : ((kwInput.value || '').trim() || a.title);
+      lastKw = kw;
+      /* 加载更多 → 下一页；其它 → 回到第 0 屏（换一换会带新 seed） */
+      if (append) page += 1;
+      else { page = 0; seed = o.shuffle ? (Date.now() % 2147483647) : 0; }
+      searching = true;
       autoBtn.disabled = true;
-      autoBtn.textContent = '搜索中…';
-      const kw = (kwInput.value || '').trim() || a.title;
+      autoBtn.textContent = append ? '加载中…' : '搜索中…';
+      shuffleBtn.disabled = true;
+      moreBtn.disabled = true;
       let list = [];
-      try { list = await FM.covers.search(kw); } catch (e) {}
+      try { list = await FM.covers.search(kw, { page: page, seed: seed, limit: PAGE_SIZE }); } catch (e) {}
+      searching = false;
       autoBtn.disabled = false;
       autoBtn.textContent = '自动获取';
-      renderCands(list || []);
-      if (!list || !list.length) toast('没搜到匹配的封面（喜马拉雅 + 百度都没结果），换个关键词；若刚更新代码，请重启应用', 'warn');
+      shuffleBtn.disabled = false;
+      moreBtn.disabled = false;
+      const added = renderCands(list || [], append);
+      /* 拿到满满一屏「且真加进去了新图」才算还有下一页，否则按钮会一直点空 */
+      const hasMore = !!(list && list.length >= PAGE_SIZE && added > 0);
+      moreBtn.textContent = hasMore ? '加载更多' : '没有更多了';
+      moreBtn.disabled = !hasMore;
+      moreBox.style.display = candsBox.childElementCount ? '' : 'none';
+      if (!append && (!list || !list.length)) {
+        const why = (FM.covers && FM.covers.searchError) ? '：' + FM.covers.searchError : '';
+        toast('没搜到匹配的封面' + why + '。换个关键词再试；若一直空，确认服务端/应用已重启', 'warn');
+      }
     }
     autoBtn.addEventListener('click', function () { searchCover(); });
     shuffleBtn.addEventListener('click', function () { searchCover({ shuffle: true }); });
@@ -2700,48 +2733,50 @@
       if (e.key === 'Enter') { e.preventDefault(); searchCover(); }
     });
 
-    function renderCands(list) {
-      candsBox.innerHTML = '';
+    function renderCands(list, append) {
+      if (!append) { candsBox.innerHTML = ''; shownUrls.clear(); }
+      let added = 0;
       list.forEach(function (c) {
         if (!c || !c.url || shownUrls.has(c.url)) return;
         shownUrls.add(c.url);
         added++;
         /* 缩略图下面带标题，一眼能看出这张图对应哪张专辑 */
-        const cell = U.el('div', { style: { width: '64px', cursor: 'pointer', position: 'relative' } }, [
-          U.el('div', { style: { width: '64px', height: '64px', borderRadius: '8px', overflow: 'hidden' } }, [
-            U.el('img', { src: c.url, alt: '', title: c.title, referrerpolicy: 'no-referrer', style: { width: '100%', height: '100%', objectFit: 'cover' } })
+        const cell = U.el('div', { class: 'cover-cand', title: c.title || '' }, [
+          U.el('div', { class: 'cover-cand-pic' }, [
+            U.el('img', { src: c.url, alt: '', referrerpolicy: 'no-referrer' })
           ]),
           U.el('span', {
-            style: { position: 'absolute', left: '2px', top: '2px', padding: '0 4px', borderRadius: '5px', fontSize: '8px', lineHeight: '1.5', color: '#e6f3ff', background: 'rgba(0,0,0,.62)' },
+            class: 'cover-cand-src',
             text: c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马'
           }),
-          U.el('div', {
-            title: c.title,
-            style: { marginTop: '3px', fontSize: '9px', lineHeight: '1.2', color: 'var(--dim-2)', maxWidth: '64px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
-            text: c.title || ''
-          })
+          U.el('div', { class: 'cover-cand-title', text: c.title || '' })
         ]);
-        cell.title = c.title || '';
         cell.addEventListener('click', function () {
           pending = { kind: 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' };
           deleteMode = false;
           preview.src = c.url;
           preview.style.display = 'block';
+          const prev = candsBox.querySelector('.cover-cand.active');
+          if (prev) prev.classList.remove('active');
+          cell.classList.add('active');
           updateActions();
         });
         candsBox.appendChild(cell);
       });
+      if (candsBox.childElementCount) candsBox.style.display = '';
+      return added;
     }
 
     const body = U.el('div', { class: 'cover-edit' }, [
-      U.el('div', { style: { display: 'flex', gap: '12px', alignItems: 'flex-start' } }, [
+      U.el('div', { class: 'cover-edit-main' }, [
         previewBox,
-        U.el('div', { style: { flex: '1', display: 'flex', flexDirection: 'column', gap: '10px' } }, [
+        U.el('div', { class: 'cover-edit-side' }, [
           kwInput,
-          U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [uploadBtn, autoBtn]),
+          U.el('div', { class: 'cover-edit-tools' }, [uploadBtn, autoBtn]),
           candsBox
         ])
       ]),
+      moreBox,
       hint
     ]);
 
@@ -2765,6 +2800,7 @@
 
     const m = openModal({
       title: '编辑封面',
+      cls: 'cover-edit-modal',
       body: body,
       actions: [
         {
@@ -2774,6 +2810,9 @@
               pending = null;
               preview.src = a.cover || '';
               preview.style.display = a.cover ? 'block' : 'none';
+              /* 预览已经退回原封面，候选图上的选中框也得去掉，否则看起来像还选了新图 */
+              const on = candsBox.querySelector('.cover-cand.active');
+              if (on) on.classList.remove('active');
             }
             updateActions();
             return false;

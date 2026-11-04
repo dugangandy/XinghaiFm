@@ -276,9 +276,12 @@ async function albumInfo(id) {
 
 /* 网页搜索框用的 /revision/search：不用登录也不风控，一次就给十几张专辑，
    标题、封面、播放量都在响应里，比搜索引擎稳，也省掉逐张查详情的请求。 */
-async function searchXm(query) {
+async function searchXm(query, page, rows) {
+  /* 上游 page 从 1 开始，rows 是单页条数；不传就是老行为（第 1 页 10 条） */
+  const pn = Math.max(0, Number(page) || 0) + 1;
+  const rn = Math.max(10, Math.min(30, Number(rows) || 10));
   try {
-    const r = await fetchText("https://www.ximalaya.com/revision/search?kw=" + encodeURIComponent(query) + "&page=1&rows=10&core=album", {
+    const r = await fetchText("https://www.ximalaya.com/revision/search?kw=" + encodeURIComponent(query) + "&page=" + pn + "&rows=" + rn + "&core=album", {
       "accept": "application/json",
       "referer": "https://www.ximalaya.com/"
     });
@@ -598,7 +601,7 @@ async function searchGeekbang(query, maxN) {
   if (!q) return [];
   try {
     const r = await postJson('https://time.geekbang.org/serv/v3/search',
-      { keyword: q, page: 0, size: Math.max(n * 3, 12) },
+      { keyword: q, page: 0, size: Math.min(Math.max(n * 3, 12), 40) },
       {
         'content-type': 'application/json',
         'accept': 'application/json, text/plain, */*',
@@ -626,12 +629,14 @@ async function searchGeekbang(query, maxN) {
 }
 
 /* 百度图片：没有官方 API，抓搜索页背后的 acjson；只在喜马拉雅没命中时兜底 */
-async function searchBaidu(query, maxN) {
+async function searchBaidu(query, maxN, page) {
   const n = maxN || 4;
   const q = String(query || '').trim();
   if (!q) return [];
+  /* 百度图片按 pn 偏移翻页，一页 30 条；rn 是这一页要几条 */
+  const pn = Math.max(0, Number(page) || 0) * 30;
   const api = 'https://image.baidu.com/search/acjson?tn=resultjson_com&ipn=rj&ct=201326592&is=&fp=result'
-    + '&word=' + encodeURIComponent(q) + '&pn=0&rn=' + Math.max(n * 3, 12);
+    + '&word=' + encodeURIComponent(q) + '&pn=' + pn + '&rn=' + Math.max(n * 3, 12);
   try {
     const r = await fetchText(api, {
       'accept': 'application/json, text/plain, */*',
@@ -649,43 +654,94 @@ async function searchBaidu(query, maxN) {
       const url = String(d.middleURL || d.thumbURL || d.hoverURL || '').replace(/^http:\/\//, 'https://');
       if (!url) continue;
       const title = String(d.fromPageTitleEnc || d.di || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      out.push({ id: 'bd' + i, title: title || q, url: url, source: 'baidu' });
+      /* id 带上页码，翻页时不会和前几页撞 id */
+      out.push({ id: 'bd' + pn + '-' + i, title: title || q, url: url, source: 'baidu' });
     }
     return out;
   } catch (e) { console.warn('[cover] 百度请求失败：' + e.message); return []; }
 }
 
-async function searchCandidates(title, maxN) {
-  const n = maxN || 4;
-  /* 1. 极客时间：技术课程在这儿最准，有结果就直接用 */
-  const gb = await searchGeekbang(title || '', n);
-  if (gb.length) return gb;
-  /* 2. 喜马拉雅 */
-  let cands = [];
-  for (const q of queriesOf(title || '')) {
-    cands = cands.concat(await searchXm(q));
-    cands = Array.from(new Map(cands.map(c => [c.id, c])).values());
-    if (cands.length >= 20) break;
-    await sleep(500);
+/* 由「seed + 图片地址」算一个稳定的伪随机权重（FNV-1a）：
+   同一个 seed 结果可复现，换个 seed 档内顺序就变，「换一换」才有意义 */
+function noiseOf(key, seed) {
+  let h = ((seed >>> 0) ^ 2166136261) >>> 0;
+  const s = String(key || '');
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
   }
-  cands = cands.filter(c => c.cover);
-  /* 站内搜索很宽松：不做相似度过滤的话，搜「全链路压测」也会返回「毛选」之类的热门专辑 */
-  cands.forEach(c => { c.score = scoreOf(title || '', c.title); });
-  cands = cands.filter(c => c.score >= MIN_SCORE);
-  cands.sort((a, b) => b.score - a.score || (b.playCount || 0) - (a.playCount || 0));
+  return h / 4294967296;
+}
+
+/* 分页切片：seed=0 严格按相似度；seed 非 0 先把相似度按 0.1 分档、档内按 seed 打散，
+   这样「换一换」能换出新面孔，又不会把明显不相关的图顶到高分结果前面 */
+function slicePage(list, page, limit, seed) {
+  const arr = list.slice();
+  const bucket = function (c) { return Math.round((Number(c.score) || 0) * 10); };
+  const byPlay = function (a, b) { return (b.playCount || 0) - (a.playCount || 0); };
+  if (seed) {
+    const key = function (c) { return c.url || c.id || ''; };
+    arr.sort(function (a, b) {
+      return bucket(b) - bucket(a) || noiseOf(key(a), seed) - noiseOf(key(b), seed);
+    });
+  } else {
+    arr.sort(function (a, b) { return (Number(b.score) || 0) - (Number(a.score) || 0) || byPlay(a, b); });
+  }
+  const start = page * limit;
+  return arr.slice(start, start + limit);
+}
+
+/* 候选池：极客时间 + 喜马拉雅合并排序，凑不满一屏再用百度图片补足。
+   opts = { page, limit, seed }：page 从 0 开始；seed 非 0 用于「换一换」打散同分档 */
+async function searchCandidates(title, maxN, opts) {
+  const o = (opts && typeof opts === 'object') ? opts : {};
+  const limit = Math.max(1, Math.min(24, Number(o.limit || maxN) || 4));
+  const page = Math.max(0, Math.min(20, Number(o.page) || 0));
+  const seed = Math.abs(Number(o.seed) || 0) >>> 0;
+  const want = (page + 1) * limit;
+  const kw = String(title || '').trim();
+
+  const pool = [];
   const seen = new Set();
-  const out = [];
-  for (const c of cands) {
-    if (seen.has(c.id)) continue;
-    seen.add(c.id);
-    const clean = c.cover.replace(/!.*$/, '');
-    const url = /xmcdn\.com/.test(clean) ? clean + '!op_type=3&columns=600&rows=600' : clean;
-    out.push({ id: c.id, title: c.title, url: url, score: +c.score.toFixed(3), source: 'xmly' });
-    if (out.length >= n) break;
+  const push = function (c) {
+    if (!c || !c.url) return;
+    const key = c.source + ':' + (c.id || c.url);
+    if (seen.has(key)) return;
+    seen.add(key);
+    pool.push(c);
+  };
+
+  /* 1. 极客时间：技术课程在这儿最准 */
+  (await searchGeekbang(kw, want)).forEach(push);
+  /* 2. 喜马拉雅：结果更宽，靠 score 过滤噪音；query 变体按 seed 轮换起点，换一换能换词 */
+  const queries = queriesOf(kw);
+  if (seed && queries.length > 1) {
+    const k = seed % queries.length;
+    queries.push.apply(queries, queries.splice(0, k));
   }
-  /* 3. 极客时间和喜马拉雅都没匹配 → 最后试百度图片 */
-  if (!out.length) return await searchBaidu(title || '', n);
-  return out;
+  let xmRaw = [];
+  for (let i = 0; i < queries.length; i++) {
+    xmRaw = xmRaw.concat(await searchXm(queries[i], page, Math.max(limit * 2, 10)));
+    xmRaw = Array.from(new Map(xmRaw.map(c => [c.id, c])).values());
+    if (xmRaw.length >= want * 2) break;
+    if (i < queries.length - 1) await sleep(300);
+  }
+  /* 站内搜索很宽松：不做相似度过滤的话，搜「全链路压测」也会返回「毛选」之类的热门专辑 */
+  xmRaw.filter(c => c.cover).forEach(function (c) {
+    const score = scoreOf(kw, c.title);
+    if (score < MIN_SCORE) return;
+    const clean = String(c.cover).replace(/!.*$/, '');
+    const url = /xmcdn\.com/.test(clean) ? clean + '!op_type=3&columns=600&rows=600' : clean;
+    push({ id: c.id, title: c.title, url: url, score: +score.toFixed(3), playCount: c.playCount || 0, source: 'xmly' });
+  });
+
+  /* 3. 池还不够翻到这一页 → 用百度图片把池撑大。百度是纯图搜词，score 记 0，
+     排序上永远排在专辑结果后面，只在数量不够时补位 */
+  if (pool.length < want) {
+    const bd = await searchBaidu(kw, Math.max(limit * 2, 12), 0);
+    bd.forEach(push);
+  }
+  return slicePage(pool, page, limit, seed);
 }
 
 module.exports = { run: run, auto: auto, pendingOf: pendingOf, titleOf: titleOf, cli: cli,

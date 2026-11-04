@@ -200,27 +200,47 @@
     A.forEach(function (x) { if (B.has(x)) hit++; });
     return (2 * hit) / (A.size + B.size);
   }
-  function filterCandidates(list, kw) {
+  function filterCandidates(list, kw, limit) {
+    const n = limit || 8;
     if (!list || !list.length) return [];
     /* 新版后端已经带 score 并筛过，直接用；百度来源按图搜词，不做标题过滤；旧版没 score 才客户端筛 */
-    if (list.every(function (c) { return c.source === 'baidu'; })) return list.slice(0, 4);
-    if (list.some(function (c) { return typeof c.score === 'number'; })) return list.slice(0, 4);
+    if (list.every(function (c) { return c.source === 'baidu'; })) return list.slice(0, n);
+    if (list.some(function (c) { return typeof c.score === 'number'; })) return list.slice(0, n);
     const scored = list.map(function (c) { return { c: c, s: titleScore(kw, c.title) }; })
       .filter(function (x) { return x.s >= 0.5; });
     scored.sort(function (x, y) { return y.s - x.s; });
-    return scored.slice(0, 4).map(function (x) { return x.c; });
+    return scored.slice(0, n).map(function (x) { return x.c; });
   }
 
-  async function search(title) {
+  /* opts = { page, seed, limit }：page 从 0 开始翻页，seed 非 0 时后端会打散同分档（换一换）
+     失败原因记到 lastError 里：界面 toast 要能说出到底是 403、服务端没重启，还是网络不通 */
+  let lastError = '';
+  async function search(title, opts) {
+    const o = opts || {};
+    const limit = Math.max(1, Math.min(24, Number(o.limit) || 8));
+    const page = Math.max(0, Math.min(20, Number(o.page) || 0));
+    const seed = Math.abs(Number(o.seed) || 0);
+    lastError = '';
     try {
       if (FM.fs.native && window.fmNative && window.fmNative.searchCover) {
-        return filterCandidates((await window.fmNative.searchCover(title)) || [], title);
+        return filterCandidates((await window.fmNative.searchCover(title, { page: page, seed: seed, limit: limit })) || [], title, limit);
       }
       if (FM.fs.server) {
-        const r = await FM.fs.apiFetch('/api/covers/search?q=' + encodeURIComponent(title || ''));
-        return filterCandidates(r && r.ok ? (await r.json()) : [], title);
+        const r = await FM.fs.apiFetch('/api/covers/search?q=' + encodeURIComponent(title || '')
+          + '&page=' + page + '&limit=' + limit + '&seed=' + seed);
+        if (!r) { lastError = '服务端无响应'; return []; }
+        if (!r.ok) {
+          lastError = '服务端返回 ' + r.status
+            + (r.status === 403 ? '（需要管理员登录）' : r.status === 404 ? '（服务端可能是旧版本，重启 serve.js 再试）' : '');
+          return [];
+        }
+        return filterCandidates((await r.json()) || [], title, limit);
       }
-    } catch (e) { console.warn('[covers] 搜索失败', e); }
+      lastError = FM.fs.native ? '请重启应用（搜索接口未加载）' : '当前模式不支持搜图';
+    } catch (e) {
+      lastError = String((e && e.message) || e || '请求失败');
+      console.warn('[covers] 搜索失败', e);
+    }
     return [];
   }
 
@@ -279,6 +299,7 @@
   FM.covers = {
     load, apply, of, search, save, remove,
     get ready() { return loaded; },
-    get count() { return index.length; }
+    get count() { return index.length; },
+    get searchError() { return lastError; }
   };
 })(window.FM);

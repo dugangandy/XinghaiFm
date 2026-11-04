@@ -551,6 +551,27 @@ body.app-fs .vstage{
   .ac-title{font-size:15.5px}
 }
 
+/* 编辑封面：手机上弹窗可用宽度只有 300 出头，预览图和输入框挤在一行会把按钮压到第二行，
+   这里改成上下排（预览缩到 84px 居中），两个按钮和底部三个按钮都锁死一行 */
+@media (max-width:760px){
+  .modal-mask{padding:16px}
+  /* 竖排后交叉轴变成水平：不加 stretch，side 会被压缩成内容宽度（候选网格只剩 2 列） */
+  .cover-edit-main{flex-direction:column;gap:10px;align-items:stretch}
+  .cover-edit-side{flex:0 0 auto}
+  .cover-edit-preview{width:84px;height:84px;align-self:center;border-radius:11px}
+  .cover-edit-preview .cover-img{border-radius:11px}
+  .cover-edit-cands{grid-template-columns:repeat(auto-fill,minmax(56px,1fr));gap:7px;max-height:none}
+  /* 候选网格退出自己的滚动，交给弹窗正文统一滚：手机上 56vh 装不下 8 张候选 + 输入框 */
+  .modal.cover-edit-modal .modal-body{max-height:66vh}
+  /* 底部「删除封面 / 取消 / 保存」始终一行：等分宽度，不换行 */
+  .modal.cover-edit-modal .modal-foot{
+    gap:6px;padding:12px 16px calc(14px + var(--sab));flex-wrap:nowrap;
+  }
+  .modal.cover-edit-modal .modal-foot .btn{
+    flex:1 1 0;min-width:0;height:38px;padding:0 6px;font-size:12.5px;letter-spacing:0;
+  }
+}
+
 /* 矮屏（≤700 高、竖屏）：整页本来就紧，专辑卡压到最小一档，
    标题只留一行，保证卡片完整落在屏幕内（横屏另有一套紧凑尺寸） */
 @media (max-height:700px) and (max-width:520px){

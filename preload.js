@@ -33,7 +33,7 @@ contextBridge.exposeInMainWorld('fmNative', {
   /* refresh=true 跳过扫描缓存真的走盘（前端「重新扫描」）；平时读主进程缓存的扫描结果 */
   scan: (refresh) => ipcRenderer.invoke('fm:scan', !!refresh),
   covers: () => ipcRenderer.invoke('fm:covers'),
-  searchCover: (title) => ipcRenderer.invoke('fm:searchCover', title),
+  searchCover: (title, opts) => ipcRenderer.invoke('fm:searchCover', title, opts),
   saveCover: (dirName, payload) => ipcRenderer.invoke('fm:saveCover', dirName, payload),
   deleteCover: (dirName) => ipcRenderer.invoke('fm:deleteCover', dirName),
   openLib: (id) => ipcRenderer.invoke('fm:openLib', id),

@@ -1425,7 +1425,11 @@ const server = http.createServer(async function (req, res) {
     if (!lib) return send(res, 404, 'server mode off');
     const root = lib.path;
     if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以编辑封面');
-    try { return json(res, await covers.searchCandidates(u.searchParams.get('q') || '', 4)); }
+    /* page 从 0 开始翻页；seed 非 0 表示「换一换」，后端会把同分档的候选打散 */
+    const page = Math.max(0, Math.min(20, parseInt(u.searchParams.get('page') || '0', 10) || 0));
+    const limit = Math.max(1, Math.min(24, parseInt(u.searchParams.get('limit') || '8', 10) || 8));
+    const seed = Math.abs(parseInt(u.searchParams.get('seed') || '0', 10) || 0);
+    try { return json(res, await covers.searchCandidates(u.searchParams.get('q') || '', limit, { page: page, limit: limit, seed: seed })); }
     catch (e) { return json(res, []); }
   }
   if (p === '/api/cover' && req.method === 'POST') {

@@ -635,10 +635,14 @@ function bindIpc() {
   });
 
   /* ── 网页手动编辑封面：搜索候选 / 保存 / 删除，三者都走 .fm-covers/ ── */
-  ipcMain.handle('fm:searchCover', async function (e, title) {
+  ipcMain.handle('fm:searchCover', async function (e, title, opts) {
     const lib = activeLib();
     if (!lib) return [];
-    try { return await covers.searchCandidates(title, 4); } catch (err) { return []; }
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    const limit = Math.max(1, Math.min(24, Number(o.limit) || 8));
+    try {
+      return await covers.searchCandidates(title, limit, { page: o.page, limit: limit, seed: o.seed });
+    } catch (err) { return []; }
   });
   ipcMain.handle('fm:saveCover', async function (e, dirName, payload) {
     const lib = activeLib();

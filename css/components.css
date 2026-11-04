@@ -769,6 +769,36 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .modal-head .icon-btn .i{width:15px;height:15px}
 .modal-body{padding:12px 20px 6px;display:flex;flex-direction:column;gap:14px;max-height:56vh;overflow-y:auto}
 .modal-foot{padding:16px 20px 18px;display:flex;gap:9px;justify-content:flex-end}
+/* ── 编辑封面弹窗 ── */
+.modal.cover-edit-modal{width:min(560px,100%)}
+.cover-edit{display:flex;flex-direction:column;gap:12px}
+.cover-edit-main{display:flex;gap:14px;align-items:flex-start}
+.cover-edit-preview{flex:none;width:116px;height:116px;border-radius:12px;overflow:hidden;background:rgba(255,255,255,.06)}
+.cover-edit-preview .cover-img{width:100%;height:100%;object-fit:cover;border-radius:12px}
+.cover-edit-side{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px}
+/* 上传/搜索按钮用 .btn 默认尺寸，只锁一行不换行；不拉伸，免得看着像主操作 */
+.cover-edit-tools{display:flex;gap:8px;flex-wrap:nowrap}
+.cover-edit-cands{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:8px;
+  min-height:64px;max-height:248px;overflow-y:auto;align-content:start;
+}
+.cover-cand{position:relative;min-width:0;cursor:pointer;transition:.18s var(--ease)}
+.cover-cand:active{transform:scale(.96)}
+.cover-cand-pic{width:100%;aspect-ratio:1/1;border-radius:8px;overflow:hidden;background:rgba(255,255,255,.05)}
+.cover-cand-pic img{display:block;width:100%;height:100%;object-fit:cover}
+.cover-cand.active .cover-cand-pic{box-shadow:0 0 0 2px rgba(34,211,238,.8)}
+.cover-cand-src{
+  position:absolute;left:2px;top:2px;padding:0 4px;border-radius:5px;
+  font-size:8px;line-height:1.5;color:#e6f3ff;background:rgba(0,0,0,.62);
+}
+.cover-cand-title{
+  margin-top:3px;font-size:9px;line-height:1.2;color:var(--dim-2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.cover-edit-more{display:flex;gap:8px;align-items:center;flex-wrap:nowrap}
+.cover-edit-tools .btn:disabled,
+.cover-edit-more .btn:disabled{opacity:.45;pointer-events:none}
+.cover-edit-hint{margin:0;font-size:11px;color:var(--dim-2);line-height:1.6}
 .confirm{display:flex;align-items:flex-start;gap:13px;padding:2px 0 6px}
 .confirm-ico{
   flex:none;width:38px;height:38px;border-radius:12px;display:grid;place-items:center;
