@@ -4506,7 +4506,10 @@
       try { await FM.fs.flushPending(); } catch (e) {}
       P.stop();
       resetView();
-      await enterLib({});
+      /* 服务端模式：切库时强制从服务端扫描缓存重建，不用手机本地索引——
+         本地索引一旦串过库，切过去会一直显示错的专辑列表；服务端缓存读取很快，不重扫盘。
+         桌面本地库仍用本地缓存秒切。 */
+      await enterLib(FM.fs.server ? { force: true } : {});
       renderAll();
       /* 切库会 P.stop() 清空播放器：回到这个库时把上次听到的那集放回底栏（不自动播放） */
       restorePlayerBar();
@@ -4566,6 +4569,9 @@
     const o = opts || {};
     const id = FM.fs.activeId;
     if (!id) { L.clear(); renderAll(); renderWelcome(); return; }
+    /* 先把库模块的上下文切到当前库：pullMeta 的 applyMeta 用 rootKey 当前缀，
+       不能等后面的 restore 才切，否则整理会写到上一个库的键下 */
+    try { L.prime(id); } catch (e) {}
     /* 先把库里的元数据（分类 / 整理 / 进度）拉下来，分类才带得出来：桌面走 IPC、网页和手机走接口 */
     if (FM.fs.canSyncMeta()) { try { await FM.fs.pullMeta(); } catch (e) {} }
     const cached = o.force ? null : FM.db.index(id);

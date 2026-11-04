@@ -145,6 +145,9 @@
     const o = Object.assign({}, opts || {});
     const headers = Object.assign({}, o.headers || {});
     if (API_TOKEN) headers.Authorization = 'Bearer ' + API_TOKEN;
+    /* 带上当前库：服务端读接口据此定位到本客户端的库，不再依赖「按用户的活动库」，
+       避免同一账号多设备/多会话时互相串库 */
+    if (activeId) headers['x-fm-lib'] = activeId;
     o.headers = headers;
     return fetch(API_BASE + path, o).then(function (r) {
       if (!REMOTE) {
@@ -169,8 +172,11 @@
      桌面端（fm://app + Bearer，没有 cookie）才换一张短期票据挂 query */
   let ticketCache = Object.create(null);     // scope -> { t, exp }
   async function signedUrl(path) {
-    if (!REMOTE) return path;
-    const scope = path.indexOf('/api/cover/') === 0 ? 'cover' : 'media';
+    /* 封面/媒体的 <img>/<audio> 带不了请求头：把当前库挂在 query 上，服务端据此定位 */
+    let p = path;
+    if (activeId) p += (p.indexOf('?') >= 0 ? '&' : '?') + 'libId=' + encodeURIComponent(activeId);
+    if (!REMOTE) return p;
+    const scope = p.indexOf('/api/cover/') === 0 ? 'cover' : 'media';
     const now = Math.floor(Date.now() / 1000);
     let c = ticketCache[scope];
     /* 票据按用途分开取：封面 10 分钟一轮，媒体要顶住单集时长，不能共用一份 */
@@ -179,8 +185,8 @@
       if (!r.ok) throw new Error(r.status === 401 ? '登录已过期，请重新登录' : U.NET_FAIL);
       c = ticketCache[scope] = await r.json();
     }
-    if (!c.t) return API_BASE + path;      // cookie 模式：同源请求自带会话 cookie
-    return API_BASE + path + (path.indexOf('?') >= 0 ? '&' : '?') + 't=' + encodeURIComponent(c.t);
+    if (!c.t) return API_BASE + p;      // cookie 模式：同源请求自带会话 cookie
+    return API_BASE + p + (p.indexOf('?') >= 0 ? '&' : '?') + 't=' + encodeURIComponent(c.t);
   }
 
   /* ── IndexedDB：仅存目录 handle ── */

@@ -607,6 +607,27 @@
     });
   }
 
+  /* 进库前先设定当前库上下文（libId / rootKey / 模式）。
+     enterLib 是「先 pullMeta 再 restore」，而 applyMeta 的 albumMeta 用 rootKey 当前缀——
+     不先切过来的话，切库时会把新库的整理写到上一个库的键下，导致专辑列表看起来不对。 */
+  function prime(id) {
+    libId = id || '';
+    const cached = db.index(id);
+    if (cached) {
+      rootName = cached.rootName || '';
+      rootKey = String(cached.root || cached.rootName || '');
+      scannedAt = cached.scannedAt || 0;
+      setDirMode(cached.dirMode === undefined ? (cached.dirGroup ? 'cat' : 'flat') : cached.dirMode);
+    } else {
+      const lib = FM.fs.active();
+      rootName = lib ? (lib.name || '') : '';
+      rootKey = lib && lib.path ? String(lib.path) : '';
+      scannedAt = 0;
+      setDirMode('flat');
+    }
+    ensureMetaKeys();
+  }
+
   function restore(id) {
     ensureMetaKeys();
     const cached = db.index(id);
@@ -931,7 +952,7 @@
   }
 
   FM.lib = {
-    build, restore, saveIndex, clear,
+    build, prime, restore, saveIndex, clear,
     ensureCats, groupFiles, dirCatId,
     dirMode: () => dirMode,
     isDirGroup: () => dirGroupMode,

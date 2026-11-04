@@ -135,6 +135,14 @@ const MULTI = true;   // 每个用户都可以有多个资源库
 function userLibs(uid) { DB.syncUserSharedLibs(db, uid); return DB.listLibs(db, uid); }
 function userActiveLib(uid) { DB.syncUserSharedLibs(db, uid); return DB.activeLib(db, uid); }
 function userActiveRoot(uid) { const l = userActiveLib(uid); return l ? l.path : ''; }
+/* 解析本次请求针对哪个库：优先显式 libId（query 或 x-fm-lib 头），必须命中该用户名下的库；
+   没给才回退到当前活动库。这样同一账号多设备/多会话同时用时，读接口不会互相串库。 */
+function reqLib(uid, req, u) {
+  let id = '';
+  try { id = (u && u.searchParams.get('libId')) || String((req && req.headers['x-fm-lib']) || ''); } catch (e) { id = ''; }
+  if (id) return userLibs(uid).find(function (l) { return l.id === id; }) || null;
+  return userActiveLib(uid);
+}
 /* fixed = 前端不给改（没开 --allow-lib-edit，或者是别人共享来的只读库） */
 function libView(l) {
   return {
@@ -911,7 +919,7 @@ const server = http.createServer(async function (req, res) {
   if (origin === 'fm://app') {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Fm-Lib');
     /* 滑动续期的新 token 走响应头下发，跨源时得显式放行，否则桌面端读不到 */
     res.setHeader('Access-Control-Expose-Headers', 'x-fm-token');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -1119,7 +1127,7 @@ const server = http.createServer(async function (req, res) {
   }
   if (p === '/api/config') {
     const libs = userLibs(uid);
-    const lib = userActiveLib(uid);
+    const lib = reqLib(uid, req, u);
     return json(res, {
       server: libs.length > 0, rootName: lib ? lib.name : '', multi: MULTI, libEdit: ALLOW_LIB_EDIT,
       /* auth=false 表示服务端跑在 --no-auth 免密模式：前端据此隐藏用户管理等需要真身份的功能 */
@@ -1142,12 +1150,13 @@ const server = http.createServer(async function (req, res) {
     const lib = userActiveLib(uid);
     /* GET：整份快照（分类 / 专辑整理 / 进度 / 时长），字段和老的 .fm-meta.json 对齐 */
     if (req.method === 'GET') {
-      if (!lib) return json(res, { empty: true });
-      ensureMetaMigrated(lib);
+      const glib = reqLib(uid, req, u);
+      if (!glib) return json(res, { empty: true });
+      ensureMetaMigrated(glib);
       /* lastTrack 是「这个用户在这个库」的最后收听，不算库属性：
          新用户登录时它是空的，前端就不会凭空显示底栏 */
-      return json(res, Object.assign(DB.metaSnapshot(db, lib.path, uid), {
-        lastTrack: DB.userLastTrack(db, uid, lib.id)
+      return json(res, Object.assign(DB.metaSnapshot(db, glib.path, uid), {
+        lastTrack: DB.userLastTrack(db, uid, glib.id)
       }));
     }
     if (req.method !== 'POST') return send(res, 405, 'GET or POST only');
@@ -1317,22 +1326,23 @@ const server = http.createServer(async function (req, res) {
   /* 只回扫描缓存的时间戳（一行 settings，几毫秒）：手机端没有扫描入口，
      靠它判断「主机上是不是有人扫过更新的」，有就静默重新读 /api/scan 的缓存 */
   if (p === '/api/scan/at') {
-    const root = userActiveRoot(uid);
-    if (!root) return json(res, { scannedAt: 0 });
+    const lib = reqLib(uid, req, u);
+    if (!lib) return json(res, { scannedAt: 0 });
+    const root = lib.path;
     let at = 0;
     try { at = Number(DB.getSetting(db, scanKey(root) + ':at', '0')) || 0; } catch (e) {}
     return json(res, { scannedAt: at });
   }
   if (p === '/api/scan') {
-    const root = userActiveRoot(uid);
-    if (!root) return send(res, 404, 'server mode off');
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    const root = lib.path;
     try {
       /* refresh=1 只有前端「重新扫描」会带；平时一律读缓存，别让每台设备每个用户各扫一遍 */
       const refresh = u.searchParams.get('refresh') === '1';
       /* 拷一份再往上加字段：缓存里的对象别被改动 */
       const data = Object.assign({}, await scanFolder(root, { refresh: refresh }));
-      const a = userActiveLib(uid);
-      data.libId = a ? a.id : null;
+      data.libId = lib.id;
       /* 目录结构跟着扫描结果一起下发，前端不用再单独取一次 */
       data.dirMode = DB.libDirMode(db, root);
       data.dirGroup = DB.libDirGroup(db, root);
@@ -1345,14 +1355,16 @@ const server = http.createServer(async function (req, res) {
     }
   }
   if (p === '/api/covers') {
-    const root = userActiveRoot(uid);
-    if (!root) return send(res, 404, 'server mode off');
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    const root = lib.path;
     try { return json(res, JSON.parse(await fsp.readFile(path.join(root, COVER_DIR, 'covers.json'), 'utf8'))); }
     catch (e) { return json(res, {}); }
   }
   if (p.indexOf('/api/cover/') === 0) {
-    const root = userActiveRoot(uid);
-    if (!root) return send(res, 404, 'server mode off');
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    const root = lib.path;
     try {
       const file = inside(path.join(root, COVER_DIR), p.slice('/api/cover/'.length));
       const buf = await fsp.readFile(file);
@@ -1361,15 +1373,17 @@ const server = http.createServer(async function (req, res) {
   }
   /* 手动编辑封面：搜索候选 / 保存 / 删除（前端编辑封面弹窗调用，点保存才落到磁盘） */
   if (p === '/api/covers/search') {
-    const root = userActiveRoot(uid);
-    if (!root) return send(res, 404, 'server mode off');
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    const root = lib.path;
     if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以编辑封面');
     try { return json(res, await covers.searchCandidates(u.searchParams.get('q') || '', 4)); }
     catch (e) { return json(res, []); }
   }
   if (p === '/api/cover' && req.method === 'POST') {
-    const root = userActiveRoot(uid);
-    if (!root) return send(res, 404, 'server mode off');
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    const root = lib.path;
     if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以编辑封面');
     if (!writeAllowed(ip, 10, 'cover')) return send(res, 429, 'too many writes');
     /* 上传的图片走 dataUrl，2MB 的图 base64 之后约 2.8MB，留点余量卡在 4MB */
@@ -1391,8 +1405,9 @@ const server = http.createServer(async function (req, res) {
     }
   }
   if (p === '/api/cover' && req.method === 'DELETE') {
-    const root = userActiveRoot(uid);
-    if (!root) return send(res, 404, 'server mode off');
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    const root = lib.path;
     if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以编辑封面');
     let dir = u.searchParams.get('dir') || '';
     if (!dir && req.method === 'POST') {
@@ -1409,9 +1424,9 @@ const server = http.createServer(async function (req, res) {
   }
 
   if (p.indexOf('/api/media/') === 0) {
-    const root = userActiveRoot(uid);
-    if (!root) return send(res, 404, 'server mode off');
-    return serveMedia(req, res, p.slice('/api/media/'.length), root);
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    return serveMedia(req, res, p.slice('/api/media/'.length), lib.path);
   }
 
   /* ── 转码：Chromium 认不全的 flv 容器先重封装成 mp4 再播 ──
@@ -1419,8 +1434,9 @@ const server = http.createServer(async function (req, res) {
      再自己去 /api/tc/<name> 拉流；请求期间保持连接，前端只显示「正在转换」。 */
   if (p === '/api/prepare') {
     if (req.method !== 'POST') return send(res, 405, 'POST only');
-    const root = userActiveRoot(uid);
-    if (!root) return send(res, 404, 'server mode off');
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    const root = lib.path;
     if (!writeAllowed(ip, 5, 'tc')) return send(res, 429, 'too many requests');
     let body = '';
     for await (const chunk of req) {
@@ -1464,8 +1480,9 @@ const server = http.createServer(async function (req, res) {
 
   /* 时长探测：只读文件头不转码，前端给 wma/flv 这类曲目算时长用 */
   if (p === '/api/duration') {
-    const root = userActiveRoot(uid);
-    if (!root) return send(res, 404, 'server mode off');
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    const root = lib.path;
     const rel = u.searchParams.get('rel') || '';
     if (!rel) return send(res, 400, 'missing rel');
     let file;
