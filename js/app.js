@@ -371,6 +371,7 @@
     /* 请求飞行期间又切走了：这次不重建，但 refreshLibs() 已经把 libs/activeId 换成新的了，
        必须把节流时间戳清掉，否则 20 秒内界面还停在旧库列表上 */
     if (document.visibilityState === 'hidden') { libsAt = 0; return; }
+    try { FM.lib.invalidateSearch(); } catch (e) {}       /* 库列表变了，跨库搜索缓存要重算 */
     FM.ui.renderAll({ quiet: true });                     /* 恢复路径上别播入场动画 */
     FM.ui.toast('资源库列表已更新');
   }

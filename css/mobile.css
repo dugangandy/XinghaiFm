@@ -31,6 +31,12 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .search{flex:1;width:auto;height:36px;padding:0 10px 0 11px;gap:8px}
   .search:focus-within{width:auto}
   .search input{font-size:13px}
+  /* 建议浮层：贴住搜索胶囊，限高可滚，行高按触控放大 */
+  .search-pop{max-height:55vh;border-radius:14px;padding:4px}
+  .sp-item{padding:10px 8px;min-height:44px}
+  .sp-hint{display:none}
+  .sp-badge{max-width:76px}
+  .search-scope{margin:10px 0 6px}
   .menu-btn{width:34px;height:34px}
   /* 手机上右侧只留状态圆点：文字收进 title/aria-label，设置按钮接手退出登录 */
   .top-right{gap:4px}

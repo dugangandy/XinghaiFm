@@ -569,6 +569,7 @@
   }
 
   function reindex() {
+    invalidateSearch();
     albumMap = new Map();
     trackMap = new Map();
     byAlbum = new Map();
@@ -679,21 +680,183 @@
     });
   }
 
-  function search(q) {
-    const key = String(q || '').trim().toLowerCase();
+  /* ── 搜索 ──
+     FM.search 负责打分（中文子串 / 全拼 / 首字母 / 字母子序列），这里只做遍历与排序。
+     曲目数量多的库（>3000）跳过拼音分支：上万条标题逐条转拼音会拖慢每一次按键。
+     showHidden 由调用方（结果页 / 建议浮层）统一传入，当前库与跨库口径必须一致。 */
+  const TRACK_PY_LIMIT = 3000;
+  const SEARCH_TRACK_CAP = 300;
+  /* 输入防抖里建议浮层和结果页会各算一次 searchAll；同一查询只算一份全量结果。
+     声明放在模块前部，避免 reindex() 引用到尚未初始化的 const（TDZ）。 */
+  const searchMemo = { key: '', res: null };
+  function invalidateSearch() { searchMemo.key = ''; searchMemo.res = null; }
+
+  function search(q, opt) {
+    const o = opt || {};
+    const key = FM.search.normalize(q);
     if (!key) return { albums: [], tracks: [] };
-    const hitAlbums = albums.filter(function (a) {
-      return (a.title + ' ' + a.dirName + ' ' + a.tags.join(' ')).toLowerCase().indexOf(key) >= 0;
+    const hidden = new Set();
+    if (!o.showHidden) {
+      albums.forEach(function (a) { if (a.hidden) hidden.add(a.id); });
+    }
+
+    const hitAlbums = [];
+    albums.forEach(function (a) {
+      if (hidden.has(a.id)) return;
+      const s = FM.search.scoreAlbum(a, key);
+      if (s > 0) hitAlbums.push({ a: a, s: s });
     });
+    hitAlbums.sort(function (x, y) {
+      return (y.s - x.s) || U.naturalCompare(albumPath(x.a), albumPath(y.a));
+    });
+
+    const pyTracks = tracks.length <= TRACK_PY_LIMIT;
     const hitTracks = [];
     for (let i = 0; i < tracks.length; i++) {
       const t = tracks[i];
-      if (t.title.toLowerCase().indexOf(key) >= 0) {
-        hitTracks.push(t);
-        if (hitTracks.length >= 300) break;
-      }
+      if (hidden.has(t.albumId)) continue;      /* 隐藏专辑的单集也不该被搜出来 */
+      const s = pyTracks ? FM.search.scoreText(t.title, key) : (t.title.toLowerCase().indexOf(key) >= 0 ? 70 : 0);
+      if (s > 0) hitTracks.push({ t: t, s: s });
     }
-    return { albums: hitAlbums, tracks: hitTracks };
+    hitTracks.sort(function (x, y) {
+      return (y.s - x.s) || U.naturalCompare(x.t.name, y.t.name);
+    });
+
+    return {
+      albums: hitAlbums.map(function (x) { return x.a; }),
+      tracks: hitTracks.slice(0, SEARCH_TRACK_CAP).map(function (x) { return x.t; })
+    };
+  }
+
+  /* 索引里的曲目是紧凑数组：[id, albumId, rel, name, ext, size, mtime, order, duration]。
+     老缓存可能缺字段，这里全部兜底，别让一行脏数据把整个搜索打挂 */
+  function rowTrack(row) {
+    const name = String(row[3] || '');
+    const ext = String(row[4] || '');
+    return {
+      id: row[0], albumId: row[1], rel: String(row[2] || ''), name: name, ext: ext,
+      kind: FM.media.kindOf(ext), size: row[5], mtime: row[6],
+      order: row[7] || 0, duration: row[8] || 0, fav: false,
+      title: U.stripExt(name)
+    };
+  }
+
+  /* ── 跨库搜索 ──
+     当前库用内存模型（含封面/收藏）；其它库读 index:<libId> 缓存（FM.store 已缓存 JSON，
+     只有本次会话第一次搜会解析一次）。没打开过的库没有索引缓存，收进 pendingLibs 由界面提示。
+     返回扁平数组 + 每条的 libId，界面按 libId 分组；当前库永远排在最前面。
+     缓存里始终只放「全部库」的结果，scope:'cur' 只是过滤派生，避免每次按键扫两遍。 */
+  const LIB_ALBUM_CAP = 60;
+  const LIB_TRACK_CAP = 60;
+
+  /* 库列表变化 / 别的库重新扫描后自动失效 */
+  function libsSignature() {
+    const libs = (FM.fs && FM.fs.libs) ? (FM.fs.libs() || []) : [];
+    const parts = [];
+    libs.forEach(function (l) {
+      if (!l || !l.id || l.id === libId) return;
+      const idx = db.index(l.id);
+      parts.push(l.id + ':' + (l.missing && !idx ? 'm' : (idx && idx.scannedAt) || 0));
+    });
+    return parts.join(',');
+  }
+
+  function computeAll(key, showHidden) {
+    const out = {
+      albums: [], tracks: [], pendingLibs: [],
+      self: { id: libId, name: rootName || '当前资源库' },
+      total: 0
+    };
+    const cur = search(key, { showHidden: showHidden });
+    cur.albums.forEach(function (a) {
+      out.albums.push({ album: a, libId: libId, libName: out.self.name, self: true });
+    });
+    cur.tracks.forEach(function (t) {
+      out.tracks.push({ track: t, libId: libId, libName: out.self.name, self: true });
+    });
+
+    const metas = db.albumMeta();
+    (FM.fs.libs() || []).forEach(function (lib) {
+      if (!lib || !lib.id || lib.id === libId) return;
+      const idx = db.index(lib.id);
+      /* 目录不可用且没缓存 / 从没打开过：分别提示。空库不算「未建立索引」 */
+      if (!idx || !Array.isArray(idx.albums)) {
+        out.pendingLibs.push({ id: lib.id, name: lib.name || '资源库', missing: !!lib.missing && !idx });
+        return;
+      }
+      if (!idx.albums.length) return;
+      const root = String(idx.root || idx.rootName || '');
+      const libName = lib.name || idx.rootName || '资源库';
+      const hidden = new Set();
+      if (!showHidden) {
+        idx.albums.forEach(function (a) {
+          const m = metas[root + '|' + a.id] || {};
+          if (m.hidden) hidden.add(a.id);
+        });
+      }
+
+      const hits = [];
+      idx.albums.forEach(function (a) {
+        if (hidden.has(a.id)) return;
+        const m = metas[root + '|' + a.id] || {};
+        const album = m.title ? Object.assign({}, a, { title: m.title }) : a;
+        const s = FM.search.scoreAlbum(album, key);
+        if (s > 0) hits.push({ a: album, s: s });
+      });
+      hits.sort(function (x, y) {
+        return (y.s - x.s) || U.naturalCompare(albumPath(x.a), albumPath(y.a));
+      });
+      hits.slice(0, LIB_ALBUM_CAP).forEach(function (h) {
+        out.albums.push({ album: h.a, libId: lib.id, libName: libName, self: false });
+      });
+
+      /* 与当前库同一套匹配：去扩展名的标题 + 打分排序；规模护栏一致 */
+      const titles = new Map();
+      idx.albums.forEach(function (a) { if (!hidden.has(a.id)) titles.set(a.id, a.title); });
+      const rows = Array.isArray(idx.tracks) ? idx.tracks : [];
+      const py = rows.length <= TRACK_PY_LIMIT;
+      const hitsT = [];
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (hidden.has(row[1])) continue;
+        const t = rowTrack(row);
+        const s = py ? FM.search.scoreText(t.title, key) : (t.title.toLowerCase().indexOf(key) >= 0 ? 70 : 0);
+        if (s > 0) hitsT.push({ t: t, s: s, albumTitle: titles.get(row[1]) || '' });
+      }
+      hitsT.sort(function (x, y) {
+        return (y.s - x.s) || U.naturalCompare(x.t.name, y.t.name);
+      });
+      hitsT.slice(0, LIB_TRACK_CAP).forEach(function (h) {
+        out.tracks.push({ track: h.t, libId: lib.id, libName: libName, self: false, albumTitle: h.albumTitle });
+      });
+    });
+
+    out.total = out.albums.length + out.tracks.length;
+    return out;
+  }
+
+  function searchAll(q, opt) {
+    const o = opt || {};
+    const key = FM.search.normalize(q);
+    const showHidden = !!o.showHidden;
+    if (!key) {
+      return { albums: [], tracks: [], pendingLibs: [],
+        self: { id: libId, name: rootName || '当前资源库' }, total: 0 };
+    }
+    const ck = libId + '|' + key + '|' + (showHidden ? '1' : '0') + '|' + libsSignature();
+    let res = (searchMemo.res && searchMemo.key === ck) ? searchMemo.res : null;
+    if (!res) {
+      res = computeAll(key, showHidden);
+      searchMemo.key = ck;
+      searchMemo.res = res;
+    }
+    if (o.scope !== 'cur') return res;
+    const albums2 = res.albums.filter(function (r) { return r.self; });
+    const tracks2 = res.tracks.filter(function (r) { return r.self; });
+    return {
+      albums: albums2, tracks: tracks2, pendingLibs: [], self: res.self,
+      total: albums2.length + tracks2.length
+    };
   }
 
   /* ── 进度 ── */
@@ -777,6 +940,7 @@
     ensureMetaKeys();
     albums.forEach(function (a) { recomputeAlbum(a.id); });
     albums.sort(albumSort);
+    invalidateSearch();      /* 服务端拉回的改名 / 隐藏要立刻反映到搜索结果 */
   }
 
   function setMeta(albumId, patch) {
@@ -792,6 +956,7 @@
     pushMeta({ albumMeta: albumPatch(key, m) });
     recomputeAlbum(albumId);
     albums.sort(albumSort);
+    invalidateSearch();
     return m;
   }
 
@@ -963,7 +1128,7 @@
     album: id => albumMap.get(id) || null,
     track: id => trackMap.get(id) || null,
     albumTracks: id => byAlbum.get(id) || [],
-    search,
+    search, searchAll, invalidateSearch,
     stats,
     progressOf, setProgress, albumStat,
     setMeta, recomputeAlbum, refreshMeta, applyFavs, applyTrackFavs, catCount,

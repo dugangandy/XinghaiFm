@@ -783,6 +783,8 @@
         Object.keys(incoming).forEach(function (k) { metas[k] = incoming[k]; });
         FM.db.setAlbumMeta(metas);
         FM.store.touch('albumMeta');
+        /* 跨库搜索缓存里含有标题 / 隐藏状态，服务端快照变了要立刻失效 */
+        if (FM.lib && FM.lib.invalidateSearch) FM.lib.invalidateSearch();
         touched = true;
       }
     }

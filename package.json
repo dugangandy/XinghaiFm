@@ -10,6 +10,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
+    "gen:pinyin": "node tools/gen-pinyin.js",
     "init-db": "node tools/init-db.js",
     "bump": "node tools/bump-version.js",
     "dist": "electron-builder --win",
@@ -99,6 +100,7 @@
   },
   "devDependencies": {
     "electron": "42.11.18",
-    "electron-builder": "^26.18.0"
+    "electron-builder": "^26.18.0",
+    "pinyin-pro": "^3.29.5"
   }
 }
