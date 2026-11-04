@@ -98,7 +98,7 @@
     return (k === 'index' || k.indexOf('index:') === 0) ? k : '';
   }
 
-  function clearIndexCache() {
+  function indexCacheKeys(withSize) {
     const keys = [];
     let chars = 0;
     try {
@@ -107,12 +107,27 @@
         const k = indexCacheKey(full);
         if (!k) continue;
         keys.push(k);
+        if (!withSize) continue;
         try { chars += full.length + String(localStorage.getItem(full) || '').length; } catch (e) {}
       }
-    } catch (e) { console.warn('[store] 清缓存遍历失败', e); }
-    keys.forEach(function (k) { drop(k); });
-    /* 配额按 UTF-16 计（每字符 2 字节），乘 2 才是实际腾出来的量 */
-    return { count: keys.length, bytes: chars * 2 };
+    } catch (e) { console.warn('[store] 统计缓存失败', e); }
+    /* 配额按 UTF-16 计（每字符 2 字节），乘 2 才是实际占用 */
+    return { keys: keys, bytes: chars * 2 };
+  }
+
+  /* 菜单里只报份数（遍历键名，不去读几 MB 的值，展开菜单不卡） */
+  function indexCacheCount() { return indexCacheKeys(false).keys.length; }
+
+  /* 真要报体积时才读值 */
+  function indexCacheSize() {
+    const s = indexCacheKeys(true);
+    return { count: s.keys.length, bytes: s.bytes };
+  }
+
+  function clearIndexCache() {
+    const s = indexCacheKeys(true);
+    s.keys.forEach(function (k) { drop(k); });
+    return { count: s.keys.length, bytes: s.bytes };
   }
 
   /* 清完探一次：还写不进去说明不是这份索引撑爆的（磁盘满 / 隐私模式），别给用户假希望 */
@@ -133,7 +148,7 @@
     onPersist: fn => { onPersist = fn; },
     onBroken: fn => { onBroken = fn; },
     isBroken: () => broken,
-    clearIndexCache, probe, resetBroken,
+    clearIndexCache, indexCacheCount, indexCacheSize, probe, resetBroken,
     PREFIX: P,
     get namespace() { return ns; }
   };

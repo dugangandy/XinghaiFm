@@ -378,6 +378,20 @@
     return ok;
   }
 
+  /* 设置菜单里的「清除缓存…」：先把清什么、留什么说清楚，再动手。
+     没超配额时也允许主动清（换库前腾地方），所以不复用警告那条文案 */
+  function clearCacheFlow() {
+    let s = { count: 0, bytes: 0 };
+    try { s = FM.store.indexCacheSize(); } catch (e) {}
+    if (!s.count) { toast('本机没有可清理的索引缓存'); return; }
+    confirmModal({
+      title: '清除本地缓存？',
+      message: '会清掉 ' + s.count + ' 份资源库索引（约 ' + fmtFreed(s.bytes) + '）。',
+      note: '分类、进度、收藏和设置都保留，不受影响；清完再进资源库会重新扫描一次。',
+      icon: 'folder', okText: '清除'
+    }).then(function (ok) { if (ok) clearLocalCache(); });
+  }
+
   function cacheBroken() {
     const lib = FM.fs && FM.fs.active ? FM.fs.active() : null;
     /* 切库提示还挂着：把它顶掉，用合并文案，别让用户同时看到成功和失败 */
@@ -4330,6 +4344,16 @@
       items.push({ label: '服务器设置…', icon: 'chevron', onClick: function () { FM.android.openSettings(); } });
     }
     items.push({ sep: true });
+    /* 本机索引缓存（index:<libId>）随库变大，而所有库共用 WebView 那点 localStorage 配额：
+       给一个随时能清的手动出口；写不进去时那条警告里的「清理缓存」走的是同一个函数。
+       rightText 只报份数（遍历键名），体积等点开确认框再算，免得展开菜单去读几 MB 的值 */
+    let cacheCount = 0;
+    try { cacheCount = FM.store.indexCacheCount(); } catch (e) {}
+    items.push({
+      label: '清除缓存…', icon: 'folder',
+      rightText: cacheCount ? cacheCount + ' 份' : '',
+      onClick: clearCacheFlow
+    });
     /* 在线更新只在 APK 里有（下载/安装都得壳配合）。版本号走右侧小字、不占第二行；
        静默查到新版本后直接改那行字，不用重开菜单 */
     if (FM.android && FM.android.native) {
