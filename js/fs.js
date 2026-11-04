@@ -26,6 +26,7 @@
   let serverMode = false;      // 由 tools/serve.js 的 config.json 库列表提供的服务器模式
   let serverVersion = '';      // 服务端 package.json 的版本号（浏览器直连时用来显示）
   let userRole = '';           // 服务端多用户下当前登录用户的角色（admin / user）
+  let myUid = '';              // 当前登录用户 id（用户管理页用来禁用「操作自己」的按钮）
   let serverReached = false;   // 同源探测时走到了 serve.js 的 /api/config（说明是服务端会话，与是否已有资源库无关）
   let favSet = new Set();      // 当前用户 + 当前库的收藏专辑 id
   let trackFavSet = new Set(); // 当前用户 + 当前库的收藏曲目 id
@@ -340,7 +341,7 @@
         /* 多用户下取当前登录用户的角色：前端据此决定普通用户能否进入「资源库设置」 */
         try {
           const meR = await apiFetch('/api/me', { cache: 'no-store' });
-          if (meR.ok) { const m = await meR.json(); userRole = m.role || ''; }
+          if (meR.ok) { const m = await meR.json(); userRole = m.role || ''; myUid = m.uid || ''; }
         } catch (e) {}
         if (srv.multi) {
           try {
@@ -476,6 +477,31 @@
   /* 共享：把某个库指派给所有人或指定用户（仅服务端多用户的管理员用） */
   async function share(id, targetAll, userIds) {
     return libMutate('share', { id: id, targetAll: !!targetAll, userIds: userIds || [] });
+  }
+
+  /* ── 用户管理（仅服务端管理员；接口侧同样校验 admin） ── */
+  async function listUsers() {
+    const r = await apiFetch('/api/users', { cache: 'no-store' });
+    if (!r.ok) throw new Error((await r.text()) || '读取用户失败');
+    return r.json();
+  }
+  async function userMutate(action, extra) {
+    const r = await apiFetch('/api/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(Object.assign({ action: action }, extra || {}))
+    });
+    if (!r.ok) throw new Error((await r.text()) || '用户操作失败');
+    return r.json();
+  }
+  async function createUser(username, password, libIds) {
+    return userMutate('create', { username: username, password: password, libIds: libIds || [] });
+  }
+  async function setUserDisabled(id, disabled) {
+    return userMutate('setDisabled', { id: id, disabled: !!disabled });
+  }
+  async function deleteUser(id) {
+    return userMutate('delete', { id: id });
   }
 
   /* 「目录结构」三档（flat / cat / auto）
@@ -1267,6 +1293,7 @@
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, canSyncMeta, pushProgress, refreshLibs,
     setDirGroup, setDirMode, share,
+    listUsers, createUser, setUserDisabled, deleteUser,
     loadFavs, setFav, setFavTrack,
     scan, scanStamp, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,
@@ -1281,6 +1308,7 @@
     get server() { return serverMode; },
     get serverReached() { return serverReached; },
     get role() { return userRole; },
+    get uid() { return myUid; },
     get isAdmin() { return userRole === 'admin'; },
     get favIds() { return favSet; },
     get favTrackIds() { return trackFavSet; },

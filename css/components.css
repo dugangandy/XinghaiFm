@@ -1060,3 +1060,70 @@ select.input option{background:#161d29;color:var(--txt)}
 .about-row span{flex:none;color:var(--dim);min-width:66px}
 .about-row b{flex:1;min-width:0;text-align:right;font-weight:600;color:var(--txt-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .about-note{margin:0;font-size:11px;line-height:1.8;color:var(--dim-2)}
+
+/* ── 用户管理（服务端管理员） ───────────────────────────── */
+.user-count{font-size:11px;color:var(--dim);margin-top:2px}
+.user-list{display:flex;flex-direction:column;gap:8px}
+.user-loading{padding:26px 8px;text-align:center;color:var(--dim);font-size:12.5px}
+.user-row{
+  display:flex;align-items:center;gap:10px;padding:10px 11px;border-radius:13px;
+  border:1px solid var(--line);background:rgba(255,255,255,.03);transition:.18s var(--ease);
+}
+.user-row:hover{border-color:rgba(34,211,238,.28);background:rgba(34,211,238,.06)}
+.user-row.off{opacity:.62}
+.user-avatar{
+  flex:none;width:36px;height:36px;border-radius:50%;display:grid;place-items:center;
+  font-size:14px;font-weight:700;color:#c9f6ff;
+  border:1px solid rgba(34,211,238,.3);
+  background:linear-gradient(135deg,rgba(34,211,238,.18),rgba(168,85,247,.22));
+}
+.user-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.user-info b{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-info small{font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-role,.user-state{
+  flex:none;font-size:10px;padding:2px 7px;border-radius:99px;letter-spacing:.03em;
+  border:1px solid var(--line-2);color:var(--dim);
+}
+.user-role.admin{color:#d9c7ff;border-color:rgba(168,85,247,.4);background:rgba(168,85,247,.14)}
+.user-state{color:#8ef0b0;border-color:rgba(34,197,94,.34);background:rgba(34,197,94,.12)}
+.user-state::before{content:'';display:inline-block;width:5px;height:5px;border-radius:50%;background:currentColor;margin-right:5px;vertical-align:middle}
+.user-state.off{color:#ffb27a;border-color:rgba(245,158,11,.36);background:rgba(245,158,11,.12)}
+.user-ops{flex:none;display:flex;align-items:center;gap:4px}
+.user-op{
+  padding:5px 10px;border-radius:9px;font-size:12px;cursor:pointer;
+  border:1px solid var(--line-2);background:rgba(255,255,255,.04);color:var(--txt-2);transition:.16s;
+}
+.user-op:hover{border-color:rgba(34,211,238,.4);color:#fff;background:rgba(34,211,238,.1)}
+.user-op.warn{color:#ffb27a;border-color:rgba(245,158,11,.3)}
+.user-op.warn:hover{color:#fff;border-color:rgba(245,158,11,.6);background:rgba(245,158,11,.14)}
+.user-op:disabled{opacity:.34;cursor:default;pointer-events:none}
+.user-del{width:28px;height:28px;color:var(--dim)}
+.user-del:hover{color:#ff8095;background:rgba(255,110,130,.12)}
+.user-del:disabled{opacity:.3;pointer-events:none}
+@media (max-width:760px){
+  .user-role,.user-state{display:none}
+  .user-info small{font-size:10.5px}
+}
+/* 新增用户表单 */
+.user-form{display:flex;flex-direction:column;gap:10px}
+.user-label{font-size:11px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase;margin-bottom:2px}
+.user-lib-box{display:flex;flex-direction:column;gap:6px}
+.user-lib-list{
+  max-height:172px;overflow-y:auto;border:1px solid var(--line);border-radius:11px;
+  padding:6px;display:flex;flex-direction:column;gap:2px;
+}
+.user-lib{display:flex;align-items:center;gap:10px;padding:8px;border-radius:9px;font-size:13px;cursor:pointer;transition:.16s}
+.user-lib:hover{background:rgba(255,255,255,.06)}
+.user-lib input{accent-color:var(--cyan)}
+.user-lib span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-lib i{font-style:normal;font-size:10px;color:var(--dim);margin-left:8px}
+/* 「我已了解」二次确认 */
+.confirm-check{flex-wrap:wrap}
+.confirm-ack{
+  width:100%;display:flex;align-items:center;gap:9px;margin-top:2px;padding:9px 11px;
+  border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.03);
+  font-size:12px;color:var(--txt-2);cursor:pointer;transition:.16s;
+}
+.confirm-ack:hover{border-color:var(--line-2)}
+.confirm-ack input{accent-color:var(--cyan);width:15px;height:15px;margin:0}
+.modal-foot .btn:disabled{opacity:.32;cursor:default;pointer-events:none}

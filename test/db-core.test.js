@@ -292,3 +292,43 @@ test('migrate：迁移旧配置文件、已有用户时跳过', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('用户状态：默认启用、禁用/启用自增 token_version、可用管理员计数', () => {
+  const db = fresh();
+  const admin = user(db, 'admin', { role: 'admin' });
+  const bob = user(db, 'bob');
+  assert.equal(DB.getUser(db, bob.id).disabled, 0, '默认启用');
+  assert.equal(DB.countEnabledAdmins(db), 1);
+  assert.equal(DB.listUsers(db).find(function (x) { return x.id === bob.id; }).disabled, 0, 'listUsers 带出 disabled');
+
+  const v0 = DB.getUser(db, bob.id).token_version;
+  assert.equal(DB.setUserDisabled(db, bob.id, true), true);
+  const off = DB.getUser(db, bob.id);
+  assert.equal(off.disabled, 1);
+  assert.ok(off.token_version > v0, '禁用要自增 token_version，旧会话立即失效');
+  assert.equal(DB.countEnabledAdmins(db), 1, '普通用户禁用不影响管理员计数');
+
+  DB.setUserDisabled(db, admin.id, true);
+  assert.equal(DB.countEnabledAdmins(db), 0, '最后一个管理员被禁用后计数归零（接口层会拦住）');
+  DB.setUserDisabled(db, admin.id, false);
+  assert.equal(DB.countEnabledAdmins(db), 1);
+  assert.equal(DB.setUserDisabled(db, '不存在', true), false);
+});
+
+test('共享指派：addLibShareTarget 追加目标、target_all 时忽略', () => {
+  const db = fresh();
+  const admin = user(db, 'admin', { role: 'admin' });
+  const bob = user(db, 'bob');
+  const eve = user(db, 'eve');
+  DB.replaceLibs(db, admin.id, [{ id: 'src1', name: '库', path: '/media/a' }], 'src1');
+
+  assert.equal(DB.addLibShareTarget(db, 'src1', bob.id), true);
+  assert.deepEqual(DB.listShares(db, 'src1'), { targetAll: false, targets: [bob.id] });
+  DB.addLibShareTarget(db, 'src1', eve.id);
+  assert.deepEqual(DB.listShares(db, 'src1').targets.sort(), [bob.id, eve.id].sort());
+
+  /* 已「所有人」可见时不再记录单人目标（避免冗余，也不影响物化） */
+  DB.setLibShare(db, 'src1', true, []);
+  DB.addLibShareTarget(db, 'src1', bob.id);
+  assert.deepEqual(DB.listShares(db, 'src1'), { targetAll: true, targets: [] });
+});

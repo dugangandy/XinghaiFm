@@ -154,6 +154,15 @@ function libsView(uid, isAdmin) {
     return v;
   });
 }
+/* 用户列表（用户管理页 / 共享弹窗共用；只有管理员接口会返回） */
+function usersView() {
+  return DB.listUsers(db).map(function (x) {
+    return {
+      id: x.id, username: x.username, role: x.role,
+      disabled: !!x.disabled, createdAt: x.createdAt, lastLoginAt: x.lastLoginAt
+    };
+  });
+}
 
 /* ── 库元数据（分类 / 专辑整理 / 进度 / 时长）──
  * 住 fm.db，和桌面端共用同一份：一次事务只写变化的部分，不再有「谁把谁覆盖」的问题。
@@ -270,6 +279,8 @@ function readSession(token) {
   if (now - iat > SESSION_IDLE) return null;
   const u = DB.getUser(db, uid);
   if (!u) return null;
+  /* 账号被禁用：已签发的 token 一律不认（配合禁用时 token_version 自增，双重保险） */
+  if (u.disabled) return null;
   /* 改过密码（token_version 变了）→ 旧 token 作废 */
   if ((Number(u.token_version) || 0) !== ver) return null;
   return { iat: iat, abs: abs, uid: uid, ver: ver, username: u.username, role: u.role };
@@ -300,6 +311,8 @@ function readTicket(t, scope) {
   if (Math.floor(Date.now() / 1000) > exp) return null;
   const u = DB.getUser(db, uid);
   if (!u) return null;
+  /* 账号被禁用：媒体/封面票据立即作废 */
+  if (u.disabled) return null;
   /* 改过密码（token_version 变了）→ 旧票据也立即作废，不用等它自然过期 */
   if ((Number(u.token_version) || 0) !== ver) return null;
   return { uid: uid, exp: exp, scope: scope };
@@ -913,6 +926,8 @@ const server = http.createServer(async function (req, res) {
     if (NO_AUTH) { const fu = DB.getUser(db, DB.firstUserId(db) || ''); const t0 = Math.floor(Date.now() / 1000); return json(res, { token: fu ? makeToken(t0, t0 + SESSION_ABS, fu.id, fu.token_version) : '' }); }
     const user = DB.findUser(db, username);
     if (!user || !DB.checkPassword(user, pw)) { noteFail(key); return send(res, 401, '用户名或密码不正确'); }
+    /* 密码正确但账号被禁用：明确提示；提示放在密码校验之后，避免账号枚举 */
+    if (user.disabled) return send(res, 403, '账号已被禁用');
     fails.delete(key);
     upgradeHash(user, pw);
     DB.touchLogin(db, user.id);
@@ -937,6 +952,7 @@ const server = http.createServer(async function (req, res) {
         noteFail(key);
         return send(res, 401, loginPage('用户名或密码不正确', next), { 'content-type': 'text/html; charset=utf-8' });
       }
+      if (user.disabled) return send(res, 403, loginPage('账号已被禁用', next), { 'content-type': 'text/html; charset=utf-8' });
       fails.delete(key);
       upgradeHash(user, pw);
       DB.touchLogin(db, user.id);
@@ -1005,9 +1021,74 @@ const server = http.createServer(async function (req, res) {
     return json(res, { t: makeTicket(uid, scope, me ? me.token_version : 0), exp: Math.floor(Date.now() / 1000) + TICKET_TTL[scope], scope: scope });
   }
   if (p === '/api/users') {
-    /* 共享弹窗的用户多选：仅管理员可见 */
-    if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以查看用户');
-    return json(res, DB.listUsers(db).map(function (x) { return { id: x.id, username: x.username, role: x.role }; }));
+    /* 用户管理：仅管理员可见 / 可改 */
+    if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以管理用户');
+    if (req.method === 'GET') return json(res, usersView());
+    if (req.method !== 'POST') return send(res, 405, 'GET/POST only');
+    if (!writeAllowed(ip)) return send(res, 429, 'too many writes');
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > 8192) return send(res, 413, 'too large');
+    }
+    let payload = null;
+    try { payload = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    const act = String((payload && payload.action) || '');
+
+    /* 新增用户：role 固定为普通用户（admin 只由初始化创建，避免界面上提权） */
+    if (act === 'create') {
+      const username = String((payload && payload.username) || '').trim();
+      const password = String((payload && payload.password) || '');
+      const libIds = Array.isArray(payload && payload.libIds) ? payload.libIds : [];
+      if (!username || username.length > 64 || /[\u0000-\u001f\u007f]/.test(username)) {
+        return send(res, 400, '用户名需为 1–64 个字符，且不能包含控制字符');
+      }
+      if (password.length < 6 || password.length > 128) return send(res, 400, '密码长度需为 6–128 位');
+      if (DB.findUser(db, username)) return send(res, 409, '用户名已存在');
+      let user = null;
+      try { user = DB.addUser(db, { username: username, role: 'user', password: password }); }
+      catch (e) { return send(res, 400, '新增用户失败：' + ((e && e.message) || '未知错误')); }
+      /* 新建时可直接指定可访问的资源库：复用共享机制，给新用户物化只读副本 */
+      libIds.forEach(function (libId) {
+        const lib = DB.getLib(db, uid, String(libId || ''));
+        if (!lib || lib.shared_id) return;      /* 只允许指派当前管理员名下可编辑的库 */
+        DB.addLibShareTarget(db, lib.id, user.id);
+      });
+      DB.syncUserSharedLibs(db, user.id);
+      console.log('[user] 新增「' + username + '」' + (libIds.length ? '，指派 ' + libIds.length + ' 个库' : ''));
+      return json(res, { ok: true, users: usersView() });
+    }
+
+    /* 启用 / 禁用：禁用后 token_version 自增，已登录会话与票据立即失效 */
+    if (act === 'setDisabled') {
+      const id = String((payload && payload.id) || '');
+      const disabled = !!(payload && payload.disabled);
+      const target = DB.getUser(db, id);
+      if (!target) return send(res, 404, '用户不存在');
+      if (id === uid) return send(res, 400, '不能修改当前登录管理员自己的状态');
+      if (disabled && !target.disabled && target.role === 'admin' && DB.countEnabledAdmins(db) <= 1) {
+        return send(res, 400, '不能禁用最后一个可用管理员');
+      }
+      DB.setUserDisabled(db, id, disabled);
+      console.log('[user] ' + (disabled ? '禁用' : '启用') + '「' + target.username + '」');
+      return json(res, { ok: true, users: usersView() });
+    }
+
+    /* 删除：级联清理该用户的资源库、收藏与共享关系 */
+    if (act === 'delete') {
+      const id = String((payload && payload.id) || '');
+      const target = DB.getUser(db, id);
+      if (!target) return send(res, 404, '用户不存在');
+      if (id === uid) return send(res, 400, '不能删除当前登录管理员自己');
+      if (!target.disabled && target.role === 'admin' && DB.countEnabledAdmins(db) <= 1) {
+        return send(res, 400, '不能删除最后一个可用管理员');
+      }
+      DB.removeUser(db, id);
+      console.log('[user] 删除「' + target.username + '」');
+      return json(res, { ok: true, users: usersView() });
+    }
+
+    return send(res, 400, 'unknown action');
   }
   if (p === '/api/config') {
     const libs = userLibs(uid);

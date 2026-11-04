@@ -863,6 +863,10 @@
   function canManageLib() {
     return !(FM.fs.serverReached && !FM.fs.isAdmin);
   }
+  /* 用户管理只属于「服务端 + 管理员」：桌面端是单用户本地库，普通用户也没有入口 */
+  function canManageUsers() {
+    return !FM.fs.desktop && FM.fs.serverReached && !!FM.fs.isAdmin;
+  }
 
   /* 收藏页布局随宽度切换：跨过断点时重画一次（窗口拉宽回桌面卡片） */
   let favNarrow = isNarrow();
@@ -3483,6 +3487,7 @@
     });
     if (list.length) items.push({ sep: true });
     if (canManageLib()) items.push({ label: '资源库设置…', icon: 'edit', onClick: openLibDrawer });
+    if (canManageUsers()) items.push({ label: '用户管理…', icon: 'users', onClick: openUserDrawer });
     if (FM.android) {
       items.push({ label: '服务器地址…', icon: 'chevron', onClick: function () { FM.android.openSettings(); } });
     }
@@ -3497,6 +3502,7 @@
   function openSettingsMenu() {
     const items = [];
     if (canManageLib()) items.push({ label: '我的资源库', icon: 'library', onClick: openLibDrawer });
+    if (canManageUsers()) items.push({ label: '用户管理', icon: 'users', onClick: openUserDrawer });
     /* 这个菜单只出现在手机顶栏；目录结构只在桌面端改，这里不给入口 */
     const curLib = FM.fs.active();
     if (curLib && canEditGroup()) {
@@ -3862,6 +3868,239 @@
           '<span>' + esc(u.username) + (u.role === 'admin' ? '<i class="share-role">管理员</i>' : '') + '</span></label>';
       }).join('') || '<div class="share-empty">没有可选的用户</div>';
     })();
+  }
+
+  /* ── 用户管理：仅服务端管理员 ──
+     列表 + 新增 + 启用/禁用 + 删除；禁用与删除都要勾选「我已了解」二次确认。 */
+  function fmtWhen(iso) {
+    if (!iso) return '从未登录';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  /* 「我已了解」勾选式确认框：未勾选时确认按钮禁用 */
+  function confirmWithCheckbox(opt) {
+    opt = opt || {};
+    const body = U.el('div', { class: 'confirm confirm-check' });
+    body.appendChild(U.el('span', {
+      class: 'confirm-ico' + (opt.danger ? ' danger' : ''),
+      html: icon(opt.icon || (opt.danger ? 'trash' : 'moon'))
+    }));
+    const txt = U.el('div', { class: 'confirm-txt' });
+    txt.appendChild(U.el('p', { class: 'confirm-msg', text: opt.message || '' }));
+    if (opt.note) txt.appendChild(U.el('p', { class: 'confirm-note', text: opt.note }));
+    body.appendChild(txt);
+    const ack = U.el('label', { class: 'confirm-ack' });
+    const cb = U.el('input', { type: 'checkbox' });
+    ack.append(cb, U.el('span', { text: opt.ack || '我已了解' }));
+    body.appendChild(ack);
+
+    return new Promise(function (resolve) {
+      let settled = false;
+      function done(v) { if (settled) return; settled = true; resolve(v); }
+      const m = openModal({
+        title: opt.title || '请确认',
+        body: body,
+        actions: [
+          { label: opt.cancelText || '取消', cls: 'btn-ghost', onClick: function () { done(false); } },
+          {
+            label: opt.okText || '确定', cls: opt.danger ? 'danger' : 'btn-primary',
+            onClick: function () { if (!cb.checked) return false; done(true); }
+          }
+        ],
+        onClose: function () { done(false); }
+      });
+      const ok = m.box.querySelector('.modal-foot .btn:last-child');
+      if (ok) {
+        ok.disabled = true;
+        cb.addEventListener('change', function () { ok.disabled = !cb.checked; });
+      }
+    });
+  }
+
+  /* 新增用户：用户名 / 密码 / 确认密码 + 可访问资源库多选（复用共享机制） */
+  function openCreateUserDialog(onDone) {
+    const body = U.el('div', { class: 'user-form' });
+    const userIn = U.el('input', { class: 'share-search', placeholder: '用户名', autocomplete: 'off' });
+    const pwIn = U.el('input', { class: 'share-search', type: 'password', placeholder: '密码（至少 6 位）', autocomplete: 'new-password' });
+    const pw2In = U.el('input', { class: 'share-search', type: 'password', placeholder: '再次输入密码', autocomplete: 'new-password' });
+    body.append(userIn, pwIn, pw2In);
+
+    const libs = FM.fs.libs().filter(function (l) { return !l.shared; });
+    const libWrap = U.el('div', { class: 'user-lib-box' });
+    libWrap.innerHTML = '<div class="user-label">可访问的资源库</div>';
+    const libList = U.el('div', { class: 'user-lib-list' });
+    if (libs.length) {
+      libList.innerHTML = libs.map(function (l) {
+        return '<label class="user-lib"><input type="checkbox" value="' + esc(l.id) + '">' +
+          '<span>' + esc(l.name) + '<i>只读</i></span></label>';
+      }).join('');
+    } else {
+      libList.innerHTML = '<div class="share-empty">暂无可指派的资源库</div>';
+    }
+    libWrap.appendChild(libList);
+    body.appendChild(libWrap);
+
+    const m = openModal({
+      title: '新增用户',
+      body: body,
+      actions: [
+        { label: '取消', cls: 'btn-ghost' },
+        {
+          label: '创建', cls: 'btn-primary',
+          onClick: function () {
+            const username = String(userIn.value || '').trim();
+            const pw = String(pwIn.value || '');
+            if (!username) { toast('请填写用户名', 'warn'); return false; }
+            if (pw.length < 6) { toast('密码至少 6 位', 'warn'); return false; }
+            if (pw !== String(pw2In.value || '')) { toast('两次输入的密码不一致', 'warn'); return false; }
+            const ids = [];
+            libList.querySelectorAll('input[type="checkbox"]').forEach(function (c) { if (c.checked) ids.push(c.value); });
+            FM.fs.createUser(username, pw, ids).then(function (res) {
+              toast('已新增用户「' + username + '」');
+              if (onDone) onDone(res);
+              m.close();
+            }, function (e) { toast((e && e.message) || '新增用户失败', 'warn'); });
+            return false;      /* 等请求回来再关 */
+          }
+        }
+      ]
+    });
+  }
+
+  function openUserDrawer() {
+    if (!canManageUsers()) { toast('只有管理员可以管理用户', 'warn'); return; }
+    const list_ = U.el('div', { class: 'user-list' });
+    const mask = U.el('div', { class: 'lib-drawer-mask' });
+    const panel = U.el('div', { class: 'lib-drawer user-drawer' });
+    let closed = false;
+
+    const head = U.el('div', { class: 'lib-drawer-head' });
+    const titleBox = U.el('div', { class: 'lib-drawer-title' });
+    titleBox.append(U.el('h3', { text: '用户管理' }), U.el('div', { class: 'user-count', text: '加载中…' }));
+    const x = U.el('button', { class: 'icon-btn', title: '关闭', html: icon('close') });
+    x.onclick = function () { close(); };
+    head.append(titleBox, x);
+
+    const body = U.el('div', { class: 'lib-drawer-body' }, [list_]);
+    const foot = U.el('div', { class: 'lib-drawer-foot' });
+    const add = U.el('button', { class: 'btn btn-primary', html: icon('plus') + '<span>新增用户</span>' });
+    add.onclick = function () { openCreateUserDialog(apply); };
+    const done = U.el('button', { class: 'btn', text: '完成' });
+    done.onclick = function () { close(); };
+    foot.append(add, done);
+
+    panel.append(head, body, foot);
+    refs.modalRoot.append(mask, panel);
+
+    function onKey(e) {
+      if (e.key !== 'Escape' || closed) return;
+      if (refs.modalRoot.querySelector('.modal-mask')) return;
+      close();
+    }
+    function close() {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', onKey);
+      mask.classList.remove('show');
+      panel.classList.remove('open');
+      setTimeout(function () { mask.remove(); panel.remove(); }, 380);
+    }
+    mask.addEventListener('mousedown', function (e) { if (e.target === mask) close(); });
+    document.addEventListener('keydown', onKey);
+    requestAnimationFrame(function () {
+      if (closed) return;
+      mask.classList.add('show');
+      panel.classList.add('open');
+    });
+
+    function apply(res) {
+      if (res && Array.isArray(res.users)) draw(res.users);
+      else refresh();
+    }
+
+    async function refresh() {
+      list_.innerHTML = '<div class="user-loading">加载中…</div>';
+      try { draw(await FM.fs.listUsers()); }
+      catch (e) { list_.innerHTML = '<div class="lib-empty">' + esc((e && e.message) || '读取用户失败') + '</div>'; }
+    }
+
+    function draw(users) {
+      const sub = titleBox.querySelector('.user-count');
+      if (sub) sub.textContent = users.length + ' 个账号';
+      list_.innerHTML = '';
+      if (!users.length) {
+        list_.innerHTML = '<div class="lib-empty">还没有用户，点下方「新增用户」。</div>';
+        return;
+      }
+      const enabledAdmins = users.filter(function (u) { return u.role === 'admin' && !u.disabled; }).length;
+      users.forEach(function (u) {
+        const self = u.id === FM.fs.uid;
+        const lastAdmin = u.role === 'admin' && !u.disabled && enabledAdmins <= 1;
+        const row = U.el('div', { class: 'user-row' + (u.disabled ? ' off' : '') });
+        row.innerHTML =
+          '<span class="user-avatar">' + esc((u.username || '?').slice(0, 1).toUpperCase()) + '</span>' +
+          '<div class="user-info"><b>' + esc(u.username) + '</b>' +
+            '<small>' + esc(fmtWhen(u.lastLoginAt)) + '</small></div>' +
+          '<span class="user-role' + (u.role === 'admin' ? ' admin' : '') + '">' + (u.role === 'admin' ? '管理员' : '普通') + '</span>' +
+          '<span class="user-state' + (u.disabled ? ' off' : '') + '">' + (u.disabled ? '已禁用' : '已启用') + '</span>';
+        const ops = U.el('div', { class: 'user-ops' });
+        const toggle = U.el('button', {
+          class: 'user-op' + (u.disabled ? '' : ' warn'),
+          text: u.disabled ? '启用' : '禁用'
+        });
+        if (self || (!u.disabled && lastAdmin)) {
+          toggle.disabled = true;
+          toggle.title = self ? '不能修改自己的账号状态' : '不能禁用最后一个管理员';
+        }
+        toggle.onclick = function () {
+          if (u.disabled) {
+            FM.fs.setUserDisabled(u.id, false).then(function (res) {
+              toast('已启用「' + u.username + '」'); apply(res);
+            }, function (e) { toast((e && e.message) || '操作失败', 'warn'); });
+            return;
+          }
+          confirmWithCheckbox({
+            title: '禁用用户', danger: true, okText: '禁用',
+            icon: 'moon',
+            message: '确定禁用「' + u.username + '」吗？',
+            note: '禁用后该用户会立即退出登录，且无法再次登录；之后可以随时重新启用。'
+          }).then(function (ok) {
+            if (!ok) return;
+            FM.fs.setUserDisabled(u.id, true).then(function (res) {
+              toast('已禁用「' + u.username + '」'); apply(res);
+            }, function (e) { toast((e && e.message) || '操作失败', 'warn'); });
+          });
+        };
+        ops.appendChild(toggle);
+
+        const del = U.el('button', { class: 'icon-btn user-del', title: '删除用户', html: icon('trash') });
+        if (self || (!u.disabled && lastAdmin)) {
+          del.disabled = true;
+          del.title = self ? '不能删除自己' : '不能删除最后一个管理员';
+        }
+        del.onclick = function () {
+          confirmWithCheckbox({
+            title: '删除用户', danger: true, okText: '删除',
+            icon: 'trash',
+            message: '确定删除「' + u.username + '」吗？',
+            note: '将永久删除该账号及其资源库、收藏与共享关系，无法恢复。'
+          }).then(function (ok) {
+            if (!ok) return;
+            FM.fs.deleteUser(u.id).then(function (res) {
+              toast('已删除「' + u.username + '」'); apply(res);
+            }, function (e) { toast((e && e.message) || '删除失败', 'warn'); });
+          });
+        };
+        ops.appendChild(del);
+        row.appendChild(ops);
+        list_.appendChild(row);
+      });
+    }
+
+    refresh();
   }
 
   /* ── 目录结构三档：默认 / 二级目录 / 自动检测 ──

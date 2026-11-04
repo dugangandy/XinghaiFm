@@ -34,6 +34,8 @@ function ensureSchema(db) {
     '  salt TEXT NOT NULL,',
     '  hash TEXT NOT NULL,',
     '  token_version INTEGER NOT NULL DEFAULT 0,',
+    /* 账号状态：1 = 已禁用（禁止登录，已登录会话随 token_version 自增一并失效） */
+    '  disabled INTEGER NOT NULL DEFAULT 0,',
     '  created_at TEXT NOT NULL,',
     '  last_login_at TEXT',
     ');',
@@ -126,6 +128,11 @@ function ensureSchema(db) {
   if (!cols.some(function (c) { return c.name === 'token_version'; })) {
     db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
   }
+  /* 旧库补列：disabled（账号是否被禁用，默认启用） */
+  const userCols = db.prepare('PRAGMA table_info(users)').all();
+  if (!userCols.some(function (c) { return c.name === 'disabled'; })) {
+    db.exec('ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
+  }
   /* 旧库补列：libs.shared_id（共享来的只读库副本；老行为 NULL = 私有） */
   const libCols = db.prepare('PRAGMA table_info(libs)').all();
   if (!libCols.some(function (c) { return c.name === 'shared_id'; })) {
@@ -167,7 +174,7 @@ function checkPassword(user, password) {
 
 /* ── users ── */
 function listUsers(db) {
-  return db.prepare('SELECT id, username, role, created_at AS createdAt, last_login_at AS lastLoginAt FROM users ORDER BY created_at').all();
+  return db.prepare('SELECT id, username, role, disabled, created_at AS createdAt, last_login_at AS lastLoginAt FROM users ORDER BY created_at').all();
 }
 function countUsers(db) { return db.prepare('SELECT COUNT(*) AS n FROM users').get().n; }
 function findUser(db, username) { return db.prepare('SELECT * FROM users WHERE username = ?').get(String(username || '')) || null; }
@@ -187,14 +194,25 @@ function addUser(db, opts) {
     ? { algo: o.algo || 'pbkdf2_sha256', iterations: o.iterations || ITERATIONS, salt: o.salt, hash: o.hash }
     : makePassword(o.password);
   const uid = o.id || newUserId(o.username);
-  db.prepare('INSERT INTO users(id, username, role, algo, iterations, salt, hash, created_at) VALUES(?,?,?,?,?,?,?,?)')
-    .run(uid, o.username, o.role || 'user', pw.algo, pw.iterations, pw.salt, pw.hash, o.createdAt || new Date().toISOString());
+  db.prepare('INSERT INTO users(id, username, role, algo, iterations, salt, hash, disabled, created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(uid, o.username, o.role || 'user', pw.algo, pw.iterations, pw.salt, pw.hash, o.disabled ? 1 : 0, o.createdAt || new Date().toISOString());
   return getUser(db, uid);
 }
 function setUserPassword(db, id, password) {
   const pw = makePassword(password);
   /* token_version 自增：该用户此前签发的 token 立即失效（其它用户不受影响） */
   db.prepare('UPDATE users SET algo=?, iterations=?, salt=?, hash=?, token_version = token_version + 1 WHERE id=?').run(pw.algo, pw.iterations, pw.salt, pw.hash, id);
+}
+/* 启用/禁用账号：两个方向都自增 token_version，让已签发的 token 与媒体票据立即作废，
+   不用等到自然过期；配合 readSession/readTicket 的 disabled 校验双重保险。 */
+function setUserDisabled(db, id, disabled) {
+  const r = db.prepare('UPDATE users SET disabled = ?, token_version = token_version + 1 WHERE id = ?')
+    .run(disabled ? 1 : 0, String(id || ''));
+  return (r.changes || 0) > 0;
+}
+/* 可用管理员数量：用于「不能禁用/删除最后一个管理员」的保护 */
+function countEnabledAdmins(db) {
+  return db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled = 0").get().n;
 }
 function removeUser(db, id) {
   const u = String(id || '');
@@ -282,6 +300,21 @@ function setLibShare(db, libId, targetAll, userIds) {
       const ins = db.prepare('INSERT OR IGNORE INTO lib_share_targets(lib_id, user_id) VALUES(?,?)');
       (userIds || []).forEach(function (u) { if (u && String(u) !== '') ins.run(id, String(u)); });
     }
+    db.exec('COMMIT');
+    return true;
+  } catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} throw e; }
+}
+/* 追加单个指派目标（新建用户时按所选库补挂）：源库已「所有人」可见时无需重复记录 */
+function addLibShareTarget(db, libId, uid) {
+  const id = String(libId || '');
+  const u = String(uid || '');
+  if (!id || !u) return false;
+  const row = db.prepare('SELECT target_all FROM lib_shares WHERE lib_id = ?').get(id);
+  if (row && row.target_all) return true;
+  db.exec('BEGIN');
+  try {
+    db.prepare('INSERT OR IGNORE INTO lib_shares(lib_id, target_all) VALUES(?,0)').run(id);
+    db.prepare('INSERT OR IGNORE INTO lib_share_targets(lib_id, user_id) VALUES(?,?)').run(id, u);
     db.exec('COMMIT');
     return true;
   } catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} throw e; }
@@ -707,9 +740,9 @@ module.exports = {
   open, ensureSchema, secret, getSetting, setSetting,
   derive, makePassword, checkPassword,
   listUsers, countUsers, findUser, getUser, adminUser, firstUserId, newUserId,
-  addUser, setUserPassword, removeUser, touchLogin,
+  addUser, setUserPassword, setUserDisabled, countEnabledAdmins, removeUser, touchLogin,
   listLibs, activeLib, replaceLibs, setActiveLib, getLib, libPath,
-  listShares, setLibShare, removeLibShare, syncUserSharedLibs,
+  listShares, setLibShare, addLibShareTarget, removeLibShare, syncUserSharedLibs,
   listFavs, setFav, clearFavs,
   listFavTracks, setFavTrack, clearFavTracks,
   META_VERSION, META_LIMIT, libRootKey,
