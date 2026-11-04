@@ -327,7 +327,9 @@
         if (!r || !r.active) { FM.ui.renderWelcome(); reveal(); return; }
         if (r.missing) { FM.ui.renderBrokenLib(); reveal(); return; }
         const ready = function () {
-          pullMetaFromDisk();
+          /* 先把上次没写进库的改动补发，再拉服务端快照：
+             顺序反了会用服务端的旧值把本地刚补发的内容盖回去 */
+          FM.fs.flushPending().then(function () { pullMetaFromDisk(); });
           /* 库刚就绪：启动那次没恢复出来的「上次收听」在这里补上，底栏才出现 */
           restoreLastTrack();
           scheduleMetaWrite(2000, true);
@@ -389,6 +391,8 @@
     /* 主机那边可能刚扫过新书（手机端没有扫描入口）：问一下时间戳，有就静默同步。
        回前台这条路径间隔拉长到 5 分钟——刚回到前台这几百毫秒要和 WebView 重新出图抢主线程 */
     deferResume(function () { FM.ui.syncScanIfNewer(5 * 60 * 1000); });
+    /* 断网期间没写进库的改动：回来先补发（和下面拉快照的顺序不能反，否则旧值会盖回去） */
+    deferResume(function () { FM.fs.flushPending().then(function () { pullMetaFromDisk(); }); });
     /* 切回来再补一次分类/进度：别的端刚改过的东西能立刻看到。
        整份快照不小，一分钟内只拉一次 */
     const now = Date.now();

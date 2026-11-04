@@ -4494,6 +4494,8 @@
     try {
       /* 先切通道，成功了再停播：授权失败时不会白白打断正在听的内容 */
       await FM.fs.activate(id);
+      /* 这个库断网期间没写进库的改动，切过来先补发，再进库拉快照（反了会被旧值盖回去） */
+      try { await FM.fs.flushPending(); } catch (e) {}
       P.stop();
       resetView();
       await enterLib({});

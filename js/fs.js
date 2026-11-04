@@ -411,6 +411,13 @@
       if (FM.lib.applyTrackFavs) FM.lib.applyTrackFavs(trackFavSet);
       if (FM.ui && FM.ui.renderAll) FM.ui.renderAll({ quiet: true });
     }
+    /* 资源库已经被删掉的待发改动永远发不出去（服务端会一直 404），顺手清掉 */
+    const pend = pendingAll();
+    let pendDirty = false;
+    Object.keys(pend).forEach(function (id) {
+      if (!libs.some(function (l) { return l.id === id; })) { delete pend[id]; pendDirty = true; }
+    });
+    if (pendDirty) { FM.store.write(PENDING_KEY, pend); FM.store.flush(); }
     return { libs: libs.slice(), active: activeId, missing: !!(activeLib && activeLib.missing) };
   }
 
@@ -675,6 +682,41 @@
   let metaSending = false;
   let metaRetry = 0;
 
+  /* ── 待发队列：写不进数据库的改动别丢 ──
+     以前 flushMeta 重试一次失败就把这一批丢掉，下一次 pullMeta 又拿服务端的旧值
+     覆盖本地，断网期间的分类/整理等于白做（只有一条 toast 提示）。
+     现在按落库失败的那一批按库存进 localStorage，等网络回来再补发：
+       · 分类 / 整理 / 时长是 upsert，重复发不会写坏
+       · 删除分类是幂等 delete
+       · 进度按时间戳合并，旧记录不会把新进度往回调
+     所以补发是安全的，不需要顺序保证。 */
+  const PENDING_KEY = 'metaPending';
+
+  function pendingAll() {
+    const v = FM.store.read(PENDING_KEY, {});
+    return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+  }
+  /* 待发 patch 是纯数据（数字 / 字符串 / 数组 / 对象），JSON 往返克隆够用：
+     合并时会就地改对象，不能直接动 store 缓存里那一份 */
+  function clonePatch(p) {
+    try { return JSON.parse(JSON.stringify(p)); } catch (e) { return {}; }
+  }
+  function pendingSave(libId, patch) {
+    if (!libId || !patch) return;
+    const all = pendingAll();
+    all[libId] = mergePatch(all[libId] || { libId: libId }, patch);
+    FM.store.write(PENDING_KEY, all);
+    FM.store.flush();          /* 用户可能马上退出 App，不能等 1.5 秒的定时 flush */
+  }
+  function pendingDrop(libId) {
+    if (!libId) return;
+    const all = pendingAll();
+    if (!all[libId]) return;
+    delete all[libId];
+    FM.store.write(PENDING_KEY, all);
+    FM.store.flush();
+  }
+
   function metaChannel() {
     if (DESKTOP_FS) return 'ipc';
     return serverMode ? 'http' : 'local';
@@ -808,10 +850,26 @@
   function pushMeta(patch) {
     if (!patch || !activeId) return false;
     if (metaChannel() === 'local') return false;
-    metaQueue = mergePatch(metaQueue || { libId: activeId }, patch);
+    /* 这个库之前有没发出去的改动：一起带上补发。
+       mergePatch 会就地改 base，pending 那份是 store 缓存对象，先克隆再合 */
+    const stale = pendingAll()[activeId];
+    const merged = stale ? mergePatch(clonePatch(stale), patch) : patch;
+    metaQueue = mergePatch(metaQueue || { libId: activeId }, merged);
     clearTimeout(metaTimer);
     metaTimer = setTimeout(flushMeta, META_DEBOUNCE);
     return true;
+  }
+
+  /* 把当前库没发出去的改动立刻补发一次（启动、回前台、切库后调）。
+     返回 Promise：调用方要"先补发再拉快照"时必须能等它。 */
+  function flushPending() {
+    if (metaChannel() === 'local') return Promise.resolve(false);
+    if (!activeId || metaSending || metaQueue) return Promise.resolve(false);
+    const patch = pendingAll()[activeId];
+    if (!patch) return Promise.resolve(false);
+    metaQueue = mergePatch({ libId: activeId }, clonePatch(patch));
+    clearTimeout(metaTimer);
+    return flushMeta();
   }
 
   /* 数据库每包最多收 500 条 albumMeta（db.js 的 META_LIMIT），超出的会被静默截断：
@@ -882,11 +940,14 @@
     metaSending = false;
     if (ok) {
       metaRetry = 0;
+      /* 这一批进了库，这个库的待发队列可以清掉（发出去的本来就是它 + 队列合并后的内容） */
+      pendingDrop(patch.libId);
       /* 分批期间可能又攒了新改动：补排一次，别等下一次用户操作 */
       if (metaQueue) { clearTimeout(metaTimer); metaTimer = setTimeout(flushMeta, 200); }
       return true;
     }
-    /* 失败重排一次；再失败就丢弃，下次 pullMeta 会把状态纠正回来（不阻塞播放） */
+    /* 失败重排一次；再失败就进待发队列，等联网后补发（以前是直接丢弃，
+       下次 pullMeta 又拿服务端旧值覆盖本地，断网期间的整理等于白做） */
     if (metaRetry < 1) {
       metaRetry++;
       metaQueue = mergePatch(patch, metaQueue);
@@ -894,12 +955,13 @@
       metaTimer = setTimeout(flushMeta, 2000);
     } else {
       metaRetry = 0;
-      console.warn('[meta] 写入失败，已放弃本次改动');
+      pendingSave(patch.libId, patch);
+      console.warn('[meta] 写入失败，已排入待发队列');
       /* 进度也走这个通道：只含进度时别报成「整理」，免得用户误以为分类丢了 */
       try {
         if (FM.ui && FM.ui.toast) {
           const onlyProgress = !patch.cats && !patch.albumMeta && !patch.catsDeleted;
-          FM.ui.toast(onlyProgress ? '播放进度没保存上，请检查连接后重试' : '整理没保存上，请检查连接后重试', 'warn');
+          FM.ui.toast(onlyProgress ? '播放进度没保存上，联网后会自动补发' : '整理没保存上，联网后会自动补发', 'warn');
         }
       } catch (e) {}
     }
@@ -1331,7 +1393,7 @@
   }
 
   FM.fs = {
-    load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, canSyncMeta, pushProgress, refreshLibs,
+    load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, flushPending, canSyncMeta, pushProgress, refreshLibs,
     setDirGroup, setDirMode, share,
     listUsers, createUser, setUserDisabled, resetUserPassword, deleteUser,
     loadFavs, setFav, setFavTrack,
