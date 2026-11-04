@@ -10,7 +10,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const ITERATIONS = 600000;
 const ADMIN_ID = 'u_admin';
 
@@ -49,6 +49,8 @@ function ensureSchema(db) {
     '  position INTEGER NOT NULL DEFAULT 0,',
     /* 共享：NULL = 用户自己的库；非 NULL = 由别人共享来的只读副本，值是源库 id */
     '  shared_id TEXT,',
+    /* 目录自动监听：1 = 主机用 chokidar 监听该目录，变更后自动重扫（默认关） */
+    '  watch INTEGER NOT NULL DEFAULT 0,',
     '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE',
     ');',
     'CREATE INDEX IF NOT EXISTS idx_libs_user ON libs(user_id, position);',
@@ -150,7 +152,18 @@ function ensureSchema(db) {
     '  user_id TEXT PRIMARY KEY,',
     "  data TEXT NOT NULL DEFAULT '{}',",
     '  updated_at INTEGER NOT NULL',
-    ');'
+    ');',
+    /* v8：收听时长统计。按 (user_id, day) 一行一天，真实墙钟播放秒数 + 24 小时桶 + 分类桶。
+       增量 upsert；一年 365 行，区间查询量极小。分类键用 catId，未分类固定 '__none__'。 */
+    'CREATE TABLE IF NOT EXISTS listen_stats (',
+    '  user_id TEXT NOT NULL,',
+    '  day     TEXT NOT NULL,',
+    '  secs    REAL NOT NULL DEFAULT 0,',
+    "  by_hour TEXT NOT NULL DEFAULT '[]',",
+    "  by_cat  TEXT NOT NULL DEFAULT '{}',",
+    '  PRIMARY KEY (user_id, day)',
+    ');',
+    'CREATE INDEX IF NOT EXISTS idx_listen_stats_user_day ON listen_stats(user_id, day);'
   ].join('\n'));
   /* 旧库补列：token_version（改密码后让该用户旧 token 立即失效） */
   const cols = db.prepare('PRAGMA table_info(users)').all();
@@ -165,6 +178,10 @@ function ensureSchema(db) {
   const libCols = db.prepare('PRAGMA table_info(libs)').all();
   if (!libCols.some(function (c) { return c.name === 'shared_id'; })) {
     db.exec('ALTER TABLE libs ADD COLUMN shared_id TEXT');
+  }
+  /* 旧库补列：libs.watch（目录自动监听开关，默认关） */
+  if (!libCols.some(function (c) { return c.name === 'watch'; })) {
+    db.exec('ALTER TABLE libs ADD COLUMN watch INTEGER NOT NULL DEFAULT 0');
   }
   if (!getSetting(db, 'secret')) setSetting(db, 'secret', crypto.randomBytes(32).toString('base64'));
   /* v4：favs 的主键已经覆盖 (user_id, lib_id)，早期的冗余索引清掉 */
@@ -295,11 +312,11 @@ function touchLogin(db, id) { db.prepare('UPDATE users SET last_login_at = ? WHE
 
 /* ── libs（按用户） ── */
 function listLibs(db, uid) {
-  return db.prepare('SELECT id, name, path, added_at AS addedAt, active, shared_id FROM libs WHERE user_id = ? ORDER BY position, added_at').all(uid);
+  return db.prepare('SELECT id, name, path, added_at AS addedAt, active, shared_id, watch FROM libs WHERE user_id = ? ORDER BY position, added_at').all(uid);
 }
 function activeLib(db, uid) {
-  return db.prepare('SELECT id, name, path, added_at AS addedAt, shared_id FROM libs WHERE user_id = ? AND active = 1 LIMIT 1').get(uid)
-    || db.prepare('SELECT id, name, path, added_at AS addedAt, shared_id FROM libs WHERE user_id = ? ORDER BY position, added_at LIMIT 1').get(uid)
+  return db.prepare('SELECT id, name, path, added_at AS addedAt, shared_id, watch FROM libs WHERE user_id = ? AND active = 1 LIMIT 1').get(uid)
+    || db.prepare('SELECT id, name, path, added_at AS addedAt, shared_id, watch FROM libs WHERE user_id = ? ORDER BY position, added_at LIMIT 1').get(uid)
     || null;
 }
 function replaceLibs(db, uid, libs, activeId) {
@@ -308,18 +325,25 @@ function replaceLibs(db, uid, libs, activeId) {
   if (!list.some(function (l) { return l.id === active; })) active = list[0] ? list[0].id : null;
   db.exec('BEGIN');
   try {
+    /* 整份替换会先删后插：把现有的自动监听开关记下来，调用方没显式带 watch 时沿用，
+       否则每次切库 / 改名都会把用户刚打开的监听悄悄关掉 */
+    const prevWatch = {};
+    db.prepare('SELECT id, watch FROM libs WHERE user_id = ? AND shared_id IS NULL').all(uid)
+      .forEach(function (r) { prevWatch[r.id] = r.watch; });
     /* 只替换用户自己的库；共享来的只读副本（shared_id 非空）不归这里的增删逻辑管 */
     db.prepare('DELETE FROM libs WHERE user_id = ? AND shared_id IS NULL').run(uid);
-    const ins = db.prepare('INSERT INTO libs(id, user_id, name, path, added_at, active, position) VALUES(?,?,?,?,?,?,?)');
+    const ins = db.prepare('INSERT INTO libs(id, user_id, name, path, added_at, active, position, watch) VALUES(?,?,?,?,?,?,?,?)');
     list.forEach(function (l, i) {
-      ins.run(l.id || ('l' + Date.now().toString(36) + i), uid, l.name || path.basename(l.path) || '资源库', l.path, l.addedAt || Date.now(), l.id === active ? 1 : 0, i);
+      const id = l.id || ('l' + Date.now().toString(36) + i);
+      const watch = l.watch !== undefined ? (l.watch ? 1 : 0) : (prevWatch[id] ? 1 : 0);
+      ins.run(id, uid, l.name || path.basename(l.path) || '资源库', l.path, l.addedAt || Date.now(), id === active ? 1 : 0, i, watch);
     });
     db.exec('COMMIT');
     return { active: active };
   } catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} throw e; }
 }
 function getLib(db, uid, id) {
-  return db.prepare('SELECT id, name, path, added_at AS addedAt, active, shared_id FROM libs WHERE user_id = ? AND id = ?')
+  return db.prepare('SELECT id, name, path, added_at AS addedAt, active, shared_id, watch FROM libs WHERE user_id = ? AND id = ?')
     .get(String(uid || ''), String(id || '')) || null;
 }
 /* 元数据是按库目录共享的：只要这个用户登记过同一个目录，就认同一个库
@@ -338,6 +362,19 @@ function setActiveLib(db, uid, id) {
     db.exec('COMMIT');
     return true;
   } catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} return false; }
+}
+
+/* 目录自动监听开关：按库行写。返回写入后的状态；库不存在返回 null。
+   只改数据库、不碰主机目录，所以不要求 --allow-lib-edit（和 dirMode 一样）。 */
+function setLibWatch(db, id, on) {
+  const v = on ? 1 : 0;
+  const r = db.prepare('UPDATE libs SET watch = ? WHERE id = ?').run(v, String(id || ''));
+  return (r.changes || 0) > 0 ? !!v : null;
+}
+/* 给主机侧 watcher 用：所有开着自动监听的库。
+   只取用户自己的库（shared_id IS NULL）；共享副本和源库同路径，watcher 会按路径去重 */
+function listWatchLibs(db) {
+  return db.prepare('SELECT id, path FROM libs WHERE watch = 1 AND shared_id IS NULL').all();
 }
 
 /* ── 共享：把某个库指派给其它用户（配置挂在源库上） ──
@@ -931,6 +968,58 @@ function clearLibMeta(db, root) {
   });
 }
 
+/* ── 收听时长统计 ──
+   真实墙钟播放秒数按天累计（暂停不计）。by_hour 是 24 长度的秒数数组，by_cat 是
+   catId→秒数 的对象，未分类用 '__none__'。写入端（stats 引擎）节流后批量增量，
+   这里只做行级 read-modify-write，单连接事务内原子。 */
+function emptyByHour() { return [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]; }
+function parseByHour(s) {
+  try { const a = JSON.parse(s); if (Array.isArray(a) && a.length === 24) return a.map(Number); } catch (e) {}
+  return emptyByHour();
+}
+function parseByCat(s) {
+  try { const o = JSON.parse(s); if (o && typeof o === 'object') return o; } catch (e) {}
+  return {};
+}
+function listenStatsAdd(db, uid, day, delta, hour, catId) {
+  delta = Number(delta) || 0;
+  if (!uid || !day || delta <= 0) return 0;
+  hour = Math.max(0, Math.min(23, Math.floor(Number(hour))));
+  const cat = catId ? String(catId) : '__none__';
+  return tx(db, function () {
+    const row = db.prepare('SELECT secs, by_hour, by_cat FROM listen_stats WHERE user_id=? AND day=?').get(uid, day);
+    let secs = 0, byHour = emptyByHour(), byCat = {};
+    if (row) {
+      secs = Number(row.secs) || 0;
+      byHour = parseByHour(row.by_hour);
+      byCat = parseByCat(row.by_cat);
+    }
+    secs += delta;
+    byHour[hour] = (Number(byHour[hour]) || 0) + delta;
+    byCat[cat] = (Number(byCat[cat]) || 0) + delta;
+    db.prepare('INSERT INTO listen_stats(user_id, day, secs, by_hour, by_cat) VALUES(?,?,?,?,?) ' +
+      'ON CONFLICT(user_id, day) DO UPDATE SET secs=excluded.secs, by_hour=excluded.by_hour, by_cat=excluded.by_cat')
+      .run(uid, day, secs, JSON.stringify(byHour), JSON.stringify(byCat));
+    return 1;
+  });
+}
+function listenStatsQuery(db, uid, fromDay, toDay) {
+  if (!uid) return [];
+  const rows = db.prepare('SELECT day, secs, by_hour, by_cat FROM listen_stats WHERE user_id=? AND day>=? AND day<=? ORDER BY day')
+    .all(uid, fromDay || '0000-01-01', toDay || '9999-12-31');
+  return rows.map(function (r) {
+    return { day: r.day, secs: Number(r.secs) || 0, byHour: parseByHour(r.by_hour), byCat: parseByCat(r.by_cat) };
+  });
+}
+function listenStatsGoalGet(db, uid) {
+  return Math.max(0, Math.min(1440, parseInt(getSetting(db, 'listenGoal:' + (uid || ''), '0')) || 0));
+}
+function listenStatsGoalSet(db, uid, min) {
+  min = Math.max(0, Math.min(1440, Math.round(Number(min) || 0)));
+  setSetting(db, 'listenGoal:' + (uid || ''), String(min));
+  return min;
+}
+
 /* ── remote（设备级） ── */
 function getRemote(db) {
   const r = db.prepare('SELECT base, token, uid FROM remote WHERE id = 1').get();
@@ -988,9 +1077,11 @@ module.exports = {
   listUsers, countUsers, findUser, getUser, adminUser, firstUserId, newUserId,
   addUser, setUserPassword, setUserDisabled, countEnabledAdmins, removeUser, touchLogin,
   listLibs, activeLib, replaceLibs, setActiveLib, getLib, libPath,
+  setLibWatch, listWatchLibs,
   listShares, setLibShare, addLibShareTarget, removeLibShare, syncUserSharedLibs,
   listFavs, setFav, clearFavs,
   listFavTracks, setFavTrack, clearFavTracks,
+  listenStatsAdd, listenStatsQuery, listenStatsGoalGet, listenStatsGoalSet,
   META_VERSION, META_LIMIT, libRootKey,
   libDirGroup, setLibDirGroup, libDirMode, setLibDirMode, normDirMode, DIR_MODES,
   catsList, catsReplace, catsDelete,

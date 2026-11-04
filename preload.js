@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('fmNative', {
   /* 目录结构：flat / cat / auto（老版本只有布尔版 setLibDirGroup） */
   setLibDirMode: (id, mode) => ipcRenderer.invoke('fm:setLibDirMode', id, mode),
   setLibDirGroup: (id, on) => ipcRenderer.invoke('fm:setLibDirGroup', id, on),
+  /* 目录自动监听开关：只改 fm.db 的库记录，主进程随即启停 chokidar */
+  setLibWatch: (id, on) => ipcRenderer.invoke('fm:setLibWatch', id, on),
   relocate: (id) => ipcRenderer.invoke('fm:relocate', id),
   removeLib: (id) => ipcRenderer.invoke('fm:removeLib', id),
   /* refresh=true 跳过扫描缓存真的走盘（前端「重新扫描」）；平时读主进程缓存的扫描结果 */
@@ -54,6 +56,11 @@ contextBridge.exposeInMainWorld('fmNative', {
   setFav: (libId, albumId, on) => ipcRenderer.invoke('fm:setFav', libId, albumId, on),
   favTracks: (libId) => ipcRenderer.invoke('fm:favTracks', libId),
   setFavTrack: (libId, trackId, on) => ipcRenderer.invoke('fm:setFavTrack', libId, trackId, on),
+  /* 收听时长统计：增量上报（day/秒数/小时/分类），查询区间，读写每日目标（分钟） */
+  listenAdd: (day, deltaSecs, hour, catId) => ipcRenderer.invoke('fm:listenAdd', day, deltaSecs, hour, catId),
+  listenQuery: (fromDay, toDay) => ipcRenderer.invoke('fm:listenQuery', fromDay, toDay),
+  listenGoalGet: () => ipcRenderer.invoke('fm:listenGoalGet'),
+  listenGoalSet: (min) => ipcRenderer.invoke('fm:listenGoalSet', min),
   /* 后台补完封面时通知一次，页面据此重读封面索引 */
   onCovers: (cb) => ipcRenderer.on('fm:covers', (e, info) => { try { cb(info); } catch (err) {} })
 });

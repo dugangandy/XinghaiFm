@@ -586,3 +586,15 @@ body.app-fs .vstage{
   .sheet-album-card .ac-fav{width:36px;height:36px}
   .sheet-album-card .ac-fav .i{width:19px;height:19px}
 }
+
+/* 收听统计 · 移动端 */
+@media (max-width:780px){
+  .stats-grid{grid-template-columns:1fr}
+  .annual-grid{grid-template-columns:1fr 1fr}
+  .stats-view{padding:4px 10px 32px}
+  .stats-title{font-size:22px}
+  .dur-big{font-size:40px}
+  .mini-bars{height:74px}
+  .month-bars{height:104px}
+  .cat-donut{justify-content:center}
+}

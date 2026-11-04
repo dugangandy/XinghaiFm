@@ -16,6 +16,7 @@ const { Readable } = require('node:stream');
 const DB = require('./db');
 const covers = require('./cover-fetch');
 const TC = require('./transcode');
+const { createWatcher } = require('./watch');
 
 const ROOT = __dirname;
 /* ape / wv / wma 能扫进来但 Chromium 解不了（点了明确提示不支持）；
@@ -65,7 +66,7 @@ function newLibId() { return 'l' + Date.now().toString(36) + Math.random().toStr
 function getConfig() {
   const db = getDb();
   const uid = adminUid();
-  const libs = DB.listLibs(db, uid).map(function (l) { return { id: l.id, name: l.name, path: l.path, addedAt: l.addedAt }; });
+  const libs = DB.listLibs(db, uid).map(function (l) { return { id: l.id, name: l.name, path: l.path, addedAt: l.addedAt, watch: l.watch ? 1 : 0 }; });
   const a = DB.activeLib(db, uid);
   lastCfg = { libs: libs, active: a ? a.id : (libs[0] ? libs[0].id : null) };
   return lastCfg;
@@ -108,7 +109,8 @@ function libView(l) {
     id: l.id, name: l.name, path: l.path, missing: !fs.existsSync(l.path),
     /* dirMode 是三档（flat / cat / auto）；dirGroup 是老字段，只为兼容旧版渲染层 */
     dirMode: DB.libDirMode(getDb(), l.path),
-    dirGroup: DB.libDirGroup(getDb(), l.path)
+    dirGroup: DB.libDirGroup(getDb(), l.path),
+    watch: !!l.watch
   };
 }
 
@@ -435,6 +437,24 @@ async function scanFolder(root, opts) {
   }
 }
 
+/* ── 目录自动监听（chokidar）──
+   只对用户在库设置里打开的库生效；命中变化后防抖触发 scanFolder(refresh)，
+   复用上面的 scanInflight 互斥与扫描缓存写入，扫描逻辑本身不变。 */
+const libWatcher = createWatcher({
+  scan: function (root) { return scanFolder(root, { refresh: true }); }
+});
+function syncWatchers() {
+  try {
+    const cfg = getConfig();
+    libWatcher.setRoots(cfg.libs.map(function (l) {
+      return { id: l.id, path: l.path, watch: !!l.watch };
+    }));
+  } catch (e) {
+    console.warn('[watch] 同步监听失败：' + ((e && e.message) || e));
+  }
+}
+let watchTick = 0;   /* 60 秒对账定时器（另一个进程改 watch 时也能跟上） */
+
 function insideRoot(rel) {
   const lib = activeLib();
   if (!lib) throw new Error('尚未选择资源库');
@@ -518,7 +538,7 @@ function bindIpc() {
 
   ipcMain.handle('fm:libs', function () {
     const cfg = getConfig();
-    return { active: cfg.active, libs: cfg.libs.map(libView) };
+    return { active: cfg.active, libs: cfg.libs.map(libView), watchAvailable: libWatcher.available };
   });
 
   /* preset 有值时跳过系统选目录框（自动化测试用） */
@@ -546,6 +566,7 @@ function bindIpc() {
     cfg.libs.push(lib);
     cfg.active = lib.id;
     saveConfig();
+    syncWatchers();
     return { lib: libView(lib), existing: false };
   });
 
@@ -584,6 +605,8 @@ function bindIpc() {
     saveConfig(cfg);
     /* 旧路径的扫描缓存已经没用了，清掉（几 MB 的孤儿行），新路径第一次进库会重新扫 */
     if (oldPath && path.resolve(oldPath) !== path.resolve(lib.path)) dropScanCache(oldPath);
+    /* 监听的是目录：重新定位后要按新路径重挂 */
+    syncWatchers();
     return libView(lib);
   });
 
@@ -600,6 +623,8 @@ function bindIpc() {
     try { DB.clearLibMeta(getDb(), gone.path); } catch (err) {}
     /* 扫描缓存也一起清掉，重新加回来时按新内容扫 */
     dropScanCache(gone.path);
+    /* 库没了就别再监听它的目录 */
+    syncWatchers();
     return { active: cfg.active };
   });
 
@@ -632,6 +657,17 @@ function bindIpc() {
     const lib = getConfig().libs.find(l => l.id === id);
     if (!lib) return false;
     return DB.setLibDirGroup(getDb(), lib.path, !!on);
+  });
+
+  /* 目录自动监听开关：只改 fm.db 的库记录并即时启停 chokidar */
+  ipcMain.handle('fm:setLibWatch', function (e, id, on) {
+    const lib = getConfig().libs.find(l => l.id === id);
+    if (!lib) return false;
+    const v = DB.setLibWatch(getDb(), id, !!on);
+    if (v === null) return false;
+    lib.watch = v ? 1 : 0;
+    syncWatchers();
+    return !!v;
   });
 
   /* ── 网页手动编辑封面：搜索候选 / 保存 / 删除，三者都走 .fm-covers/ ── */
@@ -757,6 +793,24 @@ function bindIpc() {
     const id = libId || (activeLib() && activeLib().id);
     if (!id || !trackId) return false;
     return DB.setFavTrack(getDb(), adminUid(), id, trackId, !!on);
+  });
+
+  /* ── 收听时长统计：桌面端单用户挂在固定 admin 账号下（服务端由会话决定 uid） ── */
+  ipcMain.handle('fm:listenAdd', function (e, day, deltaSecs, hour, catId) {
+    try { DB.listenStatsAdd(getDb(), adminUid(), String(day || ''), Number(deltaSecs) || 0, Number(hour) || 0, catId); return { ok: true }; }
+    catch (err) { return { ok: false, error: String((err && err.message) || err) }; }
+  });
+  ipcMain.handle('fm:listenQuery', function (e, fromDay, toDay) {
+    try { return { ok: true, rows: DB.listenStatsQuery(getDb(), adminUid(), String(fromDay || ''), String(toDay || '')) }; }
+    catch (err) { return { ok: false, rows: [] }; }
+  });
+  ipcMain.handle('fm:listenGoalGet', function () {
+    try { return { ok: true, min: DB.listenStatsGoalGet(getDb(), adminUid()) }; }
+    catch (err) { return { ok: false, min: 0 }; }
+  });
+  ipcMain.handle('fm:listenGoalSet', function (e, min) {
+    try { return { ok: true, min: DB.listenStatsGoalSet(getDb(), adminUid(), Number(min) || 0) }; }
+    catch (err) { return { ok: false, min: 0 }; }
   });
 
   /* ── 转码：Chromium 认不全的 flv 先重封装成 mp4 再播（ape / wv / wma 前端直接提示不支持） ──
@@ -890,6 +944,10 @@ if (!gotLock) {
     registerProtocol();
     bindIpc();
     getConfig();          // 老的 { root } 配置在这里就地升级
+    syncWatchers();       // 给已开启自动监听的库挂上 chokidar
+    /* serve.js 可能也在跑并改过 watch：60 秒对一次账，顺带兜住漏掉的库增删 */
+    watchTick = setInterval(syncWatchers, 60000);
+    if (watchTick.unref) watchTick.unref();
     createWindow();
     /* 转码依赖系统 ffmpeg：启动时把结果打在控制台，找不到时至少留下排查线索
        （macOS 从 Finder 启动的 app，PATH 往往只有 /usr/bin:/bin） */
@@ -910,5 +968,10 @@ if (!gotLock) {
 
   app.on('window-all-closed', function () {
     if (process.platform !== 'darwin') app.quit();
+  });
+
+  app.on('will-quit', function () {
+    if (watchTick) { clearInterval(watchTick); watchTick = 0; }
+    try { libWatcher.stopAll(); } catch (e) {}
   });
 }

@@ -1191,3 +1191,88 @@ select.input option{background:#161d29;color:var(--txt)}
 .upd-meta{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;color:var(--dim)}
 .upd-note{margin:0;font-size:11.5px;color:var(--dim-2);line-height:1.7}
 .upd-note:empty{display:none}
+
+/* ── 收听统计 ─────────────────────────────────── */
+.stats-view{max-width:1080px;margin:0 auto;padding:8px 14px 48px}
+.stats-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 2px 18px}
+.stats-title{font-size:26px;font-weight:800;letter-spacing:-.01em;margin:0;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.seg{display:inline-flex;background:var(--panel-2);border:1px solid var(--line);border-radius:99px;padding:3px;flex:none}
+.seg-btn{border:0;background:transparent;color:var(--txt-2);font-size:13px;font-weight:600;padding:7px 18px;border-radius:99px;cursor:pointer;transition:.2s var(--ease)}
+.seg-btn.active{color:#04121a;background:var(--grad);box-shadow:var(--glow-cyan)}
+
+.stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.stat-duration{grid-column:1 / -1}
+/* 统计卡不复用 .card：那边带 cursor:pointer / hover 上浮 / 初始 opacity:0（要靠 observeCards 加 .in），
+   套到纯展示卡片上会误导交互、还会让内容先透明一拍。 */
+.stat-card{
+  position:relative;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);
+  padding:18px 20px;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:var(--shadow-1);
+}
+.stat-card-label{font-size:12px;letter-spacing:.04em;color:var(--dim);margin-bottom:12px;font-weight:600}
+.dur-big{font-size:46px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.dur-unit{font-size:18px;font-weight:700;margin-left:5px;-webkit-text-fill-color:var(--txt-2)}
+.dur-sub{margin-top:8px;font-size:13px;color:var(--txt-2)}
+.mini-bars{display:flex;align-items:flex-end;gap:8px;height:86px;margin-top:18px}
+.mbar{flex:1;display:flex;flex-direction:column;align-items:center;height:100%;justify-content:flex-end;gap:6px}
+.mbar-fill{width:100%;max-width:30px;border-radius:7px 7px 3px 3px;background:linear-gradient(180deg,rgba(34,211,238,.85),rgba(139,92,246,.8));min-height:4px;transition:height .6s var(--ease)}
+.mbar.on .mbar-fill{background:linear-gradient(180deg,#22d3ee,#a855f7);box-shadow:var(--glow-cyan)}
+.mbar-lab{font-size:10px;color:var(--dim)}
+
+.streak-row{display:flex;align-items:center;justify-content:space-around;margin:4px 0 14px}
+.streak-num{font-size:40px;font-weight:800;font-variant-numeric:tabular-nums;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.streak-cap{font-size:12px;color:var(--txt-2);margin-top:4px}
+.streak-sep{width:1px;height:46px;background:var(--line)}
+.streak-tip{font-size:13px;padding:9px 12px;border-radius:12px;background:var(--panel-2);color:var(--txt-2);text-align:center;transition:.25s}
+.streak-tip.ok{color:#7ff0c8;background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.22)}
+.streak-tip.warn{color:#ffcf8b;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.24)}
+
+.goal-wrap{display:flex;align-items:center;gap:18px}
+.goal-ring{position:relative;width:104px;height:104px;flex:none}
+.ring-svg{width:100%;height:100%}
+.ring-bg{fill:none;stroke:rgba(255,255,255,.08);stroke-width:9}
+.ring-fg{fill:none;stroke:url(#statsRingGrad);stroke-width:9;stroke-linecap:round;transition:stroke-dashoffset .6s var(--ease)}
+.goal-pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--txt)}
+.goal-side{flex:1;min-width:0}
+.goal-today{font-size:14px;color:var(--txt-2);margin-bottom:12px;font-variant-numeric:tabular-nums}
+.goal-set{border:1px solid var(--line-2);background:var(--panel-3);color:var(--txt);font-size:13px;font-weight:600;padding:8px 16px;border-radius:99px;cursor:pointer;transition:.2s}
+.goal-set:hover{border-color:var(--cyan);color:#cdfaff}
+.goal-empty{text-align:center;padding:8px 0}
+.goal-empty-tip{font-size:13px;color:var(--txt-2);margin-bottom:12px}
+
+.annual-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}
+.year-sel{display:flex;gap:6px;flex-wrap:wrap}
+.year-btn{border:1px solid var(--line);background:var(--panel-2);color:var(--txt-2);font-size:12px;padding:5px 12px;border-radius:99px;cursor:pointer;transition:.2s}
+.year-btn.active{color:#04121a;background:var(--grad);border-color:transparent;font-weight:700}
+.annual-empty{padding:40px 10px;text-align:center;color:var(--dim);font-size:14px}
+.annual-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.annual-kpi{background:var(--panel-2);border:1px solid var(--line);border-radius:14px;padding:14px}
+.annual-num{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--txt)}
+.annual-cap{font-size:12px;color:var(--dim);margin-top:4px}
+.annual-block{grid-column:1 / -1;background:var(--panel-2);border:1px solid var(--line);border-radius:14px;padding:14px}
+.ab-title{font-size:13px;color:var(--txt-2);margin-bottom:12px;font-weight:600}
+.month-bars{display:flex;align-items:flex-end;gap:6px;height:120px}
+.mon-bar{flex:1;display:flex;flex-direction:column;align-items:center;height:100%;justify-content:flex-end;gap:6px}
+.mon-fill{width:100%;border-radius:5px 5px 2px 2px;background:linear-gradient(180deg,rgba(34,211,238,.85),rgba(139,92,246,.8));min-height:4px;transition:height .5s var(--ease)}
+.mon-lab{font-size:10px;color:var(--dim)}
+.cat-donut{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.donut-svg{width:120px;height:120px;flex:none}
+.donut-seg{transition:stroke-dashoffset .5s var(--ease)}
+.donut-leg{flex:1;min-width:140px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt-2)}
+.donut-leg i{width:11px;height:11px;border-radius:3px;flex:none}
+.donut-leg b{margin-left:auto;color:var(--txt);font-variant-numeric:tabular-nums}
+.annual-share{margin-top:16px;width:100%;border:0;background:var(--grad);color:#04121a;font-size:14px;font-weight:700;padding:13px;border-radius:14px;cursor:pointer;box-shadow:var(--glow-cyan);transition:.2s}
+.annual-share:hover{filter:brightness(1.08)}
+
+/* 分享 / 目标弹层 */
+.stats-share-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:rgba(2,4,10,.78);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);padding:20px}
+.ssm-card{background:var(--panel);border:1px solid var(--line-2);border-radius:var(--r-lg);padding:16px;max-width:440px;width:100%;box-shadow:var(--shadow-2);text-align:center}
+.ssm-img{width:100%;border-radius:12px;display:block}
+.ssm-actions{display:flex;gap:10px;margin-top:14px}
+.ssm-actions button{flex:1;border:1px solid var(--line-2);background:var(--panel-3);color:var(--txt);font-size:14px;font-weight:600;padding:11px;border-radius:12px;cursor:pointer;transition:.2s}
+.ssm-actions .ssm-save{background:var(--grad);color:#04121a;border-color:transparent}
+.ssm-actions button:hover{filter:brightness(1.08)}
+.ssm-title{font-size:16px;font-weight:700;margin-bottom:14px}
+.ssm-goal-row{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:16px}
+.ssm-step{width:40px;height:40px;border-radius:12px;border:1px solid var(--line-2);background:var(--panel-3);color:var(--txt);font-size:20px;cursor:pointer}
+.ssm-input{width:90px;text-align:center;font-size:22px;font-weight:800;padding:8px;border-radius:12px;border:1px solid var(--line-2);background:rgba(0,0,0,.25);color:var(--txt)}
+.ssm-unit{font-size:13px;color:var(--txt-2)}

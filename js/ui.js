@@ -19,6 +19,7 @@
   let gridTail = null;        // 还没画出来的专辑（滚动加载用）
   let trackTail = null;       // 手机端还没画出来的曲目（滚动加载用）
   let searchTail = null;      // 搜索结果按库分组后、还没画出来的条目（滚动加载用）
+  let statsViewTeardown = null;   // 统计页的实时订阅与定时器，换页时必须显式清掉
 
   const CAT_COLORS = ['#22d3ee', '#a855f7', '#f472b6', '#34d399', '#fbbf24', '#ff8a65', '#60a5fa', '#c084fc'];
 
@@ -443,7 +444,8 @@
       { key: 'home', hash: '#/', label: '首页', icon: 'home', count: withCount ? all.filter(a => !a.hidden).length : 0 },
       { key: 'continue', hash: '#/continue', label: '继续收听', icon: 'clock', count: withCount ? continueList(999).length : 0 },
       { key: 'recent', hash: '#/recent', label: '最近播放', icon: 'headphones', count: withCount ? recentList(999).length : 0 },
-      { key: 'fav', hash: '#/fav', label: '我的收藏', icon: 'heart', count: favCount }
+      { key: 'fav', hash: '#/fav', label: '我的收藏', icon: 'heart', count: favCount },
+      { key: 'stats', hash: '#/stats', label: '收听统计', icon: 'chart' }
     ];
     /* 下载管理只存在于 APK：和「我的收藏」一样是个网页视图 */
     if (canDownload()) items.push({ key: 'downloads', hash: '#/downloads', label: '下载管理', icon: 'download', count: withCount ? dlCount() : 0 });
@@ -769,12 +771,15 @@
   function renderMain(opts) {
     const quiet = !!(opts && opts.quiet);
     const v = refs.view;
+    /* 统计页有 tick 订阅和 30 秒定时器：必须在清空 DOM 前停掉，
+       否则离开后仍会后台查库、写已卸载节点，反复进出还会叠加多个定时器 */
+    if (statsViewTeardown) { try { statsViewTeardown(); } catch (e) {} statsViewTeardown = null; }
     v.innerHTML = '';
     gridTail = null;
     trackTail = null;
     searchTail = null;
     /* 批量下载/删除页：让页面铺满（没有播放条时不留底部空档） */
-    if (!L.albums().length) { v.classList.remove('dl-view'); renderWelcome(); return; }
+    if (!L.albums().length && state.view !== 'stats') { v.classList.remove('dl-view'); renderWelcome(); return; }
     v.classList.toggle('dl-view', state.view === 'dlMore' || state.view === 'dlRemove');
     let node;
     if (state.q) node = viewSearch(state.q);
@@ -788,6 +793,7 @@
     else if (state.view === 'dlMore') node = viewDlMore(state.albumId);
     else if (state.view === 'continue') node = viewContinue();
     else if (state.view === 'recent') node = viewRecent();
+    else if (state.view === 'stats') node = viewStats();
     else node = viewHome();
     if (node) {
       /* 后台静默刷新：别让整页再播一遍入场动画，看起来像"跳"了一下 */
@@ -1025,7 +1031,7 @@
   }
 
   /* 「按专辑 / 按分类」这种改整库结构的操作只在桌面端给：
-     手机上一来一行小按钮容易误触，二来手机端没有扫描入口，改完看不到结果。
+     手机上一来一行小按钮容易误触，二来改完整库重扫较重，等回桌面端再改更稳。
      按「设备」判断而不是窗口宽度——桌面浏览器窗口拉窄了照样要能改 */
   function canEditGroup() {
     if (FM.android) return false;
@@ -2051,6 +2057,290 @@
     return rows.slice(0, limit).map(r => r.t);
   }
 
+  /* ── 收听统计 ─────────────────────────────────────────── */
+  function viewStats() {
+    const wrap = U.el('div'); wrap.className = 'stats-view';
+    let mode = 'day';
+    let lastBars = null, lastMax = 1, lastTodayIndex = -1, cacheGoalMin = 0;
+    let liveTimer = null, unsub = null, alive = true;
+
+    wrap.innerHTML =
+      '<div class="stats-head">' +
+        '<h1 class="stats-title">收听统计</h1>' +
+        '<div class="seg" id="statsSeg">' +
+          '<button class="seg-btn active" data-mode="day">今日</button>' +
+          '<button class="seg-btn" data-mode="week">本周</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="stats-grid">' +
+        '<section class="stat-card stat-duration">' +
+          '<div class="stat-card-label">收听时长 · <span id="durLabel">今日</span></div>' +
+          '<div class="dur-big" id="durBig">0<span class="dur-unit">分钟</span></div>' +
+          '<div class="dur-sub" id="durSub">今天还没开始收听</div>' +
+          '<div class="mini-bars" id="durBars"></div>' +
+        '</section>' +
+        '<section class="stat-card stat-streak">' +
+          '<div class="stat-card-label">连续收听</div>' +
+          '<div class="streak-row">' +
+            '<div class="streak-cell"><div class="streak-num" id="streakCur">0</div><div class="streak-cap">当前连听 (天)</div></div>' +
+            '<div class="streak-sep"></div>' +
+            '<div class="streak-cell"><div class="streak-num" id="streakMax">0</div><div class="streak-cap">历史最长 (天)</div></div>' +
+          '</div>' +
+          '<div class="streak-tip" id="streakTip">开始收听后，这里会记录你的第一天</div>' +
+        '</section>' +
+        '<section class="stat-card stat-goal">' +
+          '<div class="stat-card-label">每日目标完成率</div>' +
+          '<div class="goal-wrap" id="goalWrap">' +
+            '<div class="goal-ring" id="goalRing"><svg class="ring-svg" viewBox="0 0 100 100"><defs><linearGradient id="statsRingGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs><circle class="ring-bg" cx="50" cy="50" r="42"/><circle class="ring-fg" cx="50" cy="50" r="42"/></svg><div class="goal-pct" id="goalPct">0%</div></div>' +
+            '<div class="goal-side"><div class="goal-today" id="goalToday">0分 / 0分</div><button class="goal-set" id="goalSetBtn">设定目标</button></div>' +
+          '</div>' +
+          '<div class="goal-empty" id="goalEmpty" hidden><div class="goal-empty-tip">还没有设定每日收听目标</div><button class="goal-set" id="goalSetBtn2">设定每日目标</button></div>' +
+        '</section>' +
+        '<section class="stat-card stat-annual">' +
+          '<div class="annual-head"><div class="stat-card-label">年度报告</div><div class="year-sel" id="yearSel"></div></div>' +
+          '<div class="annual-empty" id="annualEmpty">今年还没有收听记录，开始收听后这里会生成你的专属年报</div>' +
+          '<div class="annual-grid" id="annualGrid" hidden>' +
+            '<div class="annual-kpi"><div class="annual-num" id="aTotal">0</div><div class="annual-cap">全年总时长</div></div>' +
+            '<div class="annual-kpi"><div class="annual-num" id="aDays">0</div><div class="annual-cap">收听天数</div></div>' +
+            '<div class="annual-kpi"><div class="annual-num" id="aPeak">--:00</div><div class="annual-cap">最活跃时段</div></div>' +
+            '<div class="annual-block"><div class="ab-title">月度分布</div><div class="month-bars" id="monthBars"></div></div>' +
+            '<div class="annual-block"><div class="ab-title">内容类型占比</div><div class="cat-donut" id="catDonut"></div></div>' +
+          '</div>' +
+          '<button class="annual-share" id="annualShare" hidden>生成年度总结</button>' +
+        '</section>' +
+      '</div>';
+
+    const $ = function (id) { return wrap.querySelector('#' + id); };
+    const pad2 = function (n) { return (n < 10 ? '0' : '') + n; };
+
+    /* 模块一 · 时长
+       「今天」在 bars 里的位置由 summary 的 todayIndex 给出：日模式是最后一根，
+       周模式是周一~周日里的某一天，不能想当然当成最后一根。 */
+    function renderBars(c, bars, m, ti) {
+      lastBars = bars;
+      lastTodayIndex = ti;
+      const max = Math.max.apply(null, bars.map(function (b) { return b.secs; }).concat([1]));
+      lastMax = max;
+      c.innerHTML = bars.map(function (b, i) {
+        const h = Math.max(3, (b.secs / max) * 100);
+        let label;
+        if (m === 'week') label = '周' + '一二三四五六日'[i];
+        else { const d = new Date(b.day.replace(/-/g, '/')); label = (i === ti) ? '今天' : d.getDate() + '日'; }
+        return '<div class="mbar' + (i === ti ? ' on' : '') + '"><div class="mbar-fill" style="height:' + h + '%"></div><div class="mbar-lab">' + label + '</div></div>';
+      }).join('');
+    }
+    function showDuration(total, m) {
+      const big = $('durBig'), sub = $('durSub');
+      if (total >= 3600) big.innerHTML = (total / 3600).toFixed(1) + '<span class="dur-unit">小时</span>';
+      else big.innerHTML = Math.floor(total / 60) + '<span class="dur-unit">分钟</span>';
+      sub.textContent = total > 0 ? (m === 'day' ? '今日已收听 ' : '本周已收听 ') + FM.stats.fmt(total) : (m === 'day' ? '今天还没开始收听' : '本周还没开始收听');
+    }
+    async function refreshDuration(m) {
+      const s = await FM.stats.summary(m);
+      if (!alive) return;
+      showDuration(s.total, m);
+      renderBars($('durBars'), s.bars, m, s.todayIndex);
+    }
+    function setMode(m) {
+      mode = m;
+      wrap.querySelectorAll('.seg-btn').forEach(function (x) { x.classList.toggle('active', x.dataset.mode === m); });
+      $('durLabel').textContent = (m === 'day') ? '今日' : '本周';
+      refreshDuration(m);
+    }
+    /* 打开统计页 / 30 秒定时：先等基线刷新完，再统一重绘四个模块，
+       避免 refresh 与查询并发导致首屏显示 0 或旧值 */
+    async function refreshAll() {
+      try { await FM.stats.refresh(); } catch (e) {}
+      if (!alive) return;
+      refreshDuration(mode);
+      refreshStreak();
+      refreshCompletion();
+      refreshAnnual(annualYear);
+    }
+
+    /* 模块二 · 连续天数 */
+    async function refreshStreak() {
+      const s = await FM.stats.streak();
+      if (!alive) return;
+      $('streakCur').textContent = s.current;
+      $('streakMax').textContent = s.longest;
+      const tip = $('streakTip');
+      if (!s.listened) { tip.className = 'streak-tip'; tip.textContent = '开始收听后，这里会记录你的第一天'; }
+      else if (s.broken) { tip.className = 'streak-tip warn'; tip.textContent = '已中断，今天补上就好'; }
+      else if (FM.stats.today().secs > 0) { tip.className = 'streak-tip ok'; tip.textContent = '进行中 · 已连续 ' + s.current + ' 天'; }
+      else { tip.className = 'streak-tip ok'; tip.textContent = '进行中 · 昨天已收听，今天继续'; }
+    }
+
+    /* 模块三 · 完成率 */
+    function setRing(pct) {
+      const fg = wrap.querySelector('.ring-fg');
+      if (!fg) return;
+      const C = 2 * Math.PI * 42;
+      fg.style.strokeDasharray = C;
+      fg.style.strokeDashoffset = C * (1 - pct / 100);
+    }
+    async function refreshCompletion() {
+      const c = await FM.stats.completion();
+      if (!alive) return;
+      cacheGoalMin = c.goalMin;
+      if (!c.goalMin) { $('goalWrap').hidden = true; $('goalEmpty').hidden = false; return; }
+      $('goalWrap').hidden = false; $('goalEmpty').hidden = true;
+      const pct = c.pct;
+      setRing(pct); $('goalPct').textContent = pct + '%';
+      $('goalToday').textContent = FM.stats.fmt(c.todaySec) + ' / ' + c.goalMin + '分钟';
+    }
+
+    /* 模块四 · 年度报告 */
+    function renderMonthBars(c, monthly) {
+      const max = Math.max.apply(null, monthly.concat([1]));
+      c.innerHTML = monthly.map(function (v, i) {
+        const h = Math.max(4, (v / max) * 100);
+        return '<div class="mon-bar"><div class="mon-fill" style="height:' + h + '%"></div><div class="mon-lab">' + (i + 1) + '</div></div>';
+      }).join('');
+    }
+    function renderDonut(c, byCat) {
+      const map = FM.stats.catMeta();
+      const entries = Object.keys(byCat).map(function (k) { return { k: k, v: byCat[k] }; }).sort(function (a, b) { return b.v - a.v; });
+      const total = entries.reduce(function (s, e) { return s + e.v; }, 0) || 1;
+      const R = 46, C = 2 * Math.PI * R, cx = 50, cy = 50;
+      let off = 0, segs = '';
+      entries.forEach(function (e) {
+        const len = C * (e.v / total);
+        const meta = FM.stats.resolveCat(e.k, map);
+        segs += '<circle cx="' + cx + '" cy="' + cy + '" r="' + R + '" fill="none" stroke="' + meta.color + '" stroke-width="12" stroke-dasharray="' + len + ' ' + (C - len) + '" stroke-dashoffset="' + (-off) + '" transform="rotate(-90 ' + cx + ' ' + cy + ')"/>';
+        off += len;
+      });
+      let legend = '';
+      entries.slice(0, 6).forEach(function (e) {
+        const meta = FM.stats.resolveCat(e.k, map);
+        legend += '<div class="donut-leg"><i style="background:' + meta.color + '"></i><span>' + esc(meta.name) + '</span><b>' + Math.round(e.v / total * 100) + '%</b></div>';
+      });
+      c.innerHTML = '<svg class="donut-svg" viewBox="0 0 100 100">' + segs + '</svg><div class="donut-legend">' + legend + '</div>';
+    }
+    let annualYear = new Date().getFullYear();
+    async function refreshAnnual(year) {
+      const d = await FM.stats.annual(year);
+      if (!alive) return;
+      if (d.total <= 0) { $('annualEmpty').hidden = false; $('annualGrid').hidden = true; $('annualShare').hidden = true; return; }
+      $('annualEmpty').hidden = true; $('annualGrid').hidden = false; $('annualShare').hidden = false;
+      $('aTotal').textContent = FM.stats.fmt(d.total);
+      $('aDays').textContent = d.days + ' 天';
+      const pk = d.peak || { start: 0, end: 0 };
+      $('aPeak').textContent = pad2(pk.start) + '–' + pad2(pk.end + 1) + '时';
+      renderMonthBars($('monthBars'), d.monthly);
+      renderDonut($('catDonut'), d.byCat);
+    }
+    function buildYearSel() {
+      const cy = new Date().getFullYear(), y = $('yearSel');
+      y.innerHTML = [0, 1, 2, 3].map(function (i) {
+        const yr = cy - i;
+        return '<button class="year-btn' + (i === 0 ? ' active' : '') + '" data-year="' + yr + '">' + yr + '</button>';
+      }).join('');
+      y.onclick = function (e) {
+        const b = e.target.closest('.year-btn'); if (!b) return;
+        y.querySelectorAll('.year-btn').forEach(function (x) { x.classList.toggle('active', x === b); });
+        annualYear = parseInt(b.dataset.year, 10);
+        refreshAnnual(annualYear);
+      };
+    }
+
+    /* 实时：仅用内存里的今日数据，不触发后端请求。
+       周汇总只把「今天那一根」替换成实时值再求和，其余柱沿用上次查询结果，
+       不能把前 6 根加起来再补一次 tSec（那会重复计今天并丢掉周日）。 */
+    function liveTick() {
+      if (!alive) return;
+      const tSec = FM.stats.today().secs;
+      let total = tSec;
+      if (mode === 'week' && lastBars && lastTodayIndex >= 0) {
+        total = 0;
+        for (let i = 0; i < lastBars.length; i++) total += (i === lastTodayIndex ? tSec : lastBars[i].secs);
+      }
+      showDuration(total, mode);
+      const bar = wrap.querySelector('.mbar.on .mbar-fill');
+      if (bar) bar.style.height = Math.min(100, Math.max(3, (tSec / lastMax) * 100)) + '%';
+      const pct = cacheGoalMin > 0 ? Math.min(100, Math.round(tSec / (cacheGoalMin * 60) * 100)) : 0;
+      setRing(pct); $('goalPct').textContent = pct + '%';
+      $('goalToday').textContent = FM.stats.fmt(tSec) + ' / ' + cacheGoalMin + '分钟';
+    }
+
+    /* 目标编辑弹层 */
+    function openGoalModal() {
+      const m = document.createElement('div'); m.className = 'stats-share-modal';
+      m.innerHTML = '<div class="ssm-card ssm-goal">' +
+        '<div class="ssm-title">设定每日收听目标</div>' +
+        '<div class="ssm-goal-row"><button class="ssm-step" data-d="-5">−</button>' +
+        '<input class="ssm-input" type="number" min="0" max="1440" value="' + (cacheGoalMin || 30) + '">' +
+        '<button class="ssm-step" data-d="5">+</button><span class="ssm-unit">分钟/天</span></div>' +
+        '<div class="ssm-actions"><button class="ssm-save ssm-ok">保存</button><button class="ssm-close">取消</button></div>' +
+        '</div>';
+      document.body.appendChild(m);
+      const input = m.querySelector('.ssm-input');
+      m.querySelectorAll('.ssm-step').forEach(function (b) { b.onclick = function () { input.value = Math.max(0, Math.min(1440, (parseInt(input.value, 10) || 0) + parseInt(b.dataset.d, 10))); }; });
+      m.querySelector('.ssm-close').onclick = function () { m.remove(); };
+      m.querySelector('.ssm-ok').onclick = async function () {
+        const v = Math.max(0, Math.min(1440, parseInt(input.value, 10) || 0));
+        const btn = this;
+        btn.disabled = true;
+        let res = null;
+        try { res = await FM.stats.goalSet(v); } catch (e) { res = null; }
+        btn.disabled = false;
+        /* 写入失败（429 / 断网 / 数据库异常）时保留弹层并提示，别伪装成成功 */
+        if (!res || res.ok === false) { toast('目标没保存上，请稍后重试', 'warn'); return; }
+        m.remove(); refreshCompletion();
+      };
+      m.addEventListener('click', function (e) { if (e.target === m) m.remove(); });
+    }
+
+    /* 分享图弹层 */
+    async function openShare(year) {
+      toast('正在生成年度总结…');
+      let blob;
+      try { blob = await FM.stats.buildShareImage(year); } catch (e) { blob = null; }
+      if (!blob) { toast('生成失败'); return; }
+      const url = URL.createObjectURL(blob);
+      const m = document.createElement('div'); m.className = 'stats-share-modal';
+      m.innerHTML = '<div class="ssm-card"><img class="ssm-img" src="' + url + '" alt="年度总结"/>' +
+        '<div class="ssm-actions"><button class="ssm-save">保存图片</button><button class="ssm-share">分享</button><button class="ssm-close">关闭</button></div></div>';
+      document.body.appendChild(m);
+      const close = function () { m.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 1000); };
+      m.querySelector('.ssm-close').onclick = close;
+      m.querySelector('.ssm-save').onclick = function () { const a = document.createElement('a'); a.href = url; a.download = '星海FM-' + year + '-年报.png'; a.click(); };
+      m.querySelector('.ssm-share').onclick = async function () {
+        try {
+          const file = new File([blob], '星海FM-' + year + '-年报.png', { type: 'image/png' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: '我的星海FM年报', text: year + ' 我的收听年报' });
+          else { toast('当前环境不支持分享，已为你保存'); const a = document.createElement('a'); a.href = url; a.download = '星海FM-' + year + '-年报.png'; a.click(); }
+        } catch (e) {}
+      };
+      m.addEventListener('click', function (e) { if (e.target === m) close(); });
+    }
+
+    /* 事件绑定 */
+    $('statsSeg').onclick = function (e) { const b = e.target.closest('.seg-btn'); if (b) setMode(b.dataset.mode); };
+    $('goalSetBtn').onclick = openGoalModal;
+    $('goalSetBtn2').onclick = openGoalModal;
+    $('annualShare').onclick = function () { openShare(annualYear); };
+
+    /* 初次填充：等基线刷新完成后统一重绘，避免首屏显示 0 或旧值 */
+    buildYearSel();
+    wrap.querySelectorAll('.seg-btn').forEach(function (x) { x.classList.toggle('active', x.dataset.mode === mode); });
+    $('durLabel').textContent = '今日';
+    refreshAll();
+
+    /* 实时刷新：播放中随 tick 更新时长与完成率；每 30 秒完整重绘一次 */
+    unsub = FM.stats.on('tick', liveTick);
+    liveTimer = setInterval(refreshAll, 30000);
+
+    /* 显式卸载：renderMain 换页前会调用，不依赖「下一次 tick」才清理 */
+    statsViewTeardown = function () {
+      alive = false;
+      if (unsub) { unsub(); unsub = null; }
+      if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+    };
+
+    return wrap;
+  }
+
   /* ── 欢迎页 ── */
   function renderWelcome() {
     const v = refs.view;
@@ -2073,7 +2363,8 @@
         : '<span class="step"><b>1</b>主机放入音频</span>' +
           '<span class="step"><b>2</b>重新扫描</span>' +
           '<span class="step"><b>3</b>分类、倍速、播放</span>';
-      /* 手机端不提供扫描入口，只留重试（连不上主机时用）；网页端普通用户也禁用扫描 */
+      /* 手机端的扫描入口在顶栏设置里（「立即同步」）；这里只留重试（连不上主机时用）。
+         网页端普通用户禁用扫描（只读）。 */
       actions = FM.android
         ? '<button class="btn" data-act="retry" style="height:44px;padding:0 22px">' + icon('refresh') + '重试连接</button>'
         : (canManageLib()
@@ -3959,10 +4250,12 @@
       dirModeItems(curLib, function () { renderAll({ quiet: true }); })
         .forEach(function (it) { items.push(it); });
     }
-    /* 手机端不给扫描入口：整库扫描跑在主机上，手机点一次就是主机全盘 readdir + stat。
-       主机扫过之后手机这边会自动同步（见 syncScanIfNewer），不需要手动触发。
-       网页端普通用户同样禁用扫描（只读）。 */
-    if (!FM.android && canManageLib()) items.push({ label: '重新扫描', icon: 'refresh', onClick: doScan });
+    /* 扫描是主机上的重活，只有管理权限才给入口（网页端普通用户只读）。
+       手机端也放这一项（「立即同步」）：主动触发一次主机重扫并即时拉取，
+       不用再干等 30 秒轮询；主机那边开了目录自动监听时也可以不用它。 */
+    if (canManageLib()) {
+      items.push({ label: FM.android ? '立即同步' : '重新扫描', icon: 'refresh', onClick: doScan });
+    }
     if (FM.fs.desktop) {
       items.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'chevron', onClick: openRemoteDialog });
     } else if (FM.android) {
@@ -4512,16 +4805,30 @@
         const lm = libDirMode(l);
         const lt = DIR_MODE_LABEL[lm];
         const modeTitle = '目录结构：' + lt[0] + '（' + lt[1] + '）。点击切换';
+        /* 目录自动监听：桌面本地库走「更多」菜单；手机 / 网页端（fixed 库）在行上直接给按钮，
+           否则默认没开 --allow-lib-edit 时那个菜单根本不出现，用户就没法打开监听 */
+        const showWatchBtn = FM.fs.watchSupported && (FM.fs.native || FM.fs.server) &&
+          canManageLib() && !l.shared && (FM.android || l.fixed);
+        const watchTitle = '目录自动监听：' + (l.watch ? '已开启' : '已关闭') + '。点击' + (l.watch ? '关闭' : '开启');
         row.innerHTML = libRowHtml(l) +
           (canEditGroup()
             ? '<button class="lib-mode' + (lm !== 'flat' ? ' on' : '') + '" type="button" title="' + esc(modeTitle) + '">' +
               esc(lt[0]) + '</button>'
             : '') +
+          (showWatchBtn
+            ? '<button class="lib-mode lib-watch' + (l.watch ? ' on' : '') + '" type="button" title="' + esc(watchTitle) + '">' +
+              (l.watch ? '监听中' : '监听关') + '</button>'
+            : '') +
           (l.fixed ? '' : '<button class="icon-btn lib-more" title="更多">' + icon('more') + '</button>');
-        const mode = row.querySelector('.lib-mode');
+        const mode = row.querySelector('.lib-mode:not(.lib-watch)');
         if (mode) mode.addEventListener('click', function (e) {
           e.stopPropagation();
           openMenu(e.currentTarget, dirModeItems(l, draw));
+        });
+        const wbtn = row.querySelector('.lib-watch');
+        if (wbtn) wbtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          toggleWatchFlow(l, draw);
         });
         const more = row.querySelector('.lib-more');
         if (more) more.addEventListener('click', function (e) { e.stopPropagation(); libRowMenu(e.currentTarget, l, draw, handle); });
@@ -4551,6 +4858,15 @@
     if (FM.fs.native) {
       items.push({ label: '重新定位…', icon: 'folder', onClick: function () { relocateFlow(l, redraw); } });
       items.push({ label: '在文件夹中打开', icon: 'folder', onClick: function () { FM.fs.openLib(l.id); } });
+    }
+    /* 目录自动监听：默认关，按库手动打开；共享来的只读副本不让它替源库做主。
+       纯网页本地目录没有主机侧监听，也不给入口 */
+    if (FM.fs.watchSupported && (FM.fs.native || FM.fs.server) && canManageLib() && !l.fixed) {
+      items.push({
+        label: l.watch ? '关闭目录自动监听' : '开启目录自动监听',
+        icon: l.watch ? 'check' : 'refresh',
+        onClick: function () { toggleWatchFlow(l, redraw); }
+      });
     }
     /* 共享：仅服务端多用户的管理员、且是自己名下可编辑的库才能指派给别人 */
     if (FM.fs.isAdmin && FM.fs.server && !FM.fs.noAuth && !l.fixed) {
@@ -5050,6 +5366,19 @@
     }
   }
 
+  /* 目录自动监听开关：开启后主机用 chokidar 盯住这个库，新增/删除音频会自动重扫 */
+  async function toggleWatchFlow(l, after) {
+    if (navLocked()) { toast('正在扫描资源库，请稍候'); return; }
+    const next = !l.watch;
+    try {
+      await FM.fs.setWatch(l.id, next);
+      toast(next ? '已开启目录自动监听' : '已关闭目录自动监听');
+      if (after) after();
+    } catch (e) {
+      toast(e.message || '设置失败', 'warn');
+    }
+  }
+
   function renameLibFlow(l, after) {
     const input = U.el('input', { class: 'input', value: l.name, placeholder: '资源库名称' });
     const body = U.el('div', {}, [U.el('div', { class: 'field' }, [U.el('label', { text: '显示名称' }), input])]);
@@ -5289,6 +5618,58 @@
     }
   }
 
+  /* ── 跨库跳转 ──
+     搜索结果里其它库的专辑 / 单集：先切库（复用现有过渡层与 navLock），切完再打开。
+     切库期间连点会重复触发，用 libNavBusy 挡住；切库失败时保持原页面不动。 */
+  let libNavBusy = false;
+  async function openAlbumIn(libId2, albumId) {
+    if (!albumId) return;
+    if (!libId2 || libId2 === FM.fs.activeId) { go('#/album/' + albumId); return; }
+    if (libNavBusy) return;
+    libNavBusy = true;
+    try {
+      await switchLib(libId2);
+      if (FM.fs.activeId !== libId2) return;
+      if (!L.album(albumId)) { toast('这张专辑在新资源库里找不到了', 'warn'); return; }
+      go('#/album/' + albumId);
+    } finally { libNavBusy = false; }
+  }
+
+  async function playAlbumIn(libId2, albumId) {
+    if (!albumId) return;
+    if (!libId2 || libId2 === FM.fs.activeId) { P.playAlbum(albumId); return; }
+    if (libNavBusy) return;
+    libNavBusy = true;
+    try {
+      await switchLib(libId2);
+      if (FM.fs.activeId !== libId2) return;
+      if (!L.album(albumId)) { toast('这张专辑在新资源库里找不到了', 'warn'); return; }
+      P.playAlbum(albumId);
+    } finally { libNavBusy = false; }
+  }
+
+  async function playTrackIn(libId2, trackId, fromSearch) {
+    if (!trackId) return;
+    if (!libId2 || libId2 === FM.fs.activeId) {
+      const t = L.track(trackId);
+      if (!t) return;
+      if (P.current && P.current.id === trackId && P.media.src) P.toggle();
+      else P.playTrack(t);
+      if (fromSearch && isPhone() && t.kind !== 'video') openSheet();
+      return;
+    }
+    if (libNavBusy) return;
+    libNavBusy = true;
+    try {
+      await switchLib(libId2);
+      if (FM.fs.activeId !== libId2) return;
+      const t = L.track(trackId);
+      if (!t) { toast('这一集在新资源库里找不到了', 'warn'); return; }
+      P.playTrack(t);
+      if (fromSearch && isPhone() && t.kind !== 'video') openSheet();
+    } finally { libNavBusy = false; }
+  }
+
   /* ── 扫描节流 ──
      切库、重启 App 一律用缓存（index:<libId>）直接出内容，本次会话内不再自动扫盘：
      全量扫描要递归 readdir 并对每个文件 stat，在 NAS/机械盘上要几秒到几十秒。
@@ -5302,9 +5683,11 @@
     return !(c && c.albums && c.albums.length);
   }
 
-  /* 服务端模式：别人（桌面 / 网页）扫完写进服务端缓存后，把那份索引静默同步过来。
-     全程 refresh=false，只是在服务端读缓存，不会触发走盘——手机端没有扫描入口，靠它拿到新书。
-     gap 是两次检查之间的最小间隔：切库 / 启动用默认 30 秒，回前台用 5 分钟
+  /* 服务端模式：别人（桌面 / 网页 / 主机自动监听）扫完写进服务端缓存后，把那份索引静默同步过来。
+     全程 refresh=false，只是在服务端读缓存，不会触发走盘。
+     调用时机：启动 / 回前台 / 切库 / 重连，以及前台每 60 秒的周期检查（js/app.js）。
+     需要立刻刷新时也可以用顶栏设置里的「立即同步」手动触发一次主机重扫。
+     gap 是两次机会性检查之间的最小间隔：切库 / 启动用默认 30 秒，回前台用 5 分钟
      （回前台那几百毫秒是 WebView 重新出图的窗口，别在那儿做下载 + 解析 + 重绘的重活）。 */
   let stampCheckedAt = 0;
   async function syncScanIfNewer(gap) {
@@ -5583,6 +5966,7 @@
   function renderAll(opts) {
     if (bootVisible()) { bootPending = true; return; }
     bootPending = false;
+    popSig = '';          /* 库数据可能刚变过，建议面板下次重绘别复用旧 DOM */
     syncMode();
     renderNav();
     renderCats();

@@ -51,6 +51,8 @@ const covers = require('../cover-fetch');
 const TC = require('../transcode');
 /* 登录页的转义与站内跳转校验：单独成模块，方便单测 */
 const { escHtml, safeNext } = require('./safe');
+/* 目录自动监听：和桌面主进程共用同一份实现 */
+const { createWatcher } = require('../watch');
 /* 版本号：打包前已把 package.json 的 version 自增，这里读出来给远程页面显示 */
 const APP_VERSION = (function () {
   try { return String(JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || ''); }
@@ -151,7 +153,8 @@ function libView(l) {
     shared: !!l.shared_id,
     /* 目录结构三档：flat / cat / auto；dirGroup 是老字段，只为兼容旧客户端 */
     dirMode: DB.libDirMode(db, l.path),
-    dirGroup: DB.libDirGroup(db, l.path)
+    dirGroup: DB.libDirGroup(db, l.path),
+    watch: !!l.watch
   };
 }
 /* 库列表响应：管理员看自己可编辑的库时附带共享配置（供弹窗预填） */
@@ -233,6 +236,8 @@ function mutateLibs(uid, body) {
     return { code: 400, msg: 'unknown action' };
   }
   DB.replaceLibs(db, uid, libs, active);
+  /* 库被移除 / 目录变更：让 watcher 跟着增删（新加的库默认 watch=0，不会自己开监听） */
+  syncWatchers();
   return { code: 200 };
 }
 
@@ -699,6 +704,23 @@ async function scanFolder(root, opts) {
     throw err;
   }
 }
+
+/* ── 目录自动监听（chokidar）──
+   只监听用户在库设置里打开的库（watch=1），命中变化后防抖 + 最短间隔节流重扫，
+   推进扫描缓存时间戳；手机端前台每 60 秒检查一次（js/app.js），无需 SSE。 */
+const libWatcher = createWatcher({
+  scan: function (root) { return scanFolder(root, { refresh: true }); }
+});
+function syncWatchers() {
+  try {
+    libWatcher.setRoots(DB.listWatchLibs(db).map(function (l) {
+      return { id: l.id, path: l.path, watch: 1 };
+    }));
+  } catch (e) {
+    console.warn('[watch] 同步监听失败：' + ((e && e.message) || e));
+  }
+}
+let watchTick = 0;   /* 60 秒对账定时器（桌面 App 改 watch 时也能跟上） */
 
 function parseRange(header, size) {
   const m = /^bytes=([0-9]*)-([0-9]*)$/.exec(String(header || '').trim());
@@ -1167,6 +1189,8 @@ const server = http.createServer(async function (req, res) {
         return send(res, 400, '不能删除最后一个可用管理员');
       }
       DB.removeUser(db, id);
+      /* 被删用户的库不再监听：立即对账一次，停掉对应 watcher */
+      syncWatchers();
       console.log('[user] 删除「' + target.username + '」');
       return json(res, { ok: true, users: usersView() });
     }
@@ -1180,6 +1204,8 @@ const server = http.createServer(async function (req, res) {
       server: libs.length > 0, rootName: lib ? lib.name : '', multi: MULTI, libEdit: ALLOW_LIB_EDIT,
       /* auth=false 表示服务端跑在 --no-auth 免密模式：前端据此隐藏用户管理等需要真身份的功能 */
       auth: !NO_AUTH,
+      /* 主机是否真的能监听（没装 chokidar 时前端隐藏开关，避免假成功） */
+      watchAvailable: libWatcher.available,
       version: APP_VERSION, dirMode: lib ? DB.libDirMode(db, lib.path) : 'flat',
       dirGroup: lib ? DB.libDirGroup(db, lib.path) : false
     });
@@ -1288,6 +1314,46 @@ const server = http.createServer(async function (req, res) {
     }
     return json(res, { ok: true });
   }
+  if (p === '/api/listen/add') {
+    if (req.method !== 'POST') return send(res, 405, 'POST only');
+    if (!writeAllowed(ip, 30, 'listen')) return send(res, 429, 'too many writes');
+    let body = '';
+    for await (const chunk of req) { body += chunk; if (body.length > 1024) return send(res, 413, 'too large'); }
+    let rec = null;
+    try { rec = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    const day = String((rec && rec.day) || '');
+    const delta = Number(rec && rec.deltaSecs);
+    const hour = Number(rec && rec.hour);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return send(res, 400, 'bad day');
+    if (!isFinite(delta) || delta <= 0 || delta > 86400) return send(res, 400, 'bad delta');
+    if (!isFinite(hour) || hour < 0 || hour > 23) return send(res, 400, 'bad hour');
+    const cat = rec && rec.catId ? String(rec.catId) : '__none__';
+    try { DB.listenStatsAdd(db, uid, day, delta, hour, cat); }
+    catch (e) { console.log('[listen] 写入失败：' + e.message); return send(res, 500, 'write failed'); }
+    return json(res, { ok: true });
+  }
+  if (p === '/api/listen/query') {
+    if (req.method !== 'GET') return send(res, 405, 'GET only');
+    const from = String(u.searchParams.get('from') || '0000-01-01');
+    const to = String(u.searchParams.get('to') || '9999-12-31');
+    try { return json(res, { ok: true, rows: DB.listenStatsQuery(db, uid, from, to) }); }
+    catch (e) { console.warn('[listen] 查询失败：' + e.message); return json(res, { ok: false, rows: [] }); }
+  }
+  if (p === '/api/listen/goal') {
+    if (req.method === 'GET') {
+      try { return json(res, { ok: true, min: DB.listenStatsGoalGet(db, uid) }); }
+      catch (e) { console.warn('[listen] 目标读取失败：' + e.message); return json(res, { ok: false, min: 0 }); }
+    }
+    if (req.method !== 'POST') return send(res, 405, 'GET/POST only');
+    if (!writeAllowed(ip, 10, 'listen')) return send(res, 429, 'too many writes');
+    let body = '';
+    for await (const chunk of req) { body += chunk; if (body.length > 256) return send(res, 413, 'too large'); }
+    let rec = null;
+    try { rec = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    const min = Math.max(0, Math.min(1440, Math.round(Number(rec && rec.min) || 0)));
+    try { return json(res, { ok: true, min: DB.listenStatsGoalSet(db, uid, min) }); }
+    catch (e) { return send(res, 500, 'write failed'); }
+  }
   if (p === '/api/favs') {
     const own = function (id) { return userLibs(uid).some(function (l) { return l.id === id; }); };
     if (req.method === 'GET') {
@@ -1371,8 +1437,32 @@ const server = http.createServer(async function (req, res) {
       : DB.setLibDirMode(db, lib.path, (payload && payload.on) ? 'cat' : 'flat');
     return json(res, { ok: true, id: lib.id, dirMode: mode, dirGroup: mode !== 'flat' });
   }
-  /* 只回扫描缓存的时间戳（一行 settings，几毫秒）：手机端没有扫描入口，
-     靠它判断「主机上是不是有人扫过更新的」，有就静默重新读 /api/scan 的缓存 */
+  /* 「目录自动监听」开关：只改 fm.db 的库记录并启停主机上的 chokidar，
+     不碰主机目录，所以和 /api/libdirgroup 一样不受 --allow-lib-edit 限制。
+     只允许管理员改自己名下可编辑的库；共享副本是只读的，不能替源库做主。 */
+  if (p === '/api/libwatch') {
+    if (req.method !== 'POST') return send(res, 405, 'POST only');
+    if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以修改目录自动监听');
+    if (!writeAllowed(ip)) return send(res, 429, 'too many writes');
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > 1024) return send(res, 413, 'too large');
+    }
+    let payload = null;
+    try { payload = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    const id = String((payload && payload.id) || '');
+    const lib = userLibs(uid).find(function (l) { return l.id === id; });
+    if (!lib || lib.shared_id) return send(res, 403, 'unknown lib');
+    const on = payload && payload.on !== undefined ? !!payload.on : !!payload.watch;
+    const v = DB.setLibWatch(db, lib.id, on);
+    if (v === null) return send(res, 403, 'unknown lib');
+    syncWatchers();
+    return json(res, { ok: true, id: lib.id, watch: !!v });
+  }
+  /* 只回扫描缓存的时间戳（一行 settings，几毫秒）：客户端靠它判断
+     「主机上是不是有人扫过更新的」，有就静默重新读 /api/scan 的缓存。
+     手机端调用时机：启动 / 回前台 / 切库 / 重连，以及前台每 60 秒一次周期检查 */
   if (p === '/api/scan/at') {
     const lib = reqLib(uid, req, u);
     if (!lib) return json(res, { scannedAt: 0 });
@@ -1615,6 +1705,8 @@ server.on('error', function (e) {
 
 /* 进度现在是同步写库（一次事务），退出不用再补落盘；关掉数据库连接即可 */
 function shutdown() {
+  if (watchTick) { clearInterval(watchTick); watchTick = 0; }
+  try { libWatcher.stopAll(); } catch (e) {}
   try { db.close(); } catch (e) {}
   process.exit(0);
 }
@@ -1627,6 +1719,11 @@ process.on('unhandledRejection', function (e) {
 });
 
 server.listen(port, host, function () {
+  /* 启动时给已开启自动监听的库挂上 chokidar（默认关，用户逐个打开） */
+  syncWatchers();
+  /* 桌面 App 可能也在跑并改过 watch：60 秒对一次账 */
+  watchTick = setInterval(syncWatchers, 60000);
+  if (watchTick.unref) watchTick.unref();
   const users = DB.listUsers(db);
   console.log('星海 FM · http://' + host + ':' + port + '/');
   console.log('数据库 · ' + dataFilePath() + '（用户 ' + users.length + ' 个' + (NO_AUTH ? '，--no-auth 免密' : '') + '）');

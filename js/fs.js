@@ -28,6 +28,7 @@
   let userRole = '';           // 服务端多用户下当前登录用户的角色（admin / user）
   let myUid = '';              // 当前登录用户 id（用户管理页用来禁用「操作自己」的按钮）
   let noAuth = false;          // 服务端以 --no-auth 免密启动：没有真实身份，隐藏用户管理
+  let watchSupported = true;   // 主机是否有可用的目录监听（chokidar）；纯网页本地为 false
   let serverReached = false;   // 同源探测时走到了 serve.js 的 /api/config（说明是服务端会话，与是否已有资源库无关）
   let favSet = new Set();      // 当前用户 + 当前库的收藏专辑 id
   let trackFavSet = new Set(); // 当前用户 + 当前库的收藏曲目 id
@@ -295,6 +296,8 @@
       serverReached = true;
       /* auth=false 是 --no-auth 免密模式：前端据此隐藏用户管理入口 */
       if (j) noAuth = j.auth === false;
+      /* 主机没装 chokidar / 打包漏了依赖时会下发 false：前端据此隐藏监听开关 */
+      if (j) watchSupported = j.watchAvailable !== false;
       return j && j.server ? j : null;
     } catch (e) { serverReached = false; return null; }
   }
@@ -334,7 +337,7 @@
     /* 其余字段（temp / fixed …）原样带着：纯网页的临时目录靠 temp 走 files 模式 */
     return Object.assign({}, l, {
       id: l.id, name: l.name, path: l.path || '', missing: !!l.missing, fixed: !!l.fixed, shared: !!l.shared,
-      dirMode: dirMode, dirGroup: dirMode !== 'flat'
+      dirMode: dirMode, dirGroup: dirMode !== 'flat', watch: !!l.watch
     });
   }
   function prevLib(id) { return libs.find(function (x) { return x.id === id; }) || null; }
@@ -351,6 +354,8 @@
   async function load() {
     if (DESKTOP_FS) {
       const res = await window.fmNative.libs();
+      /* 老 preload 没有 setLibWatch；主进程没装 chokidar 时 watchAvailable=false */
+      watchSupported = typeof window.fmNative.setLibWatch === 'function' && res.watchAvailable !== false;
       libs = (res.libs || []).map(function (l) { return libFromView(l, prevLib(l.id)); });
       activeId = res.active;
     } else {
@@ -362,6 +367,7 @@
       }
       if (srv) {
         serverMode = true;
+        watchSupported = srv.watchAvailable !== false;
         serverVersion = srv.version || '';
         /* 多用户下取当前登录用户的角色：前端据此决定普通用户能否进入「资源库设置」 */
         try {
@@ -390,7 +396,10 @@
         /* 壳里连不上服务端时别退到选目录模式：那条路在 WebView 里根本走不通 */
         libs = [];
         activeId = null;
+        watchSupported = false;
       } else {
+        /* 纯网页本地目录：没有主机侧监听 */
+        watchSupported = false;
         libs = readWebLibs();
         activeId = FM.store.read('activeLib', null);
         if (!libs.some(l => l.id === activeId)) activeId = libs[0] ? libs[0].id : null;
@@ -585,6 +594,48 @@
   /* 老接口：布尔版（true = 二级目录，false = 默认） */
   function setDirGroup(id, on) { return setDirMode(id, on ? 'cat' : 'flat'); }
 
+  /* 「目录自动监听」开关（主机侧用 chokidar）：
+     桌面走 IPC，服务端走 /api/libwatch，纯网页本地目录没有后端监听。 */
+  async function setWatch(id, on) {
+    const next = !!on;
+    /* 纯网页本地目录没有主机侧监听：别写一个不会生效的 localStorage 状态 */
+    if (!DESKTOP_FS && !serverMode) {
+      throw new Error('当前模式不支持目录自动监听（需要桌面端或服务端资源库）');
+    }
+    if (!watchSupported) {
+      throw new Error('当前主机没有启用目录监听（缺少 chokidar 或版本过旧）');
+    }
+    const lib = libs.find(l => l.id === id) || null;
+    if (DESKTOP_FS) {
+      if (typeof window.fmNative.setLibWatch !== 'function') {
+        throw new Error('客户端版本过旧：请完全退出并重新打开星海 FM');
+      }
+      const r = await window.fmNative.setLibWatch(id, next);
+      if (r !== next) throw new Error('目录自动监听未写入（资源库可能已被移除）');
+    } else if (serverMode) {
+      const r = await apiFetch('/api/libwatch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: id, on: next })
+      });
+      if (!r.ok) {
+        const txt = String((await r.text()) || '').trim();
+        if (r.status === 404) throw new Error('服务端版本过旧：请重启运行中的 tools/serve.js 后再试');
+        if (r.status === 401) throw new Error('登录已过期，请重新登录后再试');
+        if (r.status === 403) throw new Error('没有权限修改这个资源库的目录监听');
+        throw new Error(txt.slice(0, 80) || '设置失败');
+      }
+      /* 旧服务端会 200 但丢掉字段：确认它回了一个布尔值，否则按旧进程处理 */
+      let saved = null;
+      try { saved = await r.json(); } catch (e) {}
+      if (!saved || typeof saved.watch !== 'boolean') {
+        throw new Error('服务端版本过旧：请重启运行中的 tools/serve.js 后再试');
+      }
+    }
+    if (lib) lib.watch = next;
+    return next;
+  }
+
   async function activate(id) {
     const lib = libs.find(l => l.id === id);
     if (!lib) throw new Error('资源库不存在');
@@ -762,12 +813,17 @@
         touched = true;
       }
     }
-    if (data.albumMeta && typeof data.albumMeta === 'object' && FM.lib.rootKey) {
+    /* rootKey 还没定下来（服务端下发的库信息不带 path，本地又没有索引缓存）时，用快照里
+       的 data.root 兜底：build() 随后会把 rootKey 设成 /api/scan 返回的同一个库路径。
+       以前这里直接跳过整段 albumMeta，紧接着 build() 给新专辑补归类时把服务端的
+       pinned / hidden / title 一起写成空值——置顶后重进一次就"还原"了。 */
+    const metaMount = FM.lib.rootKey || String(data.root || '');
+    if (data.albumMeta && typeof data.albumMeta === 'object' && metaMount) {
       /* 用本地库的 rootKey 做前缀，而不是服务端返回的 data.root 原串：
          两套路径字符串若归一化不一致（大小写 / 尾斜杠 / 分隔符），按 data.root 前缀匹配会
          整段重建，本地缓存里还可能留下两份键让 library 读到旧数据。这里把入站条目统一
          重新挂到本地 rootKey 下（album id 不变），彻底解耦两边的路径表示。 */
-      const prefix = FM.lib.rootKey + '|';
+      const prefix = metaMount + '|';
       const metas = FM.db.albumMeta();
       const incoming = {};
       Object.keys(data.albumMeta).forEach(function (k) {
@@ -776,7 +832,7 @@
         /* 入站条目是服务端快照（不含 root），重新挂到本地 rootKey 时把 root 也补上，
            否则 library.build() 用「meta.root === rootKey」判断归属会得到 false，
            重扫时把 cats/pinned/hidden/title 全清掉（restore() 用宽松判断才没暴露） */
-        incoming[prefix + k.slice(cut + 1)] = Object.assign({ root: FM.lib.rootKey }, data.albumMeta[k]);
+        incoming[prefix + k.slice(cut + 1)] = Object.assign({ root: metaMount }, data.albumMeta[k]);
       });
       if (normAlbumOf(metas, prefix) !== normAlbumOf(incoming, prefix)) {
         Object.keys(metas).forEach(function (k) { if (k.indexOf(prefix) === 0) delete metas[k]; });
@@ -1114,6 +1170,106 @@
     const one = {};
     one[rec.id] = { p: rec.p, d: rec.d, t: rec.t, done: !!rec.done };
     return pushMeta({ progress: one });
+  }
+
+  /* ── 收听时长统计的客户端桥接：desktop→IPC、server→HTTP、local→state 降级 ── */
+  function localListenStore() {
+    const st = FM.db.state();
+    if (!st.listen) st.listen = {};
+    return st.listen;
+  }
+  /* 统一返回契约：四个方法一律 { ok, ... }。统计引擎靠 ok 判断能否扣减未落库余额，
+     失败时必须显式 ok:false（不能抛、更不能返回假成功），否则那段收听秒数会被静默丢掉。 */
+  async function listenAdd(day, deltaSecs, hour, catId) {
+    if (metaChannel() === 'local') {
+      if (deltaSecs <= 0) return { ok: true, local: true };
+      try {
+        const L = localListenStore();
+        const row = L[day] || { secs: 0, byHour: new Array(24).fill(0), byCat: {} };
+        row.secs = (row.secs || 0) + deltaSecs;
+        row.byHour[hour] = (row.byHour[hour] || 0) + deltaSecs;
+        const cat = catId ? String(catId) : '__none__';
+        row.byCat[cat] = (row.byCat[cat] || 0) + deltaSecs;
+        L[day] = row;
+        const st = FM.db.state(); st.listen = L; FM.db.setState(st); FM.store.touch('state');
+        return { ok: true, local: true };
+      } catch (e) { return { ok: false }; }
+    }
+    if (DESKTOP_FS) {
+      try { const r = await window.fmNative.listenAdd(day, deltaSecs, hour, catId); return r || { ok: false }; }
+      catch (e) { return { ok: false }; }
+    }
+    try {
+      const r = await apiFetch('/api/listen/add', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ day: day, deltaSecs: deltaSecs, hour: hour, catId: catId })
+      });
+      if (!r.ok) return { ok: false };       /* 429 / 5xx：保留余额等重试 */
+      const j = await r.json();
+      return { ok: !j || j.ok !== false };
+    } catch (e) { return { ok: false }; }
+  }
+  async function listenQuery(fromDay, toDay) {
+    if (metaChannel() === 'local') {
+      try {
+        const L = localListenStore();
+        const rows = [];
+        Object.keys(L).forEach(function (d) {
+          if (d >= (fromDay || '0000-01-01') && d <= (toDay || '9999-12-31')) {
+            const r = L[d];
+            rows.push({ day: d, secs: r.secs || 0, byHour: r.byHour || new Array(24).fill(0), byCat: r.byCat || {} });
+          }
+        });
+        rows.sort(function (a, b) { return a.day < b.day ? -1 : 1; });
+        return { ok: true, rows: rows };
+      } catch (e) { return { ok: false, rows: [] }; }
+    }
+    if (DESKTOP_FS) {
+      try { const r = await window.fmNative.listenQuery(fromDay, toDay); return r || { ok: false, rows: [] }; }
+      catch (e) { return { ok: false, rows: [] }; }
+    }
+    try {
+      const r = await apiFetch('/api/listen/query?from=' + encodeURIComponent(fromDay) + '&to=' + encodeURIComponent(toDay), { cache: 'no-store' });
+      if (!r.ok) return { ok: false, rows: [] };
+      const j = await r.json();
+      return { ok: !j || j.ok !== false, rows: (j && j.rows) || [] };
+    } catch (e) { return { ok: false, rows: [] }; }
+  }
+  async function listenGoalGet() {
+    if (metaChannel() === 'local') {
+      try { const st = FM.db.state(); return { ok: true, min: Math.max(0, Math.min(1440, Number(st.listenGoal) || 0)) }; }
+      catch (e) { return { ok: false, min: 0 }; }
+    }
+    if (DESKTOP_FS) {
+      try { const r = await window.fmNative.listenGoalGet(); return r || { ok: false, min: 0 }; }
+      catch (e) { return { ok: false, min: 0 }; }
+    }
+    try {
+      const r = await apiFetch('/api/listen/goal', { cache: 'no-store' });
+      if (!r.ok) return { ok: false, min: 0 };
+      const j = await r.json();
+      return { ok: !j || j.ok !== false, min: (j && j.min) || 0 };
+    } catch (e) { return { ok: false, min: 0 }; }
+  }
+  async function listenGoalSet(min) {
+    min = Math.max(0, Math.min(1440, Math.round(Number(min) || 0)));
+    if (metaChannel() === 'local') {
+      try { const st = FM.db.state(); st.listenGoal = min; FM.db.setState(st); FM.store.touch('state'); return { ok: true, min: min }; }
+      catch (e) { return { ok: false, min: min }; }
+    }
+    if (DESKTOP_FS) {
+      try { const r = await window.fmNative.listenGoalSet(min); return r || { ok: false, min: min }; }
+      catch (e) { return { ok: false, min: min }; }
+    }
+    try {
+      const r = await apiFetch('/api/listen/goal', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ min: min })
+      });
+      if (!r.ok) return { ok: false, min: min };
+      const j = await r.json();
+      return { ok: !j || j.ok !== false, min: (j && j.min) || min };
+    } catch (e) { return { ok: false, min: min }; }
   }
 
   /* ── 收藏：跟用户绑定，存数据库 ──
@@ -1534,8 +1690,10 @@
 
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, flushPending, canSyncMeta, pushProgress, refreshLibs,
+    listenAdd, listenQuery, listenGoalGet, listenGoalSet,
     queueCache, prefsCache, applyPrefs, pickPrefs, PREFS_KEYS, clearLastTrack,
-    setDirGroup, setDirMode, share,
+    setDirGroup, setDirMode, setWatch, share,
+    get watchSupported() { return watchSupported; },
     listUsers, createUser, setUserDisabled, resetUserPassword, deleteUser,
     loadFavs, setFav, setFavTrack,
     scan, scanStamp, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,

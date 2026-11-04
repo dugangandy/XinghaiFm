@@ -265,7 +265,7 @@
         scheduleMetaWrite(5000, false);      /* 只是听了会儿：只写当前库 */
       }
     });
-    window.addEventListener('pagehide', function () { writeMetaNow(); });
+    window.addEventListener('pagehide', function () { writeMetaNow(); stopServerSyncTimer(); });
 
     /* 上次收听的那一集：恢复出来底栏才有内容（标题、进度、控制键都指着它）。
        启动时先试一次 —— 本地索引缓存还在的话首屏就能带出播放条。
@@ -291,6 +291,8 @@
     }
 
     FM.fs.load().then(function (r) {
+      /* 服务端模式：起来就开前台周期同步（主机自动重扫后不用等回前台） */
+      startServerSyncTimer();
       /* 老版本只有一份全局分类：按库名认「喜马拉雅」，一次性迁过去，迁完备份并删旧键 */
       let mig = { ran: false, reason: '' };
       try { mig = FM.lib.migrateCats(FM.fs.libs()); } catch (e) { console.warn('[boot] 分类迁移失败', e); }
@@ -385,6 +387,28 @@
       try { fn(); } catch (e) { console.warn('[resume] 补数据失败', e); }
     }, 600);
   }
+
+  /* 前台低频同步：主机开了目录监听后会自动重扫，手机停在前台也应该能自己看到新书，
+     不用切后台再回来。只在服务端模式、页面可见时跑，60 秒问一次时间戳，很轻。
+     回前台那次仍由下面的 visibilitychange 立即补一次（带 5 分钟节流）。 */
+  let serverSyncTimer = 0;
+  let serverSyncBusy = false;
+  function startServerSyncTimer() {
+    if (serverSyncTimer || !FM.fs.server) return;
+    serverSyncTimer = setInterval(function () {
+      if (serverSyncBusy || document.visibilityState === 'hidden' || !FM.fs.server) return;
+      serverSyncBusy = true;
+      Promise.resolve(FM.ui.syncScanIfNewer(60000))
+        .catch(function () {})
+        .then(function () { serverSyncBusy = false; });
+    }, 60000);
+  }
+  function stopServerSyncTimer() {
+    if (!serverSyncTimer) return;
+    clearInterval(serverSyncTimer);
+    serverSyncTimer = 0;
+  }
+
   let metaPullAt = 0;   /* 上次回前台补元数据的时间，用于节流 */
 
   let focusAt = 0;
@@ -396,10 +420,13 @@
     else deferResume(refreshServerLibs);
   });
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState !== 'visible') return;
+    if (document.visibilityState !== 'visible') { stopServerSyncTimer(); return; }
+    /* 回到前台：恢复前台周期同步，并立即补一次机会性检查 */
+    startServerSyncTimer();
     deferResume(refreshServerLibs);
-    /* 主机那边可能刚扫过新书（手机端没有扫描入口）：问一下时间戳，有就静默同步。
-       回前台这条路径间隔拉长到 5 分钟——刚回到前台这几百毫秒要和 WebView 重新出图抢主线程 */
+    /* 主机那边可能刚扫过新书：问一下时间戳，有就静默同步。
+       回前台这条路径间隔拉长到 5 分钟——刚回到前台这几百毫秒要和 WebView 重新出图抢主线程；
+       停在前台期间由 startServerSyncTimer 每 60 秒兜底。 */
     deferResume(function () { FM.ui.syncScanIfNewer(5 * 60 * 1000); });
     /* 断网期间没写进库的改动：回来先补发（和下面拉快照的顺序不能反，否则旧值会盖回去） */
     deferResume(function () { FM.fs.flushPending().then(function () { pullMetaFromDisk(); }); });
