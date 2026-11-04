@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { escHtml, safeNext } = require('../tools/safe');
-const { isBlockedIp, assertPublicUrl, saveCoverForDir, MAX_IMAGE_BYTES } = require('../cover-fetch');
+const { isBlockedIp, assertPublicUrl, saveCoverForDir, safeCoverName, MAX_IMAGE_BYTES } = require('../cover-fetch');
 
 test('safeNext：只放行站内单斜杠路径', () => {
   assert.equal(safeNext('//evil.com'), '/');
@@ -45,6 +45,42 @@ test('assertPublicUrl：非 http(s) 与内网地址直接拒', async () => {
   /* IP 字面量不需要 DNS，离线也能测 */
   const u = await assertPublicUrl('https://8.8.8.8/a.png');
   assert.equal(u.host, '8.8.8.8');
+});
+
+test('safeCoverName：只接受纯文件名，拒绝路径穿越', () => {
+  assert.equal(safeCoverName('cover.jpg'), 'cover.jpg');
+  assert.equal(safeCoverName('a-b_c.1.png'), 'a-b_c.1.png');
+  ['../x.jpg', '..\\x.jpg', 'a/b.jpg', '/etc/passwd', '..', '.', '', null].forEach(function (bad) {
+    assert.equal(safeCoverName(bad), null, String(bad) + ' 应被拒');
+  });
+});
+
+test('saveCoverForDir：file 路径穿越不能写到 coverDir 之外', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-cover-trav-'));
+  const url = 'data:image/jpeg;base64,' + Buffer.alloc(1024, 7).toString('base64');
+  try {
+    const coverDir = path.join(root, '.fm-covers');
+    /* 试图用 ../ 写到资源库根目录 */
+    const entry = await saveCoverForDir(root, '专辑', { dataUrl: url, file: '../evil.jpg' });
+    assert.ok(entry && entry.file, '仍应写出一张封面');
+    assert.equal(path.basename(entry.file), entry.file, '文件名必须是不含路径的纯文件名');
+    assert.ok(fs.existsSync(path.join(coverDir, entry.file)), '应落在 .fm-covers 内');
+    assert.ok(!fs.existsSync(path.join(root, 'evil.jpg')), '不能写到 coverDir 之外');
+
+    /* 绝对路径同样不能落到任意位置 */
+    const abs = path.join(os.tmpdir(), 'fm-evil-abs.jpg');
+    const entry2 = await saveCoverForDir(root, '专辑2', { dataUrl: url, file: abs });
+    assert.equal(path.basename(entry2.file), entry2.file, '绝对路径应被归一化为纯文件名');
+    assert.ok(fs.existsSync(path.join(coverDir, entry2.file)));
+    assert.ok(!fs.existsSync(abs), '不能写到任意绝对路径');
+
+    /* 合法纯文件名仍然可用 */
+    const entry3 = await saveCoverForDir(root, '专辑3', { dataUrl: url, file: 'custom.jpg' });
+    assert.equal(entry3.file, 'custom.jpg');
+    assert.ok(fs.existsSync(path.join(coverDir, 'custom.jpg')));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('saveCoverForDir：超过 2MB 的上传被拒，正常尺寸能落盘', async () => {

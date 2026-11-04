@@ -464,11 +464,13 @@
     const lib = FM.fs.active();
     const section = refs.catList && refs.catList.closest('.side-section');
     if (section) section.hidden = !lib;
+    const canEdit = canManageLib();
+    if (refs.btnAddCat) refs.btnAddCat.hidden = !canEdit;   /* 网页端普通用户不能新建分类 */
     if (!lib) return;
     const cats = L.cats();
     if (!cats.length) {
-      /* 分类按资源库独立：非喜马拉雅库本来就是空的；三端都能新建 */
-      refs.catList.innerHTML = '<div class="cat-empty">还没有分类，点右上角 + 新建</div>';
+      /* 分类按资源库独立：非喜马拉雅库本来就是空的 */
+      refs.catList.innerHTML = '<div class="cat-empty">' + (canEdit ? '还没有分类，点右上角 + 新建' : '还没有分类') + '</div>';
       return;
     }
     refs.catList.innerHTML = cats.map(function (c) {
@@ -476,7 +478,7 @@
       return '<div class="cat-item' + (on ? ' active' : '') + '" data-cat="' + c.id + '" style="--cc:' + c.color + '">' +
         '<i class="bullet"></i><span>' + esc(c.name) + '</span>' +
         '<span class="count">' + L.catCount(c.id) + '</span>' +
-        '<button class="cat-edit" data-act="edit-cat" data-id="' + c.id + '">' + icon('edit') + '</button></div>';
+        (canEdit ? '<button class="cat-edit" data-act="edit-cat" data-id="' + c.id + '">' + icon('edit') + '</button>' : '') + '</div>';
     }).join('');
   }
 
@@ -738,14 +740,18 @@
       return '<button class="m-tab' + (on ? ' on' : '') + '" data-act="tab-cat" data-id="' + esc(t.id || '') + '">' +
         esc(t.label) + '</button>';
     }).join('');
-    /* 手机上 .head-actions 被隐藏，分类的编辑入口挪到 tab 行里，紧跟「+」前面 */
-    const edit = activeId
+    /* 手机上 .head-actions 被隐藏，分类的编辑入口挪到 tab 行里，紧跟「+」前面。
+       网页端普通用户只读：不给编辑 / 新建入口 */
+    const canEdit = canManageLib();
+    const edit = (canEdit && activeId)
       ? '<button class="m-tabs-btn" data-act="edit-cat" data-id="' + esc(activeId) + '" title="编辑这个分类">' + icon('edit') + '</button>'
+      : '';
+    const add = canEdit
+      ? '<button class="m-tabs-btn m-tabs-add" data-act="edit-cat" title="新建分类">' + icon('plus') + '</button>'
       : '';
     return '<div class="m-tabs">' +
       '<div class="m-tabs-scroll" id="mTabsScroll">' + btns + '</div>' +
-      edit +
-      '<button class="m-tabs-btn m-tabs-add" data-act="edit-cat" title="新建分类">' + icon('plus') + '</button>' +
+      edit + add +
       '</div>';
   }
 
@@ -958,7 +964,7 @@
       '<div class="view-head"><div>' +
       '<div class="page-title"><i style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + cat.color + ';box-shadow:0 0 14px ' + cat.color + '"></i>' + esc(cat.name) + '</div>' +
       '<div class="page-sub">' + list.length + ' 个专辑</div></div>' +
-      '<div class="head-actions"><button class="btn btn-ghost" data-act="edit-cat" data-id="' + cat.id + '">' + icon('edit') + '编辑分类</button></div></div>' +
+      (canManageLib() ? '<div class="head-actions"><button class="btn btn-ghost" data-act="edit-cat" data-id="' + cat.id + '">' + icon('edit') + '编辑分类</button></div>' : '') + '</div>' +
       (list.length ? gridHtml(list) : '<div class="empty"><div class="empty-art">' + icon('grid') + '</div>' +
         '<h3>这个分类还没有专辑</h3><p>把首页的专辑卡片拖到这里，或点开专辑详情页右上角「更多」里的「归类…」。</p></div>');
     return wrap;
@@ -2187,10 +2193,10 @@
   function albumMenu(id, anchor) {
     const a = L.album(id);
     if (!a) return;
-    /* 权限：分类与整理已改成写数据库，三端都能改；封面只有能写 .fm-covers/ 的端（桌面 / 自有服务端）能给 */
-    const canAssign = true;                             // 归类…
-    const canModify = true;                             // 置顶 / 重命名 / 隐藏
-    const canEditCover = FM.fs.native || FM.fs.server;  // 编辑封面（本地库 / 自有服务端都可写 .fm-covers/）
+    /* 编辑资源库（分类、整理、封面）网页端只给管理员；桌面 / 自有服务端没有多用户概念，始终放行 */
+    const canAssign = canManageLib();                             // 归类…
+    const canModify = canManageLib();                             // 置顶 / 重命名 / 隐藏
+    const canEditCover = canManageLib() && (FM.fs.native || FM.fs.server);  // 编辑封面（需要能写 .fm-covers/）
     /* 在专辑详情页点「更多」时，加入队列只排当前页；从卡片菜单进来才整张 */
     const queueTracks = currentQueueTracks(id);
     const items = [
@@ -2255,6 +2261,7 @@
   function coverEditModal(id) {
     const a = L.album(id);
     if (!a) return;
+    if (!canManageLib()) { toast('只有管理员可以编辑封面', 'warn'); return; }
     if (!(FM.fs.native || FM.fs.server)) { toast('本地文件夹模式不支持改封面', 'warn'); return; }
 
     let pending = null;      // { kind:'upload', dataUrl } 或 { kind:'xmly', url, albumId, title }
@@ -2399,6 +2406,7 @@
   function renameAlbum(id) {
     const a = L.album(id);
     if (!a) return;
+    if (!canManageLib()) { toast('只有管理员可以重命名专辑', 'warn'); return; }
     const input = U.el('input', { class: 'input', value: a.title });
     const box = U.el('div', { class: 'field' }, [U.el('label', { text: '显示名称' }), input]);
     const m = openModal({
@@ -2422,6 +2430,7 @@
   function assignModal(id) {
     const a = L.album(id);
     if (!a) return;
+    if (!canManageLib()) { toast('只有管理员可以归类', 'warn'); return; }
     const body = U.el('div');
     function draw() {
       const cats = L.cats();
@@ -2478,6 +2487,7 @@
   function assignCat(albumId, catId, additive) {
     const a = L.album(albumId);
     if (!a) return;
+    if (!canManageLib()) { toast('只有管理员可以归类', 'warn'); return; }
     if (a.cats.indexOf(catId) >= 0) { toast('该专辑已在此分类中'); return; }
     L.setMeta(albumId, { cats: a.cats.concat([catId]) });
     const cat = L.cats().find(c => c.id === catId);
@@ -2486,6 +2496,7 @@
   }
 
   function editCat(catId) {
+    if (!canManageLib()) { toast('只有管理员可以管理分类', 'warn'); return; }
     const isNew = !catId;
     const cat = isNew ? { name: '', color: CAT_COLORS[0] } : L.cats().find(c => c.id === catId);
     if (!cat) return;

@@ -1047,6 +1047,12 @@ const server = http.createServer(async function (req, res) {
     let patch = null;
     try { patch = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
     if (!patch || typeof patch !== 'object') return send(res, 400, 'bad json');
+    /* 分类与专辑整理是整库共享的编辑操作：普通用户只能写自己的进度/时长，不能改归类 */
+    if (!me || me.role !== 'admin') {
+      if (patch.cats !== undefined || patch.albumMeta !== undefined) {
+        return send(res, 403, '只有管理员可以编辑分类与整理');
+      }
+    }
     /* 只认自己名下的库；没带 libId 就落到当前库 */
     const target = userLibs(uid).find(function (l) { return l.id === patch.libId; }) || lib;
     if (!target) return send(res, 404, 'no library');
@@ -1152,6 +1158,7 @@ const server = http.createServer(async function (req, res) {
      body 用 mode（flat/cat/auto）；老客户端传 on 布尔，照旧按 二级/默认 处理 */
   if (p === '/api/libdirgroup') {
     if (req.method !== 'POST') return send(res, 405, 'POST only');
+    if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以修改目录结构');
     if (!writeAllowed(ip)) return send(res, 429, 'too many writes');
     let body = '';
     for await (const chunk of req) {
@@ -1217,12 +1224,14 @@ const server = http.createServer(async function (req, res) {
   if (p === '/api/covers/search') {
     const root = userActiveRoot(uid);
     if (!root) return send(res, 404, 'server mode off');
+    if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以编辑封面');
     try { return json(res, await covers.searchCandidates(u.searchParams.get('q') || '', 4)); }
     catch (e) { return json(res, []); }
   }
   if (p === '/api/cover' && req.method === 'POST') {
     const root = userActiveRoot(uid);
     if (!root) return send(res, 404, 'server mode off');
+    if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以编辑封面');
     if (!writeAllowed(ip, 10, 'cover')) return send(res, 429, 'too many writes');
     /* 上传的图片走 dataUrl，2MB 的图 base64 之后约 2.8MB，留点余量卡在 4MB */
     const MAX_COVER_BODY = 4 * 1024 * 1024;
@@ -1242,9 +1251,10 @@ const server = http.createServer(async function (req, res) {
       return send(res, 500, 'save failed');
     }
   }
-  if (p === '/api/cover' && (req.method === 'DELETE' || (req.method === 'POST' && /delete/.test(p)))) {
+  if (p === '/api/cover' && req.method === 'DELETE') {
     const root = userActiveRoot(uid);
     if (!root) return send(res, 404, 'server mode off');
+    if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以编辑封面');
     let dir = u.searchParams.get('dir') || '';
     if (!dir && req.method === 'POST') {
       let b2 = '';

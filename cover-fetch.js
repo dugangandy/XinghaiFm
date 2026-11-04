@@ -100,6 +100,18 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 /* 单张封面的大小上限：正常 600×600 也就几十 KB，超过 2MB 基本是打歪了 */
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 
+/* 封面文件名只允许纯文件名（不含路径分隔符 / ..）。
+   历史漏洞：saveCoverForDir 直接信任调用方传入的 opt.file，攻击者可写 "../../x.jpg" 覆盖任意文件。
+   这里要求原值本身就是合法文件名，带路径的一律视为非法（回退到下面的哈希文件名）。 */
+function safeCoverName(name) {
+  const s = String(name == null ? '' : name);
+  if (!s) return null;
+  if (path.basename(s) !== s) return null;      /* 含 / \ 或 .. 等路径成分 */
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(s)) return null;
+  if (/^\.+$/.test(s)) return null;             /* '.' '..' '...' */
+  return s;
+}
+
 /* 本机 / 私有网段 / 链路本地 / 云元数据：这些地址一律不许服务端去碰 */
 function isBlockedIp(ip) {
   if (net.isIPv4(ip)) {
@@ -544,11 +556,13 @@ async function saveCoverForDir(root, dirName, opt) {
   /* 文件名带上图片内容指纹：换图时 URL 会跟着变，浏览器才不会继续用旧缓存。
      （之前固定用 sha1(dirName)，同一张专辑第二次换图 URL 不变，界面就一直是旧图） */
   const stamp = crypto.createHash('sha1').update(buf).digest('hex').slice(0, 10);
-  const file = opt.file || (crypto.createHash('sha1').update(dirName).digest('hex').slice(0, 16) + '-' + stamp + ext);
-  /* 换图后旧文件还在 covers.json 里就清掉，免得留孤儿文件 */
+  /* 只接受纯文件名；调用方给的 file 带路径就直接丢掉，改用内容哈希命名（防路径穿越写盘） */
+  const file = safeCoverName(opt.file) || (crypto.createHash('sha1').update(dirName).digest('hex').slice(0, 16) + '-' + stamp + ext);
+  /* 换图后旧文件还在 covers.json 里就清掉，免得留孤儿文件；旧值同样要过滤，别被历史脏数据带着越界删除 */
   const old = map[dirName];
-  if (old && old.file && old.file !== file) {
-    try { await fsp.unlink(path.join(coverDir, old.file)); } catch (e) {}
+  const oldFile = safeCoverName(old && old.file);
+  if (oldFile && oldFile !== file) {
+    try { await fsp.unlink(path.join(coverDir, oldFile)); } catch (e) {}
   }
   await fsp.writeFile(path.join(coverDir, file), buf);
   map[dirName] = {
@@ -569,7 +583,9 @@ async function removeCover(root, dirName) {
   let map = {};
   try { map = JSON.parse(await fsp.readFile(path.join(coverDir, 'covers.json'), 'utf8')) || {}; } catch (e) {}
   const entry = map[dirName];
-  if (entry && entry.file) { try { await fsp.unlink(path.join(coverDir, entry.file)); } catch (e) {} }
+  /* 索引里的 file 也要过滤：即使历史上被写入过带路径的值，也不能让它越界删文件 */
+  const entryFile = safeCoverName(entry && entry.file);
+  if (entryFile) { try { await fsp.unlink(path.join(coverDir, entryFile)); } catch (e) {} }
   delete map[dirName];
   await writeMap(coverDir, map);
 }
@@ -674,7 +690,8 @@ async function searchCandidates(title, maxN) {
 
 module.exports = { run: run, auto: auto, pendingOf: pendingOf, titleOf: titleOf, cli: cli,
   searchCandidates: searchCandidates, saveCoverForDir: saveCoverForDir, removeCover: removeCover,
-  /* 给单测用：地址拦截规则和体积上限 */
-  isBlockedIp: isBlockedIp, assertPublicUrl: assertPublicUrl, MAX_IMAGE_BYTES: MAX_IMAGE_BYTES };
+  /* 给单测用：地址拦截规则、体积上限、文件名过滤 */
+  isBlockedIp: isBlockedIp, assertPublicUrl: assertPublicUrl, MAX_IMAGE_BYTES: MAX_IMAGE_BYTES,
+  safeCoverName: safeCoverName };
 
 if (require.main === module) cli();
