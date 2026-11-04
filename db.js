@@ -503,6 +503,18 @@ function catsReplace(db, root, list) {
     return catsWrite(db, key, list);
   });
 }
+/* 按 id 精确删除分类：必须带 lib_root，避免误删别的库的同名 id（种子分类跨库同 id）。
+   客户端删分类时只推「剩余列表」，upsert 永远不会删行，所以另走这条显式删除。 */
+function catsDelete(db, key, ids) {
+  if (!key || !Array.isArray(ids) || !ids.length) return 0;
+  const del = db.prepare('DELETE FROM cats WHERE lib_root = ? AND id = ?');
+  let n = 0;
+  ids.slice(0, META_LIMIT.cats).forEach(function (id) {
+    if (!id) return;
+    n += del.run(key, String(id)).changes || 0;
+  });
+  return n;
+}
 
 /* ── 专辑整理（归类 / 重命名 / 置顶 / 隐藏） ──
    键沿用客户端的 "<库路径>|<专辑目录>"，入库只留 '|' 后面的专辑目录，
@@ -630,6 +642,7 @@ function metaApply(db, root, patch) {
   if (!key || !patch || typeof patch !== 'object') return counts;
   return tx(db, function () {
     if (Array.isArray(patch.cats)) counts.cats = catsWrite(db, key, patch.cats);
+    if (Array.isArray(patch.catsDeleted)) catsDelete(db, key, patch.catsDeleted);
     if (patch.albumMeta && typeof patch.albumMeta === 'object') counts.albumMeta = albumMetaWrite(db, key, patch.albumMeta);
     if (patch.progress && typeof patch.progress === 'object') counts.progress = progressWrite(db, key, patch.progress);
     if (patch.durations && typeof patch.durations === 'object') counts.durations = durationWrite(db, key, patch.durations);
@@ -747,7 +760,7 @@ module.exports = {
   listFavTracks, setFavTrack, clearFavTracks,
   META_VERSION, META_LIMIT, libRootKey,
   libDirGroup, setLibDirGroup, libDirMode, setLibDirMode, normDirMode, DIR_MODES,
-  catsList, catsReplace,
+  catsList, catsReplace, catsDelete,
   albumMetaMap, albumMetaUpsert,
   progressMap, progressUpsert,
   durationMap, durationUpsert,

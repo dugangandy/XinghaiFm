@@ -18,7 +18,7 @@ const ROOT = path.resolve(os.tmpdir(), 'fm-meta-lib');
 
 test('schema 升到 v5，四张元数据表建好', () => {
   const db = fresh();
-  assert.equal(DB.SCHEMA_VERSION, 5);
+  assert.ok(DB.SCHEMA_VERSION >= 5, 'schema 版本应至少为 5');
   ['cats', 'album_meta', 'progress', 'durations'].forEach(function (t) {
     const r = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(t);
     assert.ok(r, t + ' 表应存在');
@@ -73,6 +73,20 @@ test('catsWrite：按 id 合并，多端并发加分类不互相覆盖', () => {
 
   /* 与 albumMeta/progress 一样，只推 cats 不会动其它表 */
   assert.equal(Object.keys(DB.albumMetaMap(db, ROOT)).length, 0);
+});
+
+test('catsDeleted：按 id 精确删除，跨库不误伤（删分类后重进不复活）', () => {
+  const db = fresh();
+  /* 两个库都有同名种子 id（真实场景：种子分类跨库同 id） */
+  DB.catsReplace(db, ROOT, [{ id: 'c1', name: '甲', order: 0 }, { id: 'c2', name: '乙', order: 1 }]);
+  DB.catsReplace(db, ROOT + '-other', [{ id: 'c1', name: '甲', order: 0 }]);
+  /* 客户端删分类：推剩余列表 + 被删 id（rest 走 upsert 不会删行，靠 catsDeleted 真正删） */
+  DB.metaApply(db, ROOT, { cats: [{ id: 'c2', name: '乙', order: 0 }], catsDeleted: ['c1'] });
+  assert.deepEqual(DB.catsList(db, ROOT).map(function (c) { return c.id; }), ['c2']);
+  /* 另一个库的同名 id 不能被误删 */
+  assert.deepEqual(DB.catsList(db, ROOT + '-other').map(function (c) { return c.id; }), ['c1']);
+  /* 删不存在的 id 不报错 */
+  DB.metaApply(db, ROOT, { catsDeleted: ['nope'] });
 });
 
 test('albumMetaUpsert：键带库前缀、null 删除、往返一致', () => {

@@ -778,7 +778,8 @@
     db.setCatsFor(libId, rest);
     db.touch('cats:' + libId);
     albums.forEach(function (a) { a.cats = a.cats.filter(x => x !== id); });
-    pushMeta({ cats: rest });
+    /* rest 走 upsert 不会删行，另带 catsDeleted 让后端按 id 真正删掉这一条 */
+    pushMeta({ cats: rest, catsDeleted: [id] });
     /* rootKey 还没定就宁可不动元数据，空前缀会匹配到所有库 */
     const prefix = rootKey ? rootKey + '|' : '';
     if (!prefix) return;

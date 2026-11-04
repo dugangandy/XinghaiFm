@@ -760,6 +760,10 @@
   function mergePatch(base, add) {
     if (!add) return base;
     if (add.cats) base.cats = add.cats;
+    if (add.catsDeleted) {
+      const cur = base.catsDeleted || (base.catsDeleted = []);
+      add.catsDeleted.forEach(function (id) { if (id && cur.indexOf(id) < 0) cur.push(id); });
+    }
     if (add.albumMeta) Object.assign(base.albumMeta || (base.albumMeta = {}), add.albumMeta);
     if (add.progress) Object.assign(base.progress || (base.progress = {}), add.progress);
     if (add.durations) Object.assign(base.durations || (base.durations = {}), add.durations);
@@ -789,6 +793,7 @@
       /* 分类 / 进度 / 时长只在第一批带，后面各批只负责专辑整理 */
       if (i === 0) {
         if (patch.cats) one.cats = patch.cats;
+        if (patch.catsDeleted) one.catsDeleted = patch.catsDeleted;
         if (patch.progress) one.progress = patch.progress;
         if (patch.durations) one.durations = patch.durations;
       }
@@ -858,7 +863,7 @@
       /* 进度也走这个通道：只含进度时别报成「整理」，免得用户误以为分类丢了 */
       try {
         if (FM.ui && FM.ui.toast) {
-          const onlyProgress = !patch.cats && !patch.albumMeta;
+          const onlyProgress = !patch.cats && !patch.albumMeta && !patch.catsDeleted;
           FM.ui.toast(onlyProgress ? '播放进度没保存上，请检查连接后重试' : '整理没保存上，请检查连接后重试', 'warn');
         }
       } catch (e) {}

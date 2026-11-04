@@ -1130,7 +1130,7 @@ const server = http.createServer(async function (req, res) {
     if (!patch || typeof patch !== 'object') return send(res, 400, 'bad json');
     /* 分类与专辑整理是整库共享的编辑操作：普通用户只能写自己的进度/时长，不能改归类 */
     if (!me || me.role !== 'admin') {
-      if (patch.cats !== undefined || patch.albumMeta !== undefined) {
+      if (patch.cats !== undefined || patch.catsDeleted !== undefined || patch.albumMeta !== undefined) {
         return send(res, 403, '只有管理员可以编辑分类与整理');
       }
     }

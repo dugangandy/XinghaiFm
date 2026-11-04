@@ -2534,8 +2534,14 @@
             if (!ok) return;
             L.removeCat(catId);
             toast('分类已删除');
-            renderAll();
             m.close();
+            /* 正在看这个分类：删掉后它已不存在，回到「全部」，别停在「分类不存在」页 */
+            if (state.view === 'cat' && state.cat === catId) {
+              state.cat = null;
+              go('#/');
+            } else {
+              renderAll();
+            }
           });
           return false;
         }
