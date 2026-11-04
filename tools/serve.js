@@ -813,10 +813,13 @@ if (CLI) {
     }
     if (act === 'add') {
       if (!CLI.name) { console.error('用法：--add-user <name> [口令]'); process.exit(1); }
+      const uErr = DB.usernameError(CLI.name);
+      if (uErr) { console.error(uErr); process.exit(1); }
       if (DB.findUser(db, CLI.name)) { console.error('用户已存在：' + CLI.name); process.exit(1); }
       let pw = CLI.pw;
       if (!pw) { pw = await ask('设置密码（会显示在屏幕上）：'); const again = await ask('再输入一次确认：'); if (pw !== again) { console.error('两次输入不一致'); process.exit(1); } }
-      if (!pw) { console.error('密码不能为空'); process.exit(1); }
+      const pErr = DB.passwordError(CLI.name, pw);
+      if (pErr) { console.error(pErr); process.exit(1); }
       const u = DB.addUser(db, { username: CLI.name, role: 'user', password: pw });
       console.log('✓ 已添加用户：' + u.username);
       process.exit(0);
@@ -839,7 +842,8 @@ if (CLI) {
     }
     if (act === 'setpw') {
       if (!pw) { pw = await ask('设置新密码（会显示在屏幕上）：'); const again = await ask('再输入一次确认：'); if (pw !== again) { console.error('两次输入不一致'); process.exit(1); } }
-      if (!pw) { console.error('密码不能为空'); process.exit(1); }
+      const pErr = DB.passwordError(u.username, pw);
+      if (pErr) { console.error(pErr); process.exit(1); }
       DB.setUserPassword(db, u.id, pw);
       console.log('✓ 已修改密码：' + u.username);
       process.exit(0);
@@ -1021,16 +1025,14 @@ const server = http.createServer(async function (req, res) {
     return json(res, { t: makeTicket(uid, scope, me ? me.token_version : 0), exp: Math.floor(Date.now() / 1000) + TICKET_TTL[scope], scope: scope });
   }
   if (p === '/api/users') {
-    /* 用户管理：仅管理员可见 / 可改 */
+    /* 用户管理：仅管理员可见 / 可改；--no-auth 免密模式下没有真实身份，直接关掉 */
+    if (NO_AUTH) return send(res, 403, '--no-auth 免密模式不支持用户管理');
     if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以管理用户');
     if (req.method === 'GET') return json(res, usersView());
     if (req.method !== 'POST') return send(res, 405, 'GET/POST only');
     if (!writeAllowed(ip)) return send(res, 429, 'too many writes');
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-      if (body.length > 8192) return send(res, 413, 'too large');
-    }
+    const body = await readBody(req, 8192);
+    if (body === null) { req.destroy(); return; }
     let payload = null;
     try { payload = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
     const act = String((payload && payload.action) || '');
@@ -1040,22 +1042,47 @@ const server = http.createServer(async function (req, res) {
       const username = String((payload && payload.username) || '').trim();
       const password = String((payload && payload.password) || '');
       const libIds = Array.isArray(payload && payload.libIds) ? payload.libIds : [];
-      if (!username || username.length > 64 || /[\u0000-\u001f\u007f]/.test(username)) {
-        return send(res, 400, '用户名需为 1–64 个字符，且不能包含控制字符');
-      }
-      if (password.length < 6 || password.length > 128) return send(res, 400, '密码长度需为 6–128 位');
+      const uErr = DB.usernameError(username);
+      if (uErr) return send(res, 400, uErr);
+      const pErr = DB.passwordError(username, password);
+      if (pErr) return send(res, 400, pErr);
       if (DB.findUser(db, username)) return send(res, 409, '用户名已存在');
       let user = null;
       try { user = DB.addUser(db, { username: username, role: 'user', password: password }); }
-      catch (e) { return send(res, 400, '新增用户失败：' + ((e && e.message) || '未知错误')); }
-      /* 新建时可直接指定可访问的资源库：复用共享机制，给新用户物化只读副本 */
-      libIds.forEach(function (libId) {
-        const lib = DB.getLib(db, uid, String(libId || ''));
-        if (!lib || lib.shared_id) return;      /* 只允许指派当前管理员名下可编辑的库 */
-        DB.addLibShareTarget(db, lib.id, user.id);
-      });
-      DB.syncUserSharedLibs(db, user.id);
+      catch (e) {
+        const msg = String((e && e.message) || '');
+        /* findUser 与 addUser 之间不是原子的：并发建号会命中唯一约束，按重名处理 */
+        if (/UNIQUE|constraint/i.test(msg)) return send(res, 409, '用户名已存在');
+        return send(res, 400, '新增用户失败：' + (msg || '未知错误'));
+      }
+      /* 新建时可直接指定可访问的资源库：复用共享机制，给新用户物化只读副本。
+         指派失败时把刚建的用户回滚，避免只建了半个账号。 */
+      try {
+        libIds.forEach(function (libId) {
+          const lib = DB.getLib(db, uid, String(libId || ''));
+          if (!lib || lib.shared_id) return;      /* 只允许指派当前管理员名下可编辑的库 */
+          DB.addLibShareTarget(db, lib.id, user.id);
+        });
+        DB.syncUserSharedLibs(db, user.id);
+      } catch (e) {
+        console.log('[user] 建号后指派资源库失败，回滚用户「' + username + '」：' + ((e && e.message) || e));
+        try { DB.removeUser(db, user.id); } catch (e2) { console.log('[user] 回滚失败：' + ((e2 && e2.message) || e2)); }
+        return send(res, 500, '新增用户失败：指派资源库时出错');
+      }
       console.log('[user] 新增「' + username + '」' + (libIds.length ? '，指派 ' + libIds.length + ' 个库' : ''));
+      return json(res, { ok: true, users: usersView() });
+    }
+
+    /* 重置密码：走 DB.setUserPassword，token_version 自增，该用户所有旧会话/票据立即失效 */
+    if (act === 'resetPassword') {
+      const id = String((payload && payload.id) || '');
+      const password = String((payload && payload.password) || '');
+      const target = DB.getUser(db, id);
+      if (!target) return send(res, 404, '用户不存在');
+      const pErr = DB.passwordError(target.username, password);
+      if (pErr) return send(res, 400, pErr);
+      DB.setUserPassword(db, id, password);
+      console.log('[user] 重置密码「' + target.username + '」');
       return json(res, { ok: true, users: usersView() });
     }
 
@@ -1095,6 +1122,8 @@ const server = http.createServer(async function (req, res) {
     const lib = userActiveLib(uid);
     return json(res, {
       server: libs.length > 0, rootName: lib ? lib.name : '', multi: MULTI, libEdit: ALLOW_LIB_EDIT,
+      /* auth=false 表示服务端跑在 --no-auth 免密模式：前端据此隐藏用户管理等需要真身份的功能 */
+      auth: !NO_AUTH,
       version: APP_VERSION, dirMode: lib ? DB.libDirMode(db, lib.path) : 'flat',
       dirGroup: lib ? DB.libDirGroup(db, lib.path) : false
     });
@@ -1130,7 +1159,8 @@ const server = http.createServer(async function (req, res) {
     if (!patch || typeof patch !== 'object') return send(res, 400, 'bad json');
     /* 分类与专辑整理是整库共享的编辑操作：普通用户只能写自己的进度/时长，不能改归类 */
     if (!me || me.role !== 'admin') {
-      if (patch.cats !== undefined || patch.catsDeleted !== undefined || patch.albumMeta !== undefined) {
+      if (patch.cats !== undefined || patch.catsDeleted !== undefined || patch.albumMeta !== undefined ||
+          patch.dirCatDropped !== undefined) {
         return send(res, 403, '只有管理员可以编辑分类与整理');
       }
     }
@@ -1459,6 +1489,12 @@ function shutdown() {
   process.exit(0);
 }
 ['SIGINT', 'SIGTERM'].forEach(function (sig) { process.on(sig, shutdown); });
+
+/* 兜底：http handler 是 async 的，单条请求里漏网的异常会变成 unhandledRejection，
+   Node 默认会直接退出进程。家用媒体服务宁可记日志也不要被一个坏请求带崩。 */
+process.on('unhandledRejection', function (e) {
+  console.log('[unhandledRejection] ' + ((e && e.stack) || e));
+});
 
 server.listen(port, host, function () {
   const users = DB.listUsers(db);

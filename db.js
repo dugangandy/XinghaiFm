@@ -10,7 +10,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const ITERATIONS = 600000;
 const ADMIN_ID = 'u_admin';
 
@@ -129,8 +129,7 @@ function ensureSchema(db) {
     db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
   }
   /* 旧库补列：disabled（账号是否被禁用，默认启用） */
-  const userCols = db.prepare('PRAGMA table_info(users)').all();
-  if (!userCols.some(function (c) { return c.name === 'disabled'; })) {
+  if (!cols.some(function (c) { return c.name === 'disabled'; })) {
     db.exec('ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
   }
   /* 旧库补列：libs.shared_id（共享来的只读库副本；老行为 NULL = 私有） */
@@ -172,6 +171,28 @@ function checkPassword(user, password) {
   return got.length === want.length && crypto.timingSafeEqual(got, want);
 }
 
+/* ── 账号规则（Web / CLI 共用同一口径；只约束「新建 / 改密」入口，不约束旧数据迁移） ──
+   用户名：字母开头，只含字母/数字/_ . -，不含空格，区分大小写，1–64 字符。
+   密码：8–128 位，不能纯数字，不能全空白，不能与用户名相同（忽略大小写）。 */
+const USERNAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+function usernameError(name) {
+  const s = String(name || '');
+  if (!s) return '用户名不能为空';
+  if (s.length > 64) return '用户名最多 64 个字符';
+  if (!USERNAME_RE.test(s)) return '用户名需字母开头，只能包含字母、数字、下划线、点或短横线，且不含空格';
+  return '';
+}
+function passwordError(username, password) {
+  const p = String(password || '');
+  if (p.length < 8) return '密码至少 8 位';
+  if (p.length > 128) return '密码最多 128 位';
+  if (/^\d+$/.test(p)) return '密码不能是纯数字';
+  if (!/\S/.test(p)) return '密码不能全是空白字符';
+  const u = String(username || '');
+  if (u && p.toLowerCase() === u.toLowerCase()) return '密码不能和用户名相同';
+  return '';
+}
+
 /* ── users ── */
 function listUsers(db) {
   return db.prepare('SELECT id, username, role, disabled, created_at AS createdAt, last_login_at AS lastLoginAt FROM users ORDER BY created_at').all();
@@ -203,11 +224,12 @@ function setUserPassword(db, id, password) {
   /* token_version 自增：该用户此前签发的 token 立即失效（其它用户不受影响） */
   db.prepare('UPDATE users SET algo=?, iterations=?, salt=?, hash=?, token_version = token_version + 1 WHERE id=?').run(pw.algo, pw.iterations, pw.salt, pw.hash, id);
 }
-/* 启用/禁用账号：两个方向都自增 token_version，让已签发的 token 与媒体票据立即作废，
+/* 启用/禁用账号：状态真的变化时才自增 token_version，让已签发的 token 与媒体票据立即作废，
    不用等到自然过期；配合 readSession/readTicket 的 disabled 校验双重保险。 */
 function setUserDisabled(db, id, disabled) {
-  const r = db.prepare('UPDATE users SET disabled = ?, token_version = token_version + 1 WHERE id = ?')
-    .run(disabled ? 1 : 0, String(id || ''));
+  const v = disabled ? 1 : 0;
+  const r = db.prepare('UPDATE users SET disabled = ?, token_version = token_version + 1 WHERE id = ? AND disabled <> ?')
+    .run(v, String(id || ''), v);
   return (r.changes || 0) > 0;
 }
 /* 可用管理员数量：用于「不能禁用/删除最后一个管理员」的保护 */
@@ -622,18 +644,39 @@ function durationUpsert(db, root, patch) {
   return tx(db, function () { return durationWrite(db, key, patch); });
 }
 
+/* ── 目录分类黑名单（用户主动删掉的自动分类） ──
+   以前只写在客户端 localStorage：在手机 / 网页上删掉一个目录分类，桌面端扫描时
+   又会按目录名自动建回来，还会把专辑重新挂上去 —— 典型的「本地删了、服务端不知道」。
+   存进 settings（按库根路径），所有端读到同一份名单。 */
+function droppedDirCats(db, root) {
+  const key = libRootKey(root);
+  if (!key) return [];
+  try {
+    const v = JSON.parse(getSetting(db, 'dirCatDropped:' + key) || '[]');
+    return Array.isArray(v) ? v.filter(Boolean) : [];
+  } catch (e) { return []; }
+}
+function setDroppedDirCats(db, root, list) {
+  const key = libRootKey(root);
+  if (!key || !Array.isArray(list)) return 0;
+  const arr = list.filter(Boolean).slice(-200);
+  setSetting(db, 'dirCatDropped:' + key, JSON.stringify(arr));
+  return arr.length;
+}
+
 /* ── 整份读取 / 增量写入（HTTP 与 IPC 都走这两个，保证口径一致） ── */
 function metaSnapshot(db, root) {
   const r = String(root || '');
   const key = libRootKey(r);
-  if (!key) return { v: META_VERSION, root: r, cats: [], albumMeta: {}, progress: {}, durations: {} };
+  if (!key) return { v: META_VERSION, root: r, cats: [], albumMeta: {}, progress: {}, durations: {}, dirCatDropped: [] };
   return {
     v: META_VERSION,
     root: r,
     cats: catsList(db, r),
     albumMeta: albumMetaMap(db, r),
     progress: progressMap(db, r),
-    durations: durationMap(db, r)
+    durations: durationMap(db, r),
+    dirCatDropped: droppedDirCats(db, r)
   };
 }
 function metaApply(db, root, patch) {
@@ -646,6 +689,8 @@ function metaApply(db, root, patch) {
     if (patch.albumMeta && typeof patch.albumMeta === 'object') counts.albumMeta = albumMetaWrite(db, key, patch.albumMeta);
     if (patch.progress && typeof patch.progress === 'object') counts.progress = progressWrite(db, key, patch.progress);
     if (patch.durations && typeof patch.durations === 'object') counts.durations = durationWrite(db, key, patch.durations);
+    /* 黑名单不进 counts：它只是设置项，别让既有调用方（服务端 counts 回包）多出字段 */
+    if (Array.isArray(patch.dirCatDropped)) setDroppedDirCats(db, key, patch.dirCatDropped);
     return counts;
   });
 }
@@ -751,7 +796,7 @@ function migrate(db, opts) {
 module.exports = {
   SCHEMA_VERSION, ITERATIONS, ADMIN_ID,
   open, ensureSchema, secret, getSetting, setSetting,
-  derive, makePassword, checkPassword,
+  derive, makePassword, checkPassword, USERNAME_RE, usernameError, passwordError,
   listUsers, countUsers, findUser, getUser, adminUser, firstUserId, newUserId,
   addUser, setUserPassword, setUserDisabled, countEnabledAdmins, removeUser, touchLogin,
   listLibs, activeLib, replaceLibs, setActiveLib, getLib, libPath,
@@ -764,6 +809,7 @@ module.exports = {
   albumMetaMap, albumMetaUpsert,
   progressMap, progressUpsert,
   durationMap, durationUpsert,
+  droppedDirCats, setDroppedDirCats,
   metaSnapshot, metaApply,
   metaMigrated, markMetaMigrated, migrateLegacyMeta, clearLibMeta,
   getRemote, setRemote, migrate

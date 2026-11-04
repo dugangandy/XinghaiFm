@@ -293,6 +293,23 @@ test('migrate：迁移旧配置文件、已有用户时跳过', () => {
   }
 });
 
+test('账号规则：用户名格式与密码强度下限', () => {
+  assert.equal(DB.usernameError('alice'), '');
+  assert.equal(DB.usernameError('Alice_01'), '');
+  assert.equal(DB.usernameError('a.b-c'), '');
+  assert.notEqual(DB.usernameError(''), '');
+  assert.notEqual(DB.usernameError('1alice'), '', '必须字母开头');
+  assert.notEqual(DB.usernameError('a lice'), '', '不允许空格');
+  assert.notEqual(DB.usernameError('alice!'), '', '不允许特殊符号');
+  assert.notEqual(DB.usernameError('a'.repeat(65)), '', '最长 64');
+
+  assert.equal(DB.passwordError('alice', 'abcd1234'), '');
+  assert.notEqual(DB.passwordError('alice', 'short'), '', '至少 8 位');
+  assert.notEqual(DB.passwordError('alice', '12345678'), '', '不能纯数字');
+  assert.notEqual(DB.passwordError('longusername', 'LongUserName'), '', '不能和用户名相同（忽略大小写）');
+  assert.notEqual(DB.passwordError('alice', '        '), '', '不能全空白');
+});
+
 test('用户状态：默认启用、禁用/启用自增 token_version、可用管理员计数', () => {
   const db = fresh();
   const admin = user(db, 'admin', { role: 'admin' });
@@ -307,6 +324,10 @@ test('用户状态：默认启用、禁用/启用自增 token_version、可用�
   assert.equal(off.disabled, 1);
   assert.ok(off.token_version > v0, '禁用要自增 token_version，旧会话立即失效');
   assert.equal(DB.countEnabledAdmins(db), 1, '普通用户禁用不影响管理员计数');
+  /* 状态没变化时不应重复自增 token_version */
+  const v1 = DB.getUser(db, bob.id).token_version;
+  assert.equal(DB.setUserDisabled(db, bob.id, true), false);
+  assert.equal(DB.getUser(db, bob.id).token_version, v1);
 
   DB.setUserDisabled(db, admin.id, true);
   assert.equal(DB.countEnabledAdmins(db), 0, '最后一个管理员被禁用后计数归零（接口层会拦住）');

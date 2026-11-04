@@ -714,13 +714,28 @@
 
   /* 上次收听的那一集：优先按资源库取（lastTracks[libId]）。
      只存一份全局 lastTrackId 时，在 A 库听完切到 B 库再切回来，记的已经是 B 库那一集，
-     A 库的底栏就恢复不出来了。全局那份留着兜底（老数据、按库记录失效时用）。 */
+     A 库的底栏就恢复不出来了。全局那份留着兜底（老数据、按库记录失效时用）。
+
+     最后一层兜底看播放进度：进度是跨端同步的（fm.db 的 progress），
+     lastTrack* 只存在本机 localStorage —— 换手机、重装、清了缓存之后本机没有记录，
+     但「上次听到哪一集」在进度里还留着，从那儿捞出来，底栏才不会空着。 */
   function lastTrackOf(libId) {
     const s = FM.db.state();
     const byLib = libId && s.lastTracks ? s.lastTracks[libId] : '';
     let t = byLib ? FM.lib.track(byLib) : null;
     if (!t && s.lastTrackId) t = FM.lib.track(s.lastTrackId);
-    return t || null;
+    if (t) return t;
+    const all = FM.db.progress();
+    let best = null;
+    let bestAt = 0;
+    Object.keys(all).forEach(function (id) {
+      const p = all[id];
+      if (!p || !(Number(p.t) > bestAt)) return;
+      const x = FM.lib.track(id);      /* 不属于当前库的直接跳过 */
+      if (!x) return;
+      best = x; bestAt = Number(p.t);
+    });
+    return best;
   }
 
   function restoreLast() {

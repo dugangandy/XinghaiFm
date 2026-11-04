@@ -863,9 +863,9 @@
   function canManageLib() {
     return !(FM.fs.serverReached && !FM.fs.isAdmin);
   }
-  /* 用户管理只属于「服务端 + 管理员」：桌面端是单用户本地库，普通用户也没有入口 */
+  /* 用户管理只属于「服务端 + 管理员 + 非免密」：桌面端单用户，--no-auth 没有真实身份 */
   function canManageUsers() {
-    return !FM.fs.desktop && FM.fs.serverReached && !!FM.fs.isAdmin;
+    return !FM.fs.desktop && FM.fs.serverReached && !FM.fs.noAuth && !!FM.fs.isAdmin;
   }
 
   /* 收藏页布局随宽度切换：跨过断点时重画一次（窗口拉宽回桌面卡片） */
@@ -3493,7 +3493,7 @@
     });
     if (list.length) items.push({ sep: true });
     if (canManageLib()) items.push({ label: '资源库设置…', icon: 'edit', onClick: openLibDrawer });
-    if (canManageUsers()) items.push({ label: '用户管理…', icon: 'users', onClick: openUserDrawer });
+    if (canManageUsers()) items.push({ label: '用户管理', icon: 'users', onClick: openUserDrawer });
     if (FM.android) {
       items.push({ label: '服务器地址…', icon: 'chevron', onClick: function () { FM.android.openSettings(); } });
     }
@@ -3779,7 +3779,7 @@
       items.push({ label: '在文件夹中打开', icon: 'folder', onClick: function () { FM.fs.openLib(l.id); } });
     }
     /* 共享：仅服务端多用户的管理员、且是自己名下可编辑的库才能指派给别人 */
-    if (FM.fs.isAdmin && FM.fs.server && !l.fixed) {
+    if (FM.fs.isAdmin && FM.fs.server && !FM.fs.noAuth && !l.fixed) {
       items.push({ label: '共享资源库', icon: 'share', onClick: function () { openShareDialog(l, redraw); } });
     }
     items.push({ sep: true });
@@ -3867,6 +3867,8 @@
         const r = await FM.fs.apiFetch('/api/users', { cache: 'no-store' });
         if (r.ok) users = await r.json();
       } catch (e) {}
+      /* 已禁用账号不参与指派：即使勾上也登录不了 */
+      users = (users || []).filter(function (u) { return !u.disabled; });
       const pre = cur.targets || [];
       userList.innerHTML = users.map(function (u) {
         const on = pre.indexOf(u.id) >= 0;
@@ -3877,7 +3879,78 @@
   }
 
   /* ── 用户管理：仅服务端管理员 ──
-     列表 + 新增 + 启用/禁用 + 删除；禁用与删除都要勾选「我已了解」二次确认。 */
+     列表 + 新增 + 启用/禁用 + 重置密码 + 删除；禁用与删除都要勾选「我已了解」二次确认。 */
+  /* 账号规则（与 db.js 的 usernameError / passwordError 保持同一口径） */
+  const USERNAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+  function usernameError(name) {
+    const s = String(name || '');
+    if (!s) return '请填写用户名';
+    if (!USERNAME_RE.test(s)) return '用户名需字母开头，只能含字母、数字、_ . -，不含空格';
+    return '';
+  }
+  function passwordError(username, password) {
+    const p = String(password || '');
+    if (p.length < 8) return '密码至少 8 位';
+    if (p.length > 128) return '密码最多 128 位';
+    if (/^\d+$/.test(p)) return '密码不能是纯数字';
+    if (!/\S/.test(p)) return '密码不能全是空白字符';
+    const u = String(username || '');
+    if (u && p.toLowerCase() === u.toLowerCase()) return '密码不能和用户名相同';
+    return '';
+  }
+  function passwordStrength(pw) {
+    const p = String(pw || '');
+    if (!p) return { pct: 0, label: '', cls: '' };
+    let score = 0;
+    if (p.length >= 8) score++;
+    if (p.length >= 12) score++;
+    if (/[a-z]/.test(p) && /[A-Z]/.test(p)) score++;
+    if (/\d/.test(p)) score++;
+    if (/[^A-Za-z0-9]/.test(p)) score++;
+    let label = '弱', cls = 'weak';
+    if (score >= 4) { label = '强'; cls = 'strong'; }
+    else if (score >= 2) { label = '中'; cls = 'mid'; }
+    /* 纯数字一律按弱处理 */
+    if (/^\d+$/.test(p)) { label = '弱'; cls = 'weak'; }
+    return { pct: cls === 'strong' ? 100 : (cls === 'mid' ? 66 : 33), label: label, cls: cls };
+  }
+  const PW_HINT = '至少 8 位，不能是纯数字，不能与用户名相同';
+  /* 密码输入框 + 强度条 + 提示；usernameInput 用来实时提示「不能和用户名相同」 */
+  function makePasswordField(placeholder, usernameInput) {
+    const input = U.el('input', {
+      class: 'share-search', type: 'password', placeholder: placeholder,
+      autocomplete: 'new-password', 'aria-label': placeholder
+    });
+    const meter = U.el('div', { class: 'pw-meter' });
+    meter.innerHTML = '<i></i>';
+    const tip = U.el('div', { class: 'pw-tip', text: PW_HINT });
+    function refresh() {
+      const pw = String(input.value || '');
+      const uname = usernameInput ? String(usernameInput.value || '').trim() : '';
+      const fill = meter.querySelector('i');
+      if (uname && pw && pw.toLowerCase() === uname.toLowerCase()) {
+        if (fill) fill.style.width = '33%';
+        meter.className = 'pw-meter weak';
+        tip.textContent = '密码不能和用户名相同';
+        return;
+      }
+      if (/^\d+$/.test(pw)) {
+        if (fill) fill.style.width = '33%';
+        meter.className = 'pw-meter weak';
+        tip.textContent = '密码不能是纯数字';
+        return;
+      }
+      const s = passwordStrength(pw);
+      if (fill) fill.style.width = s.pct + '%';
+      meter.className = 'pw-meter' + (s.cls ? ' ' + s.cls : '');
+      tip.textContent = pw ? ('密码强度：' + s.label) : PW_HINT;
+    }
+    input.addEventListener('input', refresh);
+    if (usernameInput) usernameInput.addEventListener('input', refresh);
+    refresh();
+    return { input: input, meter: meter, tip: tip, refresh: refresh };
+  }
+
   function fmtWhen(iso) {
     if (!iso) return '从未登录';
     const d = new Date(iso);
@@ -3929,10 +4002,11 @@
   /* 新增用户：用户名 / 密码 / 确认密码 + 可访问资源库多选（复用共享机制） */
   function openCreateUserDialog(onDone) {
     const body = U.el('div', { class: 'user-form' });
-    const userIn = U.el('input', { class: 'share-search', placeholder: '用户名', autocomplete: 'off' });
-    const pwIn = U.el('input', { class: 'share-search', type: 'password', placeholder: '密码（至少 6 位）', autocomplete: 'new-password' });
-    const pw2In = U.el('input', { class: 'share-search', type: 'password', placeholder: '再次输入密码', autocomplete: 'new-password' });
-    body.append(userIn, pwIn, pw2In);
+    const userIn = U.el('input', { class: 'share-search', placeholder: '用户名', autocomplete: 'off', 'aria-label': '用户名' });
+    const uHint = U.el('div', { class: 'pw-tip', text: '字母开头，不含空格，区分大小写' });
+    const pwField = makePasswordField('密码（至少 8 位）', userIn);
+    const pw2In = U.el('input', { class: 'share-search', type: 'password', placeholder: '再次输入密码', autocomplete: 'new-password', 'aria-label': '再次输入密码' });
+    body.append(userIn, uHint, pwField.input, pwField.meter, pwField.tip, pw2In);
 
     const libs = FM.fs.libs().filter(function (l) { return !l.shared; });
     const libWrap = U.el('div', { class: 'user-lib-box' });
@@ -3958,18 +4032,63 @@
           label: '创建', cls: 'btn-primary',
           onClick: function () {
             const username = String(userIn.value || '').trim();
-            const pw = String(pwIn.value || '');
-            if (!username) { toast('请填写用户名', 'warn'); return false; }
-            if (pw.length < 6) { toast('密码至少 6 位', 'warn'); return false; }
+            const pw = String(pwField.input.value || '');
+            const uErr = usernameError(username);
+            if (uErr) { toast(uErr, 'warn'); return false; }
+            const pErr = passwordError(username, pw);
+            if (pErr) { toast(pErr, 'warn'); return false; }
             if (pw !== String(pw2In.value || '')) { toast('两次输入的密码不一致', 'warn'); return false; }
             const ids = [];
             libList.querySelectorAll('input[type="checkbox"]').forEach(function (c) { if (c.checked) ids.push(c.value); });
+            const ok = m.box.querySelector('.modal-foot .btn:last-child');
+            if (ok) ok.disabled = true;      /* 防重复提交 */
             FM.fs.createUser(username, pw, ids).then(function (res) {
               toast('已新增用户「' + username + '」');
               if (onDone) onDone(res);
               m.close();
-            }, function (e) { toast((e && e.message) || '新增用户失败', 'warn'); });
+            }, function (e) {
+              if (ok) ok.disabled = false;
+              toast((e && e.message) || '新增用户失败', 'warn');
+            });
             return false;      /* 等请求回来再关 */
+          }
+        }
+      ]
+    });
+  }
+
+  /* 重置密码：管理员给某个用户设新密码；旧会话会被 token_version 自增踢下线 */
+  function openResetPasswordDialog(u, onDone) {
+    const body = U.el('div', { class: 'user-form' });
+    body.appendChild(U.el('div', { class: 'user-label', text: '为「' + u.username + '」设置新密码' }));
+    body.appendChild(U.el('div', { class: 'confirm-note', text: '重置后该用户所有已登录会话将立即失效。' }));
+    const pwField = makePasswordField('新密码（至少 8 位）', null);
+    const pw2In = U.el('input', { class: 'share-search', type: 'password', placeholder: '再次输入新密码', autocomplete: 'new-password', 'aria-label': '再次输入新密码' });
+    body.append(pwField.input, pwField.meter, pwField.tip, pw2In);
+
+    const m = openModal({
+      title: '重置密码',
+      body: body,
+      actions: [
+        { label: '取消', cls: 'btn-ghost' },
+        {
+          label: '重置', cls: 'btn-primary',
+          onClick: function () {
+            const pw = String(pwField.input.value || '');
+            const pErr = passwordError(u.username, pw);
+            if (pErr) { toast(pErr, 'warn'); return false; }
+            if (pw !== String(pw2In.value || '')) { toast('两次输入的密码不一致', 'warn'); return false; }
+            const ok = m.box.querySelector('.modal-foot .btn:last-child');
+            if (ok) ok.disabled = true;
+            FM.fs.resetUserPassword(u.id, pw).then(function (res) {
+              toast('已重置「' + u.username + '」的密码');
+              if (onDone) onDone(res);
+              m.close();
+            }, function (e) {
+              if (ok) ok.disabled = false;
+              toast((e && e.message) || '重置密码失败', 'warn');
+            });
+            return false;
           }
         }
       ]
@@ -4063,9 +4182,10 @@
         }
         toggle.onclick = function () {
           if (u.disabled) {
+            toggle.disabled = true;
             FM.fs.setUserDisabled(u.id, false).then(function (res) {
               toast('已启用「' + u.username + '」'); apply(res);
-            }, function (e) { toast((e && e.message) || '操作失败', 'warn'); });
+            }, function (e) { toggle.disabled = false; toast((e && e.message) || '操作失败', 'warn'); });
             return;
           }
           confirmWithCheckbox({
@@ -4075,12 +4195,15 @@
             note: '禁用后该用户会立即退出登录，且无法再次登录；之后可以随时重新启用。'
           }).then(function (ok) {
             if (!ok) return;
+            toggle.disabled = true;
             FM.fs.setUserDisabled(u.id, true).then(function (res) {
               toast('已禁用「' + u.username + '」'); apply(res);
-            }, function (e) { toast((e && e.message) || '操作失败', 'warn'); });
+            }, function (e) { toggle.disabled = false; toast((e && e.message) || '操作失败', 'warn'); });
           });
         };
-        ops.appendChild(toggle);
+        const key = U.el('button', { class: 'icon-btn user-key', title: '重置密码', html: icon('key') });
+        key.onclick = function () { openResetPasswordDialog(u, apply); };
+        ops.append(key, toggle);
 
         const del = U.el('button', { class: 'icon-btn user-del', title: '删除用户', html: icon('trash') });
         if (self || (!u.disabled && lastAdmin)) {
@@ -4095,9 +4218,10 @@
             note: '将永久删除该账号及其资源库、收藏与共享关系，无法恢复。'
           }).then(function (ok) {
             if (!ok) return;
+            del.disabled = true;
             FM.fs.deleteUser(u.id).then(function (res) {
               toast('已删除「' + u.username + '」'); apply(res);
-            }, function (e) { toast((e && e.message) || '删除失败', 'warn'); });
+            }, function (e) { del.disabled = false; toast((e && e.message) || '删除失败', 'warn'); });
           });
         };
         ops.appendChild(del);

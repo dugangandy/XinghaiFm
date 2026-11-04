@@ -27,6 +27,7 @@
   let serverVersion = '';      // 服务端 package.json 的版本号（浏览器直连时用来显示）
   let userRole = '';           // 服务端多用户下当前登录用户的角色（admin / user）
   let myUid = '';              // 当前登录用户 id（用户管理页用来禁用「操作自己」的按钮）
+  let noAuth = false;          // 服务端以 --no-auth 免密启动：没有真实身份，隐藏用户管理
   let serverReached = false;   // 同源探测时走到了 serve.js 的 /api/config（说明是服务端会话，与是否已有资源库无关）
   let favSet = new Set();      // 当前用户 + 当前库的收藏专辑 id
   let trackFavSet = new Set(); // 当前用户 + 当前库的收藏曲目 id
@@ -128,13 +129,29 @@
     } catch (e) {}
   }
 
+  /* 会话失效（401）：浏览器/APK 直接回登录页；桌面远程走下面的 REMOTE 分支做重连提示 */
+  let loginRedirecting = false;
+  function goLogin() {
+    if (loginRedirecting) return;
+    if (typeof location === 'undefined') return;
+    if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+    if (location.pathname.indexOf('/__auth') === 0) return;
+    loginRedirecting = true;
+    const next = location.pathname + location.search + location.hash;
+    location.href = '/__auth?next=' + encodeURIComponent(next || '/');
+  }
+
   function apiFetch(path, opts) {
     const o = Object.assign({}, opts || {});
     const headers = Object.assign({}, o.headers || {});
     if (API_TOKEN) headers.Authorization = 'Bearer ' + API_TOKEN;
     o.headers = headers;
     return fetch(API_BASE + path, o).then(function (r) {
-      if (!REMOTE) return r;
+      if (!REMOTE) {
+        /* 会话过期或账号被禁用：401 统一回登录页，别停在「无资源库/离线」的假象里 */
+        if (r.status === 401) goLogin();
+        return r;
+      }
       adoptToken(r);
       if (r.ok) markOnline();
       else if (r.status === 401) { notifyRemoteAuth(); setLink('auth'); }
@@ -270,6 +287,8 @@
       if (!res.ok) { serverReached = false; return null; }
       const j = await res.json();
       serverReached = true;
+      /* auth=false 是 --no-auth 免密模式：前端据此隐藏用户管理入口 */
+      if (j) noAuth = j.auth === false;
       return j && j.server ? j : null;
     } catch (e) { serverReached = false; return null; }
   }
@@ -499,6 +518,9 @@
   }
   async function setUserDisabled(id, disabled) {
     return userMutate('setDisabled', { id: id, disabled: !!disabled });
+  }
+  async function resetUserPassword(id, password) {
+    return userMutate('resetPassword', { id: id, password: password });
   }
   async function deleteUser(id) {
     return userMutate('delete', { id: id });
@@ -736,6 +758,16 @@
       });
       if (ch) { FM.db.setProgress(prog); FM.store.touch('progress'); touched = true; }
     }
+    /* 目录分类黑名单：以前只在本地，别的端删掉的自动分类会在这儿重新长回来。
+       取并集（本地刚删的还没推出去时不能被服务端那份盖掉），不触发重绘 */
+    if (Array.isArray(data.dirCatDropped) && activeId) {
+      const k = 'dirCatDropped:' + activeId;
+      const mine = FM.store.read(k, []);
+      const set = new Set(Array.isArray(mine) ? mine : []);
+      let ch = false;
+      data.dirCatDropped.forEach(function (n) { if (n && !set.has(n)) { set.add(n); ch = true; } });
+      if (ch) { FM.store.write(k, Array.from(set).slice(-200)); FM.store.touch(k); }
+    }
     return touched;
   }
 
@@ -767,6 +799,8 @@
     if (add.albumMeta) Object.assign(base.albumMeta || (base.albumMeta = {}), add.albumMeta);
     if (add.progress) Object.assign(base.progress || (base.progress = {}), add.progress);
     if (add.durations) Object.assign(base.durations || (base.durations = {}), add.durations);
+    /* 目录分类黑名单是整份名单，后推的覆盖先推的（都是本地当前完整列表） */
+    if (add.dirCatDropped) base.dirCatDropped = add.dirCatDropped;
     return base;
   }
 
@@ -796,6 +830,7 @@
         if (patch.catsDeleted) one.catsDeleted = patch.catsDeleted;
         if (patch.progress) one.progress = patch.progress;
         if (patch.durations) one.durations = patch.durations;
+        if (patch.dirCatDropped) one.dirCatDropped = patch.dirCatDropped;
       }
       keys.slice(i, i + META_BATCH).forEach(function (k) { one.albumMeta[k] = meta[k]; });
       out.push(one);
@@ -1298,7 +1333,7 @@
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, canSyncMeta, pushProgress, refreshLibs,
     setDirGroup, setDirMode, share,
-    listUsers, createUser, setUserDisabled, deleteUser,
+    listUsers, createUser, setUserDisabled, resetUserPassword, deleteUser,
     loadFavs, setFav, setFavTrack,
     scan, scanStamp, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,
@@ -1314,6 +1349,7 @@
     get serverReached() { return serverReached; },
     get role() { return userRole; },
     get uid() { return myUid; },
+    get noAuth() { return noAuth; },
     get isAdmin() { return userRole === 'admin'; },
     get favIds() { return favSet; },
     get favTrackIds() { return trackFavSet; },

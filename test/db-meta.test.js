@@ -89,6 +89,21 @@ test('catsDeleted：按 id 精确删除，跨库不误伤（删分类后重进�
   DB.metaApply(db, ROOT, { catsDeleted: ['nope'] });
 });
 
+test('dirCatDropped：删掉的目录分类名单落库，跨端不会再自动长回来', () => {
+  const db = fresh();
+  DB.metaApply(db, ROOT, { dirCatDropped: ['技术', '历史'] });
+  assert.deepEqual(DB.droppedDirCats(db, ROOT), ['技术', '历史']);
+  /* 快照要带出去：另一台设备 pullMeta 才拿得到 */
+  assert.deepEqual(DB.metaSnapshot(db, ROOT).dirCatDropped, ['技术', '历史']);
+  /* 整份替换（客户端推的永远是本地完整名单） */
+  DB.metaApply(db, ROOT, { dirCatDropped: ['技术'] });
+  assert.deepEqual(DB.droppedDirCats(db, ROOT), ['技术']);
+  /* 跨库隔离：别的库的同名目录不受影响 */
+  assert.deepEqual(DB.droppedDirCats(db, ROOT + '-other'), []);
+  /* 只推这一项不会动分类 */
+  assert.deepEqual(DB.catsList(db, ROOT), []);
+});
+
 test('albumMetaUpsert：键带库前缀、null 删除、往返一致', () => {
   const db = fresh();
   const k = ROOT + '|三体';
@@ -222,7 +237,7 @@ test('metaSnapshot：整份读回带版本号，空库路径返回空结构', ()
 
   /* 没有库路径时给一份合法的空快照，别返回 undefined 让前端炸 */
   assert.deepEqual(DB.metaSnapshot(db, ''), {
-    v: DB.META_VERSION, root: '', cats: [], albumMeta: {}, progress: {}, durations: {}
+    v: DB.META_VERSION, root: '', cats: [], albumMeta: {}, progress: {}, durations: {}, dirCatDropped: []
   });
 });
 

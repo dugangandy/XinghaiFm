@@ -132,8 +132,12 @@
     const list = droppedCats();
     if (list.indexOf(name) >= 0) return;
     list.push(name);
-    FM.store.write(droppedCatKey(), list.slice(-200));
+    const next = list.slice(-200);
+    FM.store.write(droppedCatKey(), next);
     FM.store.touch(droppedCatKey());
+    /* 名单也要落库：只写本地的话，别的端（桌面/另一台手机）扫描时会把这个
+       目录分类按目录名重新建回来，删了又长 */
+    pushMeta({ dirCatDropped: next });
   }
 
   /* 补齐本轮扫到的目录分类：已有的不动、用户手工建过同名分类就直接挂过去，

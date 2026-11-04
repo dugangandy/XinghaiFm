@@ -1097,6 +1097,9 @@ select.input option{background:#161d29;color:var(--txt)}
 .user-op.warn{color:#ffb27a;border-color:rgba(245,158,11,.3)}
 .user-op.warn:hover{color:#fff;border-color:rgba(245,158,11,.6);background:rgba(245,158,11,.14)}
 .user-op:disabled{opacity:.34;cursor:default;pointer-events:none}
+.user-key{width:28px;height:28px;color:var(--dim)}
+.user-key:hover{color:var(--cyan);background:rgba(34,211,238,.12)}
+.user-key:disabled{opacity:.3;pointer-events:none}
 .user-del{width:28px;height:28px;color:var(--dim)}
 .user-del:hover{color:#ff8095;background:rgba(255,110,130,.12)}
 .user-del:disabled{opacity:.3;pointer-events:none}
@@ -1107,6 +1110,12 @@ select.input option{background:#161d29;color:var(--txt)}
 /* 新增用户表单 */
 .user-form{display:flex;flex-direction:column;gap:10px}
 .user-label{font-size:11px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase;margin-bottom:2px}
+/* 密码强度条 */
+.pw-meter{height:6px;border-radius:99px;background:rgba(255,255,255,.1);overflow:hidden;margin-top:2px}
+.pw-meter i{display:block;height:100%;width:0;border-radius:99px;background:#ff6b81;transition:width .2s var(--ease),background .2s}
+.pw-meter.mid i{background:#f5b942}
+.pw-meter.strong i{background:#22c55e}
+.pw-tip{font-size:11px;color:var(--dim);line-height:1.6}
 .user-lib-box{display:flex;flex-direction:column;gap:6px}
 .user-lib-list{
   max-height:172px;overflow-y:auto;border:1px solid var(--line);border-radius:11px;

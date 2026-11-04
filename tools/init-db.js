@@ -113,9 +113,12 @@ function renameLegacy(files, keep) {
   }
   if (o.action === 'add') {
     if (!o.name) { console.error('缺少用户名：--add-user <name> [口令]'); process.exit(1); }
+    const uErr = DB.usernameError(o.name);
+    if (uErr) { console.error(uErr); process.exit(1); }
     if (DB.findUser(db, o.name)) { console.error('用户已存在：' + o.name); process.exit(1); }
     const pw = await getPassword(o.pw);
-    if (!pw) { console.error('密码不能为空'); process.exit(1); }
+    const pErr = DB.passwordError(o.name, pw);
+    if (pErr) { console.error(pErr); process.exit(1); }
     const u = DB.addUser(db, { username: o.name, role: 'user', password: pw });
     console.log('✓ 已添加用户：' + u.username + '  (id=' + u.id + ')');
     return;
@@ -124,7 +127,8 @@ function renameLegacy(files, keep) {
     const u = DB.findUser(db, o.name);
     if (!u) { console.error('用户不存在：' + o.name); process.exit(1); }
     const pw = await getPassword(o.pw);
-    if (!pw) { console.error('密码不能为空'); process.exit(1); }
+    const pErr = DB.passwordError(u.username, pw);
+    if (pErr) { console.error(pErr); process.exit(1); }
     DB.setUserPassword(db, u.id, pw);
     console.log('✓ 已修改密码：' + u.username);
     return;
