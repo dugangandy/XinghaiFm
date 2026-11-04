@@ -371,6 +371,8 @@
       if (g.cat && catDirs.indexOf(g.cat) < 0) catDirs.push(g.cat);
     });
     let cats = ensureCats();
+    /* 平铺模式去掉残留的目录分类，别让专辑继续挂着不可见的分类 */
+    if (!dirGroupMode) cats = cats.filter(function (c) { return String(c.id).charAt(0) !== 'd'; });
     cats = ensureDirCats(catDirs, cats);
     const catIds = new Set(cats.map(function (c) { return c.id; }));
     const dropped = droppedCats();
@@ -752,7 +754,13 @@
   }
 
   /* ── 分类 CRUD（都只影响当前库） ── */
-  function cats() { return ensureCats().slice().sort((a, b) => a.order - b.order); }
+  function cats() {
+    let list = ensureCats();
+    /* 平铺模式不展示「目录分类」（d 前缀）：那是按目录分两级时自动建的，
+       切回平铺后没有专辑会挂上去，留着点进去就是空的 */
+    if (!dirGroupMode) list = list.filter(function (c) { return String(c.id).charAt(0) !== 'd'; });
+    return list.slice().sort((a, b) => a.order - b.order);
+  }
 
   function addCat(name, color) {
     const list = cats();

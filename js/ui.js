@@ -960,7 +960,7 @@
 
   function viewCat(catId) {
     const cat = L.cats().find(c => c.id === catId);
-    if (!cat) return viewGridPage('分类不存在', '该分类可能已被删除', L.albums());
+    if (!cat) return viewHome();   /* 分类已不存在（被删 / 切了模式）：回到「全部」 */
     const list = L.allAlbums({ cat: catId, showHidden: state.showHidden });
     const wrap = U.el('div');
     /* 手机端把分类 tab 行带进分类页，点别的 tab 就地换页，不用先退回首页 */
