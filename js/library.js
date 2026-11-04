@@ -371,9 +371,50 @@
       if (g.cat && catDirs.indexOf(g.cat) < 0) catDirs.push(g.cat);
     });
     let cats = ensureCats();
-    /* 平铺模式去掉残留的目录分类，别让专辑继续挂着不可见的分类 */
-    if (!dirGroupMode) cats = cats.filter(function (c) { return String(c.id).charAt(0) !== 'd'; });
     cats = ensureDirCats(catDirs, cats);
+    /* 清理残留的目录分类：平铺模式清全部 d；二级/自动只保留仍对应当前目录的 d。
+       只增不删会留下点进去空空的分类；清理要拿到含 d 的原始列表才能算出 catsDeleted。
+       普通网页用户没有写权限，跳过清理（仅靠 cats() 展示层隐藏），避免 403。 */
+    if (!(FM.fs.serverReached && !FM.fs.isAdmin)) {
+      const keepDir = new Set();
+      if (dirGroupMode) {
+        const drop = droppedCats();
+        catDirs.forEach(function (name) { if (drop.indexOf(name) < 0) keepDir.add(dirCatId(name)); });
+      }
+      /* 目录模式下，仍被专辑引用的分类先不删：扫描偶尔漏读某个目录（NAS/移动硬盘掉线）时，
+         不能把它的分类当残留清掉，等目录恢复却空了 */
+      const refIds = new Set();
+      if (dirGroupMode) {
+        Object.keys(metas).forEach(function (k) {
+          if (k.indexOf(rootKey + '|') !== 0) return;
+          const m = metas[k];
+          if (m && Array.isArray(m.cats)) m.cats.forEach(function (id) { refIds.add(id); });
+        });
+      }
+      const staleIds = cats
+        .filter(function (c) {
+          if (String(c.id).charAt(0) !== 'd') return false;
+          if (keepDir.has(c.id)) return false;
+          if (dirGroupMode && refIds.has(c.id)) return false;
+          return true;
+        })
+        .map(function (c) { return c.id; });
+      if (staleIds.length) {
+        const staleSet = new Set(staleIds);
+        cats = cats.filter(function (c) { return !staleSet.has(c.id); });
+        db.setCatsFor(libId, cats);
+        db.touch('cats:' + libId);
+        /* 专辑对这些已删分类的引用一并清掉，避免 albumMeta 留孤儿（只动真正引用到的行） */
+        Object.keys(metas).forEach(function (k) {
+          if (k.indexOf(rootKey + '|') !== 0) return;
+          const m = metas[k];
+          if (!m || !Array.isArray(m.cats)) return;
+          const kept = m.cats.filter(function (id) { return !staleSet.has(id); });
+          if (kept.length !== m.cats.length) { m.cats = kept; touchedMeta[k] = m; }
+        });
+        pushMeta({ cats: cats, catsDeleted: staleIds });
+      }
+    }
     const catIds = new Set(cats.map(function (c) { return c.id; }));
     const dropped = droppedCats();
     const autoFor = function (text) { return autoCats(text).filter(function (id) { return catIds.has(id); }); };
