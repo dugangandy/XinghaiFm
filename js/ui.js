@@ -312,14 +312,82 @@
     });
   }
 
-  function toast(msg, type) {
-    const node = U.el('div', { class: 'toast' + (type ? ' ' + type : '') },
-      [U.el('span', { html: icon(type === 'warn' ? 'moon' : 'check') }), U.el('span', { text: msg })]);
+  /* key：同槽位只留一条（切库成功的提示被缓存警告顶掉，别两条并排挂着）；
+     action：带按钮的提示，按钮自己打开 pointer-events（root 是 none） */
+  const toastSlots = Object.create(null);
+
+  function dismissToast(node) {
+    if (!node || !node.parentNode) return;
+    node.classList.add('out');
+    setTimeout(function () { if (node.parentNode) node.remove(); }, 300);
+  }
+
+  function toast(msg, type, opts) {
+    const o = opts || {};
+    if (o.key && toastSlots[o.key]) { dismissToast(toastSlots[o.key]); delete toastSlots[o.key]; }
+    const parts = [
+      U.el('span', { html: icon(type === 'warn' ? 'moon' : 'check') }),
+      U.el('span', { class: 'toast-txt', text: msg })
+    ];
+    let node = null;
+    if (o.action) {
+      parts.push(U.el('button', {
+        class: 'toast-act', type: 'button', text: o.action.label,
+        onclick: function () {
+          dismissToast(node);
+          if (o.key && toastSlots[o.key] === node) delete toastSlots[o.key];
+          try { o.action.onPick(); } catch (e) { console.warn('[ui] toast 操作失败', e); }
+        }
+      }));
+    }
+    node = U.el('div', { class: 'toast' + (type ? ' ' + type : ''), role: 'status' }, parts);
     refs.toastRoot.appendChild(node);
+    if (o.key) toastSlots[o.key] = node;
     setTimeout(function () {
-      node.classList.add('out');
-      setTimeout(() => node.remove(), 300);
-    }, 2400);
+      if (o.key && toastSlots[o.key] === node) delete toastSlots[o.key];
+      dismissToast(node);
+    }, o.ms || 2400);
+  }
+
+  /* ── 本地缓存写不进去 ──
+     只弹一条，绝对不能跟「已切换到」并排：切库提示还在屏幕上就把它顶掉，
+     换成一句说得清后果的合并文案。onBroken 每次启动只回调一次（store.js）。 */
+  const TOAST_SWITCH = 'lib-switch';
+  const TOAST_CACHE = 'cache-broken';
+
+  function fmtFreed(bytes) {
+    const kb = (bytes || 0) / 1024;
+    return kb >= 1024 ? (kb / 1024).toFixed(1) + ' MB' : Math.max(1, Math.round(kb)) + ' KB';
+  }
+
+  /* 清理入口：清掉索引缓存后探一次写入，成功才敢说「好了」 */
+  function clearLocalCache() {
+    let r = { count: 0, bytes: 0 };
+    try { r = FM.store.clearIndexCache(); } catch (e) { console.warn('[ui] 清理索引缓存失败', e); }
+    const ok = FM.store.probe();
+    if (ok) FM.store.resetBroken();
+    if (ok) {
+      toast(r.count
+        ? '已清理 ' + r.count + ' 份索引缓存（约 ' + fmtFreed(r.bytes) + '），重新进库会重新扫描'
+        : '本地缓存已清理', null, { key: TOAST_CACHE, ms: 4200 });
+    } else {
+      toast(r.count
+        ? '已清理 ' + r.count + ' 份索引缓存，仍然写不进去 —— 请检查手机剩余存储'
+        : '本地缓存仍然写不进去，请检查手机剩余存储', 'warn', { key: TOAST_CACHE, ms: 6000 });
+    }
+    return ok;
+  }
+
+  function cacheBroken() {
+    const lib = FM.fs && FM.fs.active ? FM.fs.active() : null;
+    /* 切库提示还挂着：把它顶掉，用合并文案，别让用户同时看到成功和失败 */
+    const switching = !!toastSlots[TOAST_SWITCH] && !!(lib && lib.name);
+    if (toastSlots[TOAST_SWITCH]) { dismissToast(toastSlots[TOAST_SWITCH]); delete toastSlots[TOAST_SWITCH]; }
+    toast(switching
+      ? '已切换到「' + lib.name + '」，但本地缓存写不下，本次改动不会保存'
+      : '本地缓存已满或不可用，改动可能无法保存',
+      'warn',
+      { key: TOAST_CACHE, ms: 7000, action: { label: '清理缓存', onPick: clearLocalCache } });
   }
 
   /* 分类与专辑整理（归类/置顶/重命名/隐藏）已改为写 fm.db：桌面走 IPC、网页和手机走 /api/meta，
@@ -5609,7 +5677,8 @@
       /* 切库会 P.stop() 清空播放器：回到这个库时把上次听到的那集放回底栏（不自动播放） */
       restorePlayerBar();
       await endLibSwitch(seq, started);
-      toast('已切换到「' + lib.name + '」');
+      /* 占一个槽位：这条还挂着的时候缓存写失败，会把它换成合并文案（见 cacheBroken） */
+      toast('已切换到「' + lib.name + '」', null, { key: TOAST_SWITCH });
     } catch (e) {
       await endLibSwitch(seq, started);
       toast(e.message || '切换资源库失败', 'warn');
@@ -5997,7 +6066,7 @@
     autoRescan, runScan, enterLib, switchLib, addLibFlow, needRescan, syncScanIfNewer,
     openLibMenu, openLibDrawer, renderStat, renderWelcome, renderBrokenLib,
     restorePlayerBar, applyPrefs,
-    toast, openSheet, closeSheet,
+    toast, cacheBroken, clearLocalCache, openSheet, closeSheet,
     checkUpdate, updateProgress,
     get refs() { return refs; }
   };

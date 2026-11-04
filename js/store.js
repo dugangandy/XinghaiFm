@@ -83,11 +83,57 @@
     if (document.visibilityState === 'hidden') flush();
   });
 
+  /* ── 清理本机索引缓存 ──
+     只丢「丢了也能重建」的扫描结果（index / index:<libId>）：分类 / 进度 / 收藏 /
+     时长 / 设置 / lastLib 一件都不动，那些是用户数据，丢了补不回来。
+     indexMode:<libId> 留着 —— 几百字节的小键，决定下次扫描的分组口径，
+     清了要多一次误分组的风险，不值当。 */
+  function indexCacheKey(full) {
+    if (!full || full.indexOf(P) !== 0) return '';
+    let k = full.slice(P.length);
+    if (ns) {
+      if (k.indexOf(ns + ':') !== 0) return '';
+      k = k.slice(ns.length + 1);
+    }
+    return (k === 'index' || k.indexOf('index:') === 0) ? k : '';
+  }
+
+  function clearIndexCache() {
+    const keys = [];
+    let chars = 0;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const full = localStorage.key(i);
+        const k = indexCacheKey(full);
+        if (!k) continue;
+        keys.push(k);
+        try { chars += full.length + String(localStorage.getItem(full) || '').length; } catch (e) {}
+      }
+    } catch (e) { console.warn('[store] 清缓存遍历失败', e); }
+    keys.forEach(function (k) { drop(k); });
+    /* 配额按 UTF-16 计（每字符 2 字节），乘 2 才是实际腾出来的量 */
+    return { count: keys.length, bytes: chars * 2 };
+  }
+
+  /* 清完探一次：还写不进去说明不是这份索引撑爆的（磁盘满 / 隐私模式），别给用户假希望 */
+  function probe() {
+    try {
+      const k = FQ('__probe');
+      localStorage.setItem(k, '1');
+      localStorage.removeItem(k);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /* 清理成功后再写失败要能重新提醒一次，否则用户以为已经好了 */
+  function resetBroken() { broken = false; brokenNotified = false; }
+
   FM.store = {
     read, write, touch, drop, flush, setNamespace,
     onPersist: fn => { onPersist = fn; },
     onBroken: fn => { onBroken = fn; },
     isBroken: () => broken,
+    clearIndexCache, probe, resetBroken,
     PREFIX: P,
     get namespace() { return ns; }
   };

@@ -850,10 +850,22 @@ select.input option{background:#161d29;color:var(--txt)}
   background:rgba(12,17,28,.94);border:1px solid var(--line-2);
   box-shadow:0 18px 40px -18px #000;backdrop-filter:blur(16px);
   animation:toastIn .28s var(--ease);
+  /* 合并文案（「已切换到…，但本地缓存写不下…」）比原来的短提示长得多：限宽自己折行 */
+  max-width:min(460px,calc(100vw - 32px));
 }
 .toast.out{animation:toastOut .26s ease forwards}
-.toast .i{width:15px;height:15px;color:var(--cyan)}
+.toast .i{width:15px;height:15px;flex:none;color:var(--cyan)}
 .toast.warn .i{color:#ffd166}
+.toast .toast-txt{flex:1;line-height:1.5;word-break:break-word}
+/* 提示里的操作按钮（「清理缓存」）：.toast-root 是 pointer-events:none，按钮得自己打开 */
+.toast .toast-act{
+  pointer-events:auto;flex:none;cursor:pointer;font-family:inherit;
+  margin-left:2px;padding:4px 11px;border-radius:99px;border:0;
+  font-size:12px;font-weight:600;color:#04070d;background:var(--grad);
+  transition:filter .15s,transform .12s;
+}
+.toast .toast-act:hover{filter:brightness(1.08)}
+.toast .toast-act:active{transform:scale(.95)}
 @keyframes toastIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes toastOut{to{opacity:0;transform:translateY(8px)}}
 
