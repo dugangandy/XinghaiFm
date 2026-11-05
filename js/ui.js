@@ -4746,7 +4746,7 @@
     const idx = FM.db.index(l.id);
     if (!idx || !idx.albums || !idx.albums.length) return '';
     let size = 0;
-    idx.albums.forEach(function (a) { size += a.size || 0; });
+    FM.lib.indexAlbums(idx).forEach(function (a) { size += a.size || 0; });
     const tracks = (idx.tracks || []).length;
     return idx.albums.length + ' 个专辑' + (tracks ? ' · ' + tracks + ' 集' : '') + (size ? ' · ' + fmtS(size) : '');
   }

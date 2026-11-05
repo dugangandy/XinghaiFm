@@ -28,7 +28,7 @@ FM.db = {
   catsFor() { return []; },
   setCatsFor() {},
   indexMode() { return 'flat'; },
-  setIndex(id, idx) { indexes[id] = JSON.parse(JSON.stringify(idx)); },
+  saveIndexNow(id, idx) { indexes[id] = JSON.parse(JSON.stringify(idx)); return { ok: true, chars: 0 }; },
   index(id) { return indexes[id] || null; },
   touch() {}
 };
@@ -100,7 +100,8 @@ test('scope=cur 只返回当前库，且由全量缓存派生', () => {
 
 test('隐藏口径统一：默认排除隐藏专辑及其单集，showHidden 才出现', () => {
   const bIdx = indexes.lb;
-  const bAlbum = bIdx.albums.find(a => a.title.indexOf('三体') >= 0);
+  /* 索引是 v2 紧凑格式，曲目/专辑的字段要经过 indexAlbums 还原 */
+  const bAlbum = L.indexAlbums(bIdx).find(a => a.title.indexOf('三体') >= 0);
   const key = bIdx.root + '|' + bAlbum.id;
   metas[key] = { root: bIdx.root, hidden: 1 };
   L.invalidateSearch();                /* 真实路径是 setMeta / refreshMeta / pullMeta */
@@ -127,7 +128,7 @@ test('setMeta 自己就让缓存失效：当前库隐藏后搜不到，取消隐
 
 test('元数据变化：缓存失效后，跨库结果里的标题跟着改', () => {
   const bIdx = indexes.lb;
-  const ming = bIdx.albums.find(a => a.title === '明朝那些事');
+  const ming = L.indexAlbums(bIdx).find(a => a.title === '明朝那些事');
   const key = bIdx.root + '|' + ming.id;
   assert.ok(L.searchAll('明朝那些事').albums.some(r => r.libId === 'lb'));
   assert.equal(L.searchAll('改过的书名').albums.length, 0, '先把这个查询也放进缓存');
@@ -144,8 +145,30 @@ test('元数据变化：缓存失效后，跨库结果里的标题跟着改', ()
   assert.ok(L.searchAll('明朝那些事').albums.some(r => r.libId === 'lb'));
 });
 
+test('老格式索引（v1，无版本号）仍按老字段解析', () => {
+  /* 清单格式换过一版：v1 的曲目行带 name / ext，专辑是对象。升版后老缓存不能读废 */
+  indexes.lv = {
+    root: 'R:LV', rootName: '库V', scannedAt: 1, dirMode: 'flat',
+    albums: [{
+      id: 'av', key: '专辑V', path: '专辑V', dirCat: '', dirName: '专辑V',
+      title: '银河帝国', origTitle: '银河帝国', tags: [], seed: 1, count: 1, size: 1, duration: 3, addedAt: 1
+    }],
+    tracks: [['tv', 'av', '专辑V/01 基地.mp3', '01 基地.mp3', 'mp3', 1, 1000, 0, 3]]
+  };
+  libs.push({ id: 'lv', name: '库V' });
+  L.invalidateSearch();
+  const hit = L.searchAll('基地').tracks.find(x => x.libId === 'lv');
+  assert.ok(hit, '老格式的曲目要能被搜到');
+  assert.equal(hit.track.name, '01 基地.mp3');
+  assert.equal(hit.track.ext, 'mp3');
+  assert.equal(hit.albumTitle, '银河帝国');
+  libs.pop();
+  delete indexes.lv;
+  L.invalidateSearch();
+});
+
 test('脏索引行不抛错，也不会污染结果', () => {
-  indexes.lb.tracks.push(['t-dirty', 'a-dirty', '脏行/', undefined, undefined]);
+  indexes.lb.tracks.push(['t-dirty', 999, undefined, undefined]);   /* v2：专辑下标越界 + 缺字段 */
   L.invalidateSearch();
   assert.doesNotThrow(() => L.searchAll('01'));
   indexes.lb.tracks.pop();

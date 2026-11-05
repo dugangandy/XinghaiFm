@@ -50,6 +50,9 @@
     ] }
   ];
 
+  /* 索引缓存的格式版本：2 = 紧凑数组（v2），缺省的当 1 读，老缓存直接兼容 */
+  const INDEX_VER = 2;
+
   let albums = [];
   let tracks = [];
   /* 当前库的标识（桌面版是绝对路径，网页版退回目录名）。
@@ -588,24 +591,58 @@
     byAlbum.forEach(list => list.sort((a, b) => a.order - b.order));
   }
 
-  /* ── 索引缓存 ── */
+  /* ── 索引缓存 ──
+     立刻试写一次：真写不下（配额不足）就只留内存，不排队重试 —— 排队也一样写不进，
+     还会每 1.5 秒撞一次，连带把同批的进度挤掉。 */
   function saveIndex() {
     if (!libId) return;
-    db.setIndex(libId, {
+    /* v2 紧凑格式（体积约为 v1 的六成）：
+         albums [id, key, dirCat, dirName, title, origTitle, seed, count, size, duration, addedAt, tags]
+         dirs   与 albums 同下标的目录前缀，'' 表示曲目 rel 不剥前缀（__root__ 或异常数据）
+         tracks [id, 专辑下标, rel 去掉 dirs 前缀, size, mtime 秒, order, duration 秒]
+       name / ext / 专辑 id 全部由上面几项还原（见 rowTrack / indexAlbums），不再重复存。 */
+    const pos = new Map();
+    const dirs = [];
+    const albumRows = albums.map(function (a, i) {
+      pos.set(a.id, i);
+      dirs.push(a.key && a.key !== '__root__' ? a.key + '/' : '');
+      return [
+        a.id, a.key, a.dirCat || '', a.dirName || '', a.title || '', a.origTitle || '',
+        a.seed, a.count, a.size, a.duration, a.addedAt, a.tags || []
+      ];
+    });
+    /* 有一行 rel 不以自己专辑的前缀开头，就整组不剥 —— 宁可多存，不能还原错 */
+    tracks.forEach(function (t) {
+      const i = pos.has(t.albumId) ? pos.get(t.albumId) : -1;
+      const d = i >= 0 ? dirs[i] : '';
+      if (d && String(t.rel || '').indexOf(d) !== 0) dirs[i] = '';
+    });
+    const trackRows = tracks.map(function (t) {
+      const i = pos.has(t.albumId) ? pos.get(t.albumId) : -1;
+      const d = i >= 0 ? dirs[i] : '';
+      const rel = String(t.rel || '');
+      return [
+        t.id, i, d ? rel.slice(d.length) : rel,
+        t.size || 0, Math.round((t.mtime || 0) / 1000), t.order || 0, Math.round(t.duration || 0)
+      ];
+    });
+    const idx = {
+      v: INDEX_VER,
       rootName: rootName,
       root: rootKey,
       scannedAt: scannedAt,
       /* dirMode 是当前口径，dirGroup 留着给老版本读（auto 也算「按分类」） */
       dirMode: dirMode,
       dirGroup: dirGroupMode,
-      albums: albums.map(a => ({
-        id: a.id, key: a.key, path: a.path || '', dirCat: a.dirCat || '',
-        dirName: a.dirName, title: a.title, origTitle: a.origTitle,
-        tags: a.tags, seed: a.seed, count: a.count, size: a.size, duration: a.duration,
-        addedAt: a.addedAt
-      })),
-      tracks: tracks.map(t => [t.id, t.albumId, t.rel, t.name, t.ext, t.size, t.mtime, t.order, t.duration])
-    });
+      dirs: dirs,
+      albums: albumRows,
+      tracks: trackRows
+    };
+    const saved = db.saveIndexNow(libId, idx);
+    if (saved && saved.ok === false) {
+      console.warn('[lib] 索引写不进本地缓存（' + Math.round(saved.chars / 1000) + 'k 字符，本机配额不足）：' +
+        '本次只保留在内存，下次进库会重新扫描');
+    }
   }
 
   /* 进库前先设定当前库上下文（libId / rootKey / 模式）。
@@ -645,7 +682,7 @@
     /* catIds=null 表示「这个库的分类还没初始化（库列表都没加载）」：这时别过滤，
        否则启动首屏会把用户已归好的分类全抹掉，等 scan 回来又闪一下 */
     const catIds = (rawCats === null && !cats.length) ? null : new Set(cats.map(function (c) { return c.id; }));
-    albums = cached.albums.map(function (a) {
+    albums = indexAlbums(cached).map(function (a) {
       const m = metas[rootKey + '|' + a.id] || {};
       const own = !m.root || m.root === rootKey;
       /* 旧索引没有 path / dirCat：按 key（再退回目录名）兜底，封面和排序才不会拿到 undefined */
@@ -656,13 +693,9 @@
       });
     }).sort(albumSort);
     tracks = (cached.tracks || []).map(function (row) {
-      return {
-        id: row[0], albumId: row[1], rel: row[2], name: row[3], ext: row[4],
-        kind: FM.media.kindOf(row[4]),
-        size: row[5], mtime: row[6], order: row[7], duration: row[8] || 0,
-        fav: !!(FM.fs.favTrackIds && FM.fs.favTrackIds.has(row[0])),
-        title: U.stripExt(row[3])
-      };
+      const t = rowTrack(row, cached);
+      t.fav = !!(FM.fs.favTrackIds && FM.fs.favTrackIds.has(t.id));
+      return t;
     });
     reindex();
     if (FM.covers) FM.covers.apply();
@@ -728,9 +761,47 @@
     };
   }
 
-  /* 索引里的曲目是紧凑数组：[id, albumId, rel, name, ext, size, mtime, order, duration]。
+  /* 专辑视图：v2 存的是数组，这里还原成对象给跨库搜索 / 库列表用。
+     还原结果挂在缓存对象上（不可枚举，JSON.stringify 带不出去），一次解析只做一遍 */
+  function indexAlbums(cached) {
+    if (!cached) return [];
+    if (cached.v !== INDEX_VER) return cached.albums || [];
+    if (cached.__albums) return cached.__albums;
+    const list = (cached.albums || []).map(function (r) {
+      return {
+        id: r[0], key: r[1],
+        path: r[1] === '__root__' ? '' : (r[1] || ''),
+        dirCat: r[2] || '', dirName: r[3] || '',
+        title: r[4] || '', origTitle: r[5] || '',
+        seed: r[6], count: r[7], size: r[8], duration: r[9],
+        addedAt: r[10], tags: r[11] || []
+      };
+    });
+    try { Object.defineProperty(cached, '__albums', { value: list, enumerable: false, configurable: true }); } catch (e) {}
+    return list;
+  }
+
+  /* 索引两种形状，读的时候统一成一个曲目对象：
+       v2 [id, albumIdx, relSuffix, size, mtimeSec, order, duration]
+       v1 [id, albumId, rel, name, ext, size, mtime, order, duration]
+     v2 省掉 name / ext / 目录前缀（都能从 rel 还原），行数上万时才是配额的关键。
      老缓存可能缺字段，这里全部兜底，别让一行脏数据把整个搜索打挂 */
-  function rowTrack(row) {
+  function rowTrack(row, cached) {
+    if (cached && cached.v === INDEX_VER) {
+      const ai = Number(row[1]);
+      const album = (cached.albums || [])[ai];
+      const dir = (cached.dirs || [])[ai] || '';
+      const rel = dir + String(row[2] || '');
+      const name = rel.slice(rel.lastIndexOf('/') + 1);
+      const dot = name.lastIndexOf('.');
+      const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+      return {
+        id: row[0], albumId: album ? album[0] : '', rel: rel, name: name, ext: ext,
+        kind: FM.media.kindOf(ext), size: row[3], mtime: (row[4] || 0) * 1000,
+        order: row[5] || 0, duration: row[6] || 0, fav: false,
+        title: U.stripExt(name)
+      };
+    }
     const name = String(row[3] || '');
     const ext = String(row[4] || '');
     return {
@@ -785,18 +856,19 @@
         return;
       }
       if (!idx.albums.length) return;
+      const alist = indexAlbums(idx);          /* v1 对象数组 / v2 数组都还原成同一套字段 */
       const root = String(idx.root || idx.rootName || '');
       const libName = lib.name || idx.rootName || '资源库';
       const hidden = new Set();
       if (!showHidden) {
-        idx.albums.forEach(function (a) {
+        alist.forEach(function (a) {
           const m = metas[root + '|' + a.id] || {};
           if (m.hidden) hidden.add(a.id);
         });
       }
 
       const hits = [];
-      idx.albums.forEach(function (a) {
+      alist.forEach(function (a) {
         if (hidden.has(a.id)) return;
         const m = metas[root + '|' + a.id] || {};
         const album = m.title ? Object.assign({}, a, { title: m.title }) : a;
@@ -812,16 +884,15 @@
 
       /* 与当前库同一套匹配：去扩展名的标题 + 打分排序；规模护栏一致 */
       const titles = new Map();
-      idx.albums.forEach(function (a) { if (!hidden.has(a.id)) titles.set(a.id, a.title); });
+      alist.forEach(function (a) { if (!hidden.has(a.id)) titles.set(a.id, a.title); });
       const rows = Array.isArray(idx.tracks) ? idx.tracks : [];
       const py = rows.length <= TRACK_PY_LIMIT;
       const hitsT = [];
       for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        if (hidden.has(row[1])) continue;
-        const t = rowTrack(row);
+        const t = rowTrack(rows[i], idx);
+        if (hidden.has(t.albumId)) continue;
         const s = py ? FM.search.scoreText(t.title, key) : (t.title.toLowerCase().indexOf(key) >= 0 ? 70 : 0);
-        if (s > 0) hitsT.push({ t: t, s: s, albumTitle: titles.get(row[1]) || '' });
+        if (s > 0) hitsT.push({ t: t, s: s, albumTitle: titles.get(t.albumId) || '' });
       }
       hitsT.sort(function (x, y) {
         return (y.s - x.s) || U.naturalCompare(x.t.name, y.t.name);
@@ -1123,6 +1194,8 @@
     isDirGroup: () => dirGroupMode,
     isAutoGroup: () => dirMode === 'auto',
     albums: () => albums,
+    /* 索引缓存里的专辑视图（v1 / v2 都吃），给跨库搜索和库列表用 */
+    indexAlbums: cached => indexAlbums(cached),
     tracks: () => tracks,
     allAlbums,
     album: id => albumMap.get(id) || null,
