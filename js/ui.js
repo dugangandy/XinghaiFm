@@ -3159,7 +3159,11 @@
   }
 
   function newCoverJob() {
-    return { libId: FM.fs.activeId || '', rows: [], page: 0, running: false, cancel: false, done: 0, total: 0, saveText: '' };
+    return {
+      libId: FM.fs.activeId || '', rows: [], page: 0,
+      running: false, cancel: false, done: 0, total: 0,
+      saving: false, saveText: ''
+    };
   }
 
   function coverPageCount(job) {
@@ -3219,6 +3223,12 @@
     if (job.running) return '正在抓取 ' + job.done + ' / ' + job.total;
     if (job.done && job.total) return '已处理 ' + job.done + ' / ' + job.total;
     return '尚未开始';
+  }
+
+  /* 按钮上的紧凑进度：窄屏按钮宽度有限，用「正在保存 3 / 12」会被挤断 */
+  function coverSaveBtnText(job) {
+    const m = /(\d+)\s*\/\s*(\d+)/.exec(job.saveText || '');
+    return m ? '保存中 ' + m[1] + '/' + m[2] : '保存中…';
   }
 
   function coverBadge(r) {
@@ -3299,11 +3309,15 @@
     if (txt) txt.textContent = coverProgressText(job);
     const saveBtn = page.querySelector('[data-act="cover-save"]');
     if (saveBtn) {
-      saveBtn.disabled = !c.picked || job.running;
-      saveBtn.textContent = '保存 ' + c.picked + ' 张封面';
+      saveBtn.disabled = !c.picked || job.running || job.saving;
+      /* 保存中锁住按钮并显示进度：写入是逐张进行的，连点会重复提交同一批 */
+      saveBtn.classList.toggle('is-busy', job.saving);
+      saveBtn.textContent = job.saving
+        ? coverSaveBtnText(job)
+        : '保存 ' + c.picked + ' 张封面';
     }
     const clearBtn = page.querySelector('[data-act="cover-clear"]');
-    if (clearBtn) clearBtn.disabled = !c.picked;
+    if (clearBtn) clearBtn.disabled = !c.picked || job.saving;
   }
 
   async function fetchCoverForRow(job, row) {
@@ -3373,7 +3387,7 @@
 
   function startCoverFetch() {
     const job = coverJob;
-    if (!job || job.running) return;
+    if (!job || job.running || job.saving) return;
     /* 只抓当前页：几百张一起打会把喜马拉雅惹毛，用户也等不起 */
     const todo = pagedRows(job).filter(function (r) { return r.status === 'pending' || r.status === 'failed'; });
     if (!todo.length) { toast('本页没有待抓取的专辑'); return; }
@@ -3397,7 +3411,7 @@
 
   function setCoverPage(p) {
     const job = coverJob;
-    if (!job || job.running) return;
+    if (!job || job.running || job.saving) return;
     const max = coverPageCount(job) - 1;
     const next = Math.min(Math.max(0, Number(p) || 0), max);
     if (next === job.page) return;
@@ -3422,7 +3436,7 @@
 
   function pickCoverCand(albumId, idx) {
     const job = coverJob;
-    if (!job) return;
+    if (!job || job.saving) return;
     const row = job.rows.find(function (r) { return r.albumId === albumId; });
     if (!row || row.saved || row.status !== 'pick' || !row.cands[idx]) return;
     row.picked = row.picked === idx ? -1 : idx;
@@ -3517,7 +3531,8 @@
 
   async function saveCoverPicks() {
     const job = coverJob;
-    if (!job || job.running) return;
+    /* saving：上一次点下的写入还没结束，再点一次就是重复提交同一批 */
+    if (!job || job.running || job.saving) return;
     const picked = job.rows.filter(function (r) {
       return r.status === 'pick' && r.picked >= 0 && r.cands[r.picked] && !r.saved;
     });
@@ -3533,14 +3548,24 @@
       });
     });
     if (!items.length) { toast('这些专辑已不在资源库里了', 'warn'); return; }
+    job.saving = true;
     job.saveText = '正在保存 0 / ' + items.length;
     renderMain({ quiet: true });
-    const res = await FM.covers.saveMany(items, function (ok, fail, i, total) {
-      if (!coverJob) return;
-      coverJob.saveText = '正在保存 ' + i + ' / ' + total;
-      paintCoverStat();
-    });
-    if (coverJob) coverJob.saveText = '';
+    let res = null;
+    try {
+      res = await FM.covers.saveMany(items, function (ok, fail, i, total) {
+        if (!coverJob) return;
+        coverJob.saveText = '正在保存 ' + i + ' / ' + total;
+        paintCoverStat();
+      });
+    } catch (e) {
+      console.warn('[cover] 批量保存中断', e);
+      toast('保存中断：' + ((e && e.message) || '未知原因'), 'warn');
+    } finally {
+      /* 成功失败都要解锁，否则按钮会一直停在「正在保存…」 */
+      if (coverJob) { coverJob.saving = false; coverJob.saveText = ''; }
+    }
+    if (!res) { renderMain({ quiet: true }); return; }
     const failedIds = new Set((res.failed || []).map(function (f) { return f.album && f.album.id; }));
     items.forEach(function (it) {
       if (failedIds.has(it.album.id)) { it.row.error = '保存失败，可重试'; return; }
@@ -3607,10 +3632,10 @@
     const pager = pages > 1
       ? '<span class="am-pager">' +
           '<button class="am-pager-btn prev" data-act="cover-page" data-p="' + (job.page - 1) + '"' +
-            ((job.page <= 0 || job.running) ? ' disabled' : '') + ' aria-label="上一页">' + icon('chevron') + '</button>' +
+            ((job.page <= 0 || job.running || job.saving) ? ' disabled' : '') + ' aria-label="上一页">' + icon('chevron') + '</button>' +
           '<b>' + (job.page + 1) + '</b><i>/</i>' + pages +
           '<button class="am-pager-btn" data-act="cover-page" data-p="' + (job.page + 1) + '"' +
-            ((job.page >= pages - 1 || job.running) ? ' disabled' : '') + ' aria-label="下一页">' + icon('chevron') + '</button>' +
+            ((job.page >= pages - 1 || job.running || job.saving) ? ' disabled' : '') + ' aria-label="下一页">' + icon('chevron') + '</button>' +
         '</span>'
       : '';
     const head =
@@ -3653,8 +3678,9 @@
         '<span class="am-picked">已选 <b data-am="picked">' + c.picked + '</b> 张</span>' +
         '<button class="btn btn-ghost" data-act="cover-clear"' + (c.picked ? '' : ' disabled') + '>清空选择</button>' +
         '<span class="am-note">未选择的专辑不会写入</span>' +
-        '<button class="btn btn-primary" data-act="cover-save"' +
-          ((c.picked && !job.running) ? '' : ' disabled') + '>保存 ' + c.picked + ' 张封面</button>' +
+        '<button class="btn btn-primary' + (job.saving ? ' is-busy' : '') + '" data-act="cover-save"' +
+          ((c.picked && !job.running && !job.saving) ? '' : ' disabled') + '>' +
+          (job.saving ? esc(coverSaveBtnText(job)) : '保存 ' + c.picked + ' 张封面') + '</button>' +
       '</div>';
 
     wrap.innerHTML = head + stat + '<div class="am-list">' + pageRows.map(coverRowHtml).join('') + '</div>' + bar;
@@ -5209,16 +5235,18 @@
           : (FM.fs.server ? '网页版 · 直连服务器' : '网页版 · 本地目录')));
     const libText = !lib ? '未选择'
       : (lib.name + (FM.fs.remote ? ' · 远程 ' + remoteHost() : ''));
+    /* 「资源库」那行可能带服务器地址 / 库路径，版本号也可能要报给作者：
+       手机上只有标了 .selectable 的文字还能长按选中复制（其余界面文字禁选） */
     const body = U.el('div', { class: 'about' });
     body.innerHTML =
       '<div class="about-head">' +
         '<div class="brand-mark eq-mark about-mark"><span></span><span></span><span></span><span></span><span></span></div>' +
         '<div class="about-name"><b>星海 FM</b><small>你的私人资源库</small></div>' +
-        (v ? '<span class="about-ver">v' + esc(v) + '</span>' : '') +
+        (v ? '<span class="about-ver selectable">v' + esc(v) + '</span>' : '') +
       '</div>' +
       '<div class="about-rows">' +
         (form ? '<div class="about-row"><span>运行形态</span><b>' + esc(form) + '</b></div>' : '') +
-        '<div class="about-row"><span>资源库</span><b>' + esc(libText) + '</b></div>' +
+        '<div class="about-row"><span>资源库</span><b class="selectable">' + esc(libText) + '</b></div>' +
         '<div class="about-row"><span>内容</span><b>' + s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size) + '</b></div>' +
       '</div>' +
       '<p class="about-note">全部音频都留在你自己的磁盘或服务器上，星海 FM 不会上传任何内容。</p>';
@@ -5251,12 +5279,13 @@
     return idx.albums.length + ' 个专辑' + (tracks ? ' · ' + tracks + ' 集' : '') + (size ? ' · ' + fmtS(size) : '');
   }
 
-  /* 资源库单选行：选中态 / 缺失态 / 规模行都在这里画，弹窗与抽屉复用 */
+  /* 资源库单选行：选中态 / 缺失态 / 规模行都在这里画，弹窗与抽屉复用。
+     库路径是纯文字信息，手机上要能长按复制，所以单独标 .selectable（其余界面文字禁选） */
   function libRowHtml(l) {
     const cur = l.id === FM.fs.activeId;
     const scale = libScaleText(l);
     return '<span class="lib-ico">' + icon(l.missing ? 'moon' : ((l.fixed || FM.fs.remote) ? 'library' : 'folder')) + '</span>' +
-      '<div class="lib-info"><b>' + esc(l.name) + '</b><small>' + esc(libPathText(l)) + '</small>' +
+      '<div class="lib-info"><b>' + esc(l.name) + '</b><small class="selectable">' + esc(libPathText(l)) + '</small>' +
       (scale ? '<span class="lib-stats">' + esc(scale) + '</span>' : '') +
       (l.missing ? '<em>资源库目录不存在，需要重新定位</em>' : '') + '</div>' +
       (l.shared ? '<span class="lib-share">共享</span>' : '') +
