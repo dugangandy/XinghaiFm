@@ -244,11 +244,16 @@ async function serveTc(request, name) {
   return mediaResponse(request, file, stat);
 }
 
-/* ── 专辑封面：直接从 .fm-covers 里读，不需要 Range ── */
-async function serveCover(name) {
-  if (!activeLib() || !name) return new Response('not found', { status: 404 });
+/* ── 专辑封面：直接从 .fm-covers 里读，不需要 Range ──
+   libId 由 URL 的 ?lib= 带上：封面文件名是「目录哈希-内容哈希」，
+   早期数据只有目录哈希 —— 两个库有同名目录时 URL 会撞在一起，
+   浏览器缓存（24h）下就会把 A 库的图显示到 B 库头上。 */
+async function serveCover(name, libId) {
+  const cfg = getConfig();
+  const lib = (libId && cfg.libs.find(l => l.id === libId)) || activeLib();
+  if (!lib || !name) return new Response('not found', { status: 404 });
   let file;
-  try { file = insideRoot(COVER_DIR + '/' + name); } catch (e) { return new Response('forbidden', { status: 403 }); }
+  try { file = insideRoot(COVER_DIR + '/' + name, lib); } catch (e) { return new Response('forbidden', { status: 403 }); }
   try {
     const data = await fsp.readFile(file);
     return new Response(data, {
@@ -271,7 +276,7 @@ function registerProtocol() {
       try { return decodeURIComponent(s); } catch (e) { return s; }
     });
     if (segs[0] === MEDIA_PREFIX) return serveMedia(request, segs.slice(1).join('/'));
-    if (segs[0] === COVER_PREFIX) return serveCover(segs.slice(1).join('/'));
+    if (segs[0] === COVER_PREFIX) return serveCover(segs.slice(1).join('/'), u.searchParams.get('lib') || '');
     if (segs[0] === TC_PREFIX) return serveTc(request, segs.slice(1).join('/'));
 
     const target = path.normalize(path.join(ROOT, '/' + (segs.length ? segs.join('/') : 'index.html')));
@@ -455,8 +460,8 @@ function syncWatchers() {
 }
 let watchTick = 0;   /* 60 秒对账定时器（另一个进程改 watch 时也能跟上） */
 
-function insideRoot(rel) {
-  const lib = activeLib();
+function insideRoot(rel, libIn) {
+  const lib = libIn || activeLib();
   if (!lib) throw new Error('尚未选择资源库');
   const target = path.normalize(path.join(lib.path, rel));
   const base = path.normalize(lib.path + path.sep);
@@ -680,17 +685,24 @@ function bindIpc() {
       return await covers.searchCandidates(title, limit, { page: o.page, limit: limit, seed: o.seed });
     } catch (err) { return []; }
   });
-  ipcMain.handle('fm:saveCover', async function (e, dirName, payload) {
-    const lib = activeLib();
+  /* libId 由渲染层带上：封面写入可能跨过切库那一刻，不能按「主进程当前库」定位，
+     否则会把这一库的封面写进另一个库的同名目录 */
+  ipcMain.handle('fm:saveCover', async function (e, dirName, payload, libId) {
+    const lib = (libId && getConfig().libs.find(l => l.id === libId)) || activeLib();
     if (!lib || !dirName) return null;
     try {
       const entry = await covers.saveCoverForDir(lib.path, dirName, payload || {});
       if (win && !win.isDestroyed()) win.webContents.send('fm:covers', { libId: lib.id, added: 1 });
       return entry;
-    } catch (err) { console.warn('[cover] 保存失败', err.message); return null; }
+    } catch (err) {
+      /* 原因带回渲染进程：权限类错误（EACCES）只说一句「本地写入失败」没法排查 */
+      const reason = (err && err.message) || '未知错误';
+      console.warn('[cover] 保存失败：' + reason);
+      return { error: reason };
+    }
   });
-  ipcMain.handle('fm:deleteCover', async function (e, dirName) {
-    const lib = activeLib();
+  ipcMain.handle('fm:deleteCover', async function (e, dirName, libId) {
+    const lib = (libId && getConfig().libs.find(l => l.id === libId)) || activeLib();
     if (!lib || !dirName) return false;
     try {
       await covers.removeCover(lib.path, dirName);
@@ -699,8 +711,9 @@ function bindIpc() {
     } catch (err) { return false; }
   });
 
-  ipcMain.handle('fm:covers', function () {
-    const lib = activeLib();
+  ipcMain.handle('fm:covers', function (e, libId) {
+    /* 读索引同样按调用方指定的库：切库瞬间的读要落到发起时那个库 */
+    const lib = (libId && getConfig().libs.find(l => l.id === libId)) || activeLib();
     if (!lib) return null;
     try {
       const raw = fs.readFileSync(path.join(lib.path, COVER_DIR, 'covers.json'), 'utf8');

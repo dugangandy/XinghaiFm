@@ -34,10 +34,11 @@ contextBridge.exposeInMainWorld('fmNative', {
   removeLib: (id) => ipcRenderer.invoke('fm:removeLib', id),
   /* refresh=true 跳过扫描缓存真的走盘（前端「重新扫描」）；平时读主进程缓存的扫描结果 */
   scan: (refresh) => ipcRenderer.invoke('fm:scan', !!refresh),
-  covers: () => ipcRenderer.invoke('fm:covers'),
+  /* libId：封面索引 / 写入 / 删除都按调用方指定的库落，不依赖主进程的「当前库」 */
+  covers: (libId) => ipcRenderer.invoke('fm:covers', libId),
   searchCover: (title, opts) => ipcRenderer.invoke('fm:searchCover', title, opts),
-  saveCover: (dirName, payload) => ipcRenderer.invoke('fm:saveCover', dirName, payload),
-  deleteCover: (dirName) => ipcRenderer.invoke('fm:deleteCover', dirName),
+  saveCover: (dirName, payload, libId) => ipcRenderer.invoke('fm:saveCover', dirName, payload, libId),
+  deleteCover: (dirName, libId) => ipcRenderer.invoke('fm:deleteCover', dirName, libId),
   openLib: (id) => ipcRenderer.invoke('fm:openLib', id),
   reveal: (rel) => ipcRenderer.invoke('fm:reveal', rel),
   /* 转码：flv 先重封装成 mp4 再播，返回 { url } 或 { error }。

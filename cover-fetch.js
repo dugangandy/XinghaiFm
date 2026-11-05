@@ -19,6 +19,7 @@
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const crypto = require('node:crypto');
 const net = require('node:net');
 const dns = require('node:dns').promises;
@@ -523,18 +524,52 @@ function cli() {
 }
 
 /* ── 给网页手动编辑封面用（不再自动拉取，改由用户点「保存」才落盘） ── */
+
+/* 文件系统错误翻成能照着做的中文。
+   界面 / 服务端日志原本只有一句「保存失败」，EACCES 这种必须点名目录和当前用户，
+   否则用户只能猜是网络问题还是程序问题。 */
+function fsErrorText(err, dir) {
+  const code = (err && err.code) || '';
+  let who = '';
+  try { who = (os.userInfo() && os.userInfo().username) || ''; } catch (e) {}
+  if (code === 'EACCES' || code === 'EPERM') {
+    return '没有权限写入 ' + dir + '（' + code + (who ? '，当前用户 ' + who : '') + '）。'
+      + '常见原因是这个目录之前用 sudo 跑过程序、归了 root：'
+      + '执行 sudo chown -R ' + (who || '$(whoami)') + ' "' + dir + '" 后重试';
+  }
+  if (code === 'EROFS') return '磁盘是只读的，写不了封面（EROFS）：' + dir;
+  if (code === 'ENOSPC') return '磁盘空间不足，写不了封面（ENOSPC）';
+  if (code === 'ENOENT') return '封面目录不存在或已被移走（ENOENT）：' + dir;
+  return (err && err.message) || String(err || '未知错误');
+}
+
 async function readMap(coverDir) {
   const mapFile = path.join(coverDir, 'covers.json');
-  try { return JSON.parse(await fsp.readFile(mapFile, 'utf8')) || {}; } catch (e) { return {}; }
+  let txt;
+  try { txt = await fsp.readFile(mapFile, 'utf8'); }
+  catch (e) {
+    if (e && e.code === 'ENOENT') return {};     /* 还没有索引：正常，从空开始 */
+    /* 存在却读不出来（EACCES 等）不能当空 map：下一次写入会把整个封面索引覆盖掉 */
+    throw new Error(fsErrorText(e, coverDir));
+  }
+  try { return JSON.parse(txt) || {}; } catch (e) { return {}; }
 }
 async function writeMap(coverDir, map) {
-  await fsp.writeFile(path.join(coverDir, 'covers.json'), JSON.stringify(map, null, 2), 'utf8');
+  try {
+    await fsp.writeFile(path.join(coverDir, 'covers.json'), JSON.stringify(map, null, 2), 'utf8');
+  } catch (e) {
+    throw new Error(fsErrorText(e, coverDir));
+  }
 }
 
 /* 手动保存一张封面：opt 里给 dataUrl（上传）或 url（自动获取到的候选），其余字段原样记进 covers.json */
 async function saveCoverForDir(root, dirName, opt) {
   const coverDir = path.join(path.resolve(root), COVER_DIR);
-  await fsp.mkdir(coverDir, { recursive: true });
+  try { await fsp.mkdir(coverDir, { recursive: true }); }
+  catch (e) { throw new Error(fsErrorText(e, coverDir)); }
+  /* 先探一次写权限：等写到图片才失败的话，用户只能看到一句 EACCES，不知道是目录权限问题 */
+  try { await fsp.access(coverDir, fs.constants.W_OK); }
+  catch (e) { throw new Error(fsErrorText(e, coverDir)); }
   const map = await readMap(coverDir);
   let buf, ext;
   if (opt.dataUrl) {
@@ -567,7 +602,14 @@ async function saveCoverForDir(root, dirName, opt) {
   if (oldFile && oldFile !== file) {
     try { await fsp.unlink(path.join(coverDir, oldFile)); } catch (e) {}
   }
-  await fsp.writeFile(path.join(coverDir, file), buf);
+  const target = path.join(coverDir, file);
+  try {
+    /* 同名文件可能属于别的用户或带只读属性：目录可写时先删掉再写，比直接覆盖稳妥 */
+    try { await fsp.unlink(target); } catch (e) {}
+    await fsp.writeFile(target, buf);
+  } catch (e) {
+    throw new Error(fsErrorText(e, coverDir));
+  }
   map[dirName] = {
     file: file,
     title: opt.title || dirName,
@@ -748,6 +790,6 @@ module.exports = { run: run, auto: auto, pendingOf: pendingOf, titleOf: titleOf,
   searchCandidates: searchCandidates, saveCoverForDir: saveCoverForDir, removeCover: removeCover,
   /* 给单测用：地址拦截规则、体积上限、文件名过滤 */
   isBlockedIp: isBlockedIp, assertPublicUrl: assertPublicUrl, MAX_IMAGE_BYTES: MAX_IMAGE_BYTES,
-  safeCoverName: safeCoverName };
+  safeCoverName: safeCoverName, fsErrorText: fsErrorText };
 
 if (require.main === module) cli();

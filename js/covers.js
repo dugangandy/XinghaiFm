@@ -15,6 +15,7 @@
   let index = [];               // [{ key, norm, url }]
   let cache = new Map();
   let coverVer = new Map();     // 目录名 -> 换图版本号（加在 URL 上，逼浏览器重新取图）
+  let loadedLib = '';           // coverVer 属于哪个库：换库要清空，否则同名目录会带上别的库的版本号
   let loaded = false;
   let blobRevs = [];            // 当前 urlOf 里那批 blob URL 的回收函数
 
@@ -57,7 +58,12 @@
   }
 
   function urlFor(file) {
-    if (FM.fs.native) return 'fm://app/__cover/' + encodeURIComponent(file);
+    /* 桌面端封面地址必须带库：文件名可能两库相同（早期数据的文件名只有目录哈希），
+       不带库时主进程按「当前库」解析，切库后同 URL 会直接命中浏览器缓存拿到旧库的图 */
+    if (FM.fs.native) {
+      const lib = FM.fs.activeId || '';
+      return 'fm://app/__cover/' + encodeURIComponent(file) + (lib ? '?lib=' + encodeURIComponent(lib) : '');
+    }
     return null;
   }
 
@@ -69,7 +75,8 @@
       } catch (e) { return null; }
     }
     if (FM.fs.native) {
-      try { return await window.fmNative.covers(); } catch (e) { return null; }
+      /* 带上库：主进程的「当前库」可能已经被另一次切库改掉了 */
+      try { return await window.fmNative.covers(FM.fs.activeId || ''); } catch (e) { return null; }
     }
     try {
       const f = await FM.fs.getFile(DIR + '/covers.json');
@@ -101,8 +108,14 @@
   }
 
   async function load() {
-    raw = await readIndex();
+    /* 记下开始时的库：切库瞬间可能有两次 load 交错，后回来的旧库结果不能盖掉新库那份 */
+    const wantLib = FM.fs.activeId || '';
+    const got = await readIndex();
+    if (wantLib !== (FM.fs.activeId || '')) return 0;   /* 期间切库了，这批索引直接丢掉 */
+    raw = got;
     loaded = true;
+    /* 换了库：版本号（换图 cache bust）没有意义了，同名目录会带上别的库的版本 */
+    if (wantLib !== loadedLib) { coverVer = new Map(); loadedLib = wantLib; }
     const oldRevs = blobRevs;
     blobRevs = [];
     urlOf = new Map();
@@ -249,17 +262,22 @@
   /* ── 写盘（不重读索引）──
      批量补封面时不能每张都 load()：网页端每次 load() 都要为全部封面重新取签名 URL，
      几十张就会退化成 O(n²)。这里只管把一张图落盘，由调用方决定什么时候刷新索引。 */
-  async function writeCover(album, payload) {
+  async function writeCover(album, payload, libId) {
     const dirName = album && (album.dirName || album.key);
     if (!dirName || !payload) return { ok: false, reason: '缺少专辑目录或图片' };
+    /* 绑定发起时的库：批量写入是逐张 await 的，中途切库后剩下的请求
+       不能按新库定位 —— 否则会把这一库的封面写到另一个库的同名目录里 */
+    const lib = libId || FM.fs.activeId || '';
     /* 先记版本：保存成功的 fm:covers 事件会立刻 apply()，得让它用带版本的新 URL；
-       保存失败也无害（文件没变，重新取到的还是旧图） */
-    coverVer.set(dirName, Date.now());
+       保存失败也无害（文件没变，重新取到的还是旧图）。
+       已经切走了就别写：版本表是当前库的，记进去会把新库的同名专辑顶成旧图 */
+    if (!lib || lib === (FM.fs.activeId || '')) coverVer.set(dirName, Date.now());
     if (FM.fs.native) {
       if (!window.fmNative || !window.fmNative.saveCover) return { ok: false, reason: '请重启应用（封面写入未加载）' };
       try {
-        const entry = await window.fmNative.saveCover(dirName, payload);
+        const entry = await window.fmNative.saveCover(dirName, payload, lib);
         if (!entry) return { ok: false, reason: '本地写入失败' };
+        if (entry.error) return { ok: false, reason: entry.error };
       } catch (e) { console.warn('[covers] 保存失败', e); return { ok: false, reason: '本地写入异常' }; }
       return { ok: true };
     }
@@ -267,13 +285,19 @@
     /* 网页端服务端有写接口限流（同 IP 每秒 10 次）：批量写入撞上 429 时退避一次再试 */
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
+        const headers = { 'content-type': 'application/json' };
+        if (lib) headers['x-fm-lib'] = lib;
         const r = await FM.fs.apiFetch('/api/cover', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: headers,
           body: JSON.stringify({ dirName: dirName, payload: payload })
         });
         if (r && r.ok) return { ok: true };
         if (r && r.status === 429 && attempt === 0) { await sleep(400); continue; }
+        /* 服务端会把具体原因放在 body.reason（例如 EACCES 的权限说明）：有就直接说给用户听 */
+        let detail = '';
+        if (r && r.json) { try { const j = await r.json(); detail = (j && j.reason) || ''; } catch (e) {} }
+        if (detail) return { ok: false, reason: detail };
         return { ok: false, reason: '服务端返回 ' + (r ? r.status : '无响应') + '（服务端可能是旧版本，重启 serve.js / 更新 APK）' };
       } catch (e) { console.warn('[covers] 保存失败', e); return { ok: false, reason: '服务端请求失败' }; }
     }
@@ -282,7 +306,8 @@
 
   /* 失败时返回 { ok:false, reason }：界面要把原因说出来，否则只会看到「保存失败」 */
   async function save(album, payload) {
-    const res = await writeCover(album, payload);
+    const lib = FM.fs.activeId || '';
+    const res = await writeCover(album, payload, lib);
     if (!res.ok) return res;
     await load();
     apply();
@@ -290,8 +315,8 @@
   }
 
   /* 只写盘、不刷新索引：批量抓取时逐张自动写入，最后统一 reload() */
-  async function saveOne(album, payload) {
-    return writeCover(album, payload);
+  async function saveOne(album, payload, libId) {
+    return writeCover(album, payload, libId || FM.fs.activeId || '');
   }
 
   /* 批量写入：items = [{ album, payload }]，顺序执行（避免把服务端限流打满），
@@ -302,13 +327,15 @@
 
   async function saveMany(items, onProgress) {
     const list = Array.isArray(items) ? items : [];
+    /* 整批绑定同一个库：这批是用户在某个库里挑的，写盘期间切库也不能改投别处 */
+    const lib = FM.fs.activeId || '';
     let ok = 0;
     const failed = [];
     beginBatch();
     try {
       for (let i = 0; i < list.length; i++) {
         const it = list[i] || {};
-        const res = await writeCover(it.album, it.payload);
+        const res = await writeCover(it.album, it.payload, lib);
         if (res.ok) ok++; else failed.push({ album: it.album, reason: res.reason });
         if (FM.fs.server) await sleep(120);       /* 错开限流窗口 */
         if (onProgress) { try { onProgress(ok, failed.length, i + 1, list.length); } catch (e) {} }
@@ -327,14 +354,18 @@
   async function remove(album) {
     const dirName = album && (album.dirName || album.key);
     if (!dirName) return { ok: false, reason: '缺少专辑目录' };
+    /* 同 writeCover：删除也要落到这个小封面所在的库 */
+    const lib = FM.fs.activeId || '';
     if (FM.fs.native) {
       if (!window.fmNative || !window.fmNative.deleteCover) return { ok: false, reason: '请重启应用（封面写入未加载）' };
       try {
-        if (!await window.fmNative.deleteCover(dirName)) return { ok: false, reason: '本地删除失败' };
+        if (!await window.fmNative.deleteCover(dirName, lib)) return { ok: false, reason: '本地删除失败' };
       } catch (e) { console.warn('[covers] 删除失败', e); return { ok: false, reason: '本地删除异常' }; }
     } else if (FM.fs.server) {
       try {
-        const r = await FM.fs.apiFetch('/api/cover?dir=' + encodeURIComponent(dirName), { method: 'DELETE' });
+        const headers = {};
+        if (lib) headers['x-fm-lib'] = lib;
+        const r = await FM.fs.apiFetch('/api/cover?dir=' + encodeURIComponent(dirName), { method: 'DELETE', headers: headers });
         if (!r || !r.ok) return { ok: false, reason: '服务端返回 ' + (r ? r.status : '无响应') };
       } catch (e) { console.warn('[covers] 删除失败', e); return { ok: false, reason: '服务端请求失败' }; }
     } else {

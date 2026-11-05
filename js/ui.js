@@ -3245,6 +3245,8 @@
     if (r.status === 'none') return '没搜到相似封面，可稍后重试';
     if (r.status === 'failed') return r.error || '抓取失败，可重试';
     if (r.status === 'searching') return '正在搜索候选封面…';
+    /* 选了候选但写入失败：状态仍是「待选择」，原因得在这里说出来 */
+    if (r.pickError) return r.pickError;
     return (r.dirName || '') + (r.hidden ? ' · 已隐藏' : '');
   }
 
@@ -3255,7 +3257,7 @@
     const url = r.preview || (a && a.cover) || '';
     const thumb = url
       ? '<div class="am-thumb"><img src="' + esc(url) + '" alt="" referrerpolicy="no-referrer" loading="lazy"></div>'
-      : '<div class="am-thumb empty">' + icon('image') + '</div>';
+      : '<div class="am-thumb is-empty">' + icon('image') + '</div>';
     let extra = '';
     if (r.status === 'searching') {
       extra = '<div class="am-cands">' + '<i class="am-sk"></i><i class="am-sk"></i><i class="am-sk"></i>' + '</div>';
@@ -3275,9 +3277,11 @@
           '</div>';
       }).join('') + '</div>';
     }
+    /* 副标题会省略：失败原因（例如 EACCES 的完整说明）挂到 title 上，悬停能看全 */
+    const sub = coverRowSub(r);
     return '<div class="am-row" data-row="' + esc(r.albumId) + '" data-status="' + r.status + '">' +
       thumb +
-      '<div class="am-info"><b>' + esc(r.title) + '</b><span>' + esc(coverRowSub(r)) + '</span></div>' +
+      '<div class="am-info"><b>' + esc(r.title) + '</b><span title="' + esc(sub) + '">' + esc(sub) + '</span></div>' +
       coverBadge(r) + extra + '</div>';
   }
 
@@ -3440,6 +3444,7 @@
     const row = job.rows.find(function (r) { return r.albumId === albumId; });
     if (!row || row.saved || row.status !== 'pick' || !row.cands[idx]) return;
     row.picked = row.picked === idx ? -1 : idx;
+    row.pickError = '';        /* 重选后旧的失败原因就过期了 */
     /* 同步行缩略图：选中就预览这张，取消就退回占位/原封面 */
     row.preview = row.picked >= 0 ? (row.cands[row.picked].url || '') : '';
     paintCoverRow(row);
@@ -3566,15 +3571,24 @@
       if (coverJob) { coverJob.saving = false; coverJob.saveText = ''; }
     }
     if (!res) { renderMain({ quiet: true }); return; }
-    const failedIds = new Set((res.failed || []).map(function (f) { return f.album && f.album.id; }));
+    const failed = res.failed || [];
+    const failReason = new Map(failed.map(function (f) { return [f.album && f.album.id, f.reason || '']; }));
     items.forEach(function (it) {
-      if (failedIds.has(it.album.id)) { it.row.error = '保存失败，可重试'; return; }
+      if (failReason.has(it.album.id)) {
+        /* 原因留在行副标题里：只写「保存失败」等于没说，权限问题得让用户看到路径和 EACCES */
+        it.row.pickError = '保存失败：' + (failReason.get(it.album.id) || '未知原因');
+        return;
+      }
       it.row.status = 'auto';
       it.row.picked = -1;
+      it.row.pickError = '';
     });
     renderAll({ quiet: true });
-    const failN = (res.failed || []).length;
-    toast(failN ? ('已保存 ' + res.ok + ' 张，' + failN + ' 张失败') : ('已保存 ' + res.ok + ' 张封面'),
+    const failN = failed.length;
+    const why = failN ? String(failed[0].reason || '') : '';
+    toast(failN
+      ? ('已保存 ' + res.ok + ' 张，' + failN + ' 张失败' + (why ? '：' + (why.length > 60 ? why.slice(0, 60) + '…' : why) : ''))
+      : ('已保存 ' + res.ok + ' 张封面'),
       failN ? 'warn' : undefined);
   }
 
@@ -6216,11 +6230,13 @@
     const started = Date.now();
     setScanBusy(true, '切换资源库…');
     try {
-      /* 先切通道，成功了再停播：授权失败时不会白白打断正在听的内容 */
+      /* 先停播再切通道：activate() 之后 activeId 立刻变成新库，
+         而 stop() 里的 saveProgress 是按「当前库」上报的，
+         曲目 id 又只由库内相对路径派生 —— 两库有同名目录时，旧库这一集的位置会写进新库 */
+      P.stop();
       await FM.fs.activate(id);
       /* 这个库断网期间没写进库的改动，切过来先补发，再进库拉快照（反了会被旧值盖回去） */
       try { await FM.fs.flushPending(); } catch (e) {}
-      P.stop();
       resetView();
       /* 服务端模式：切库时强制从服务端扫描缓存重建，不用手机本地索引——
          本地索引一旦串过库，切过去会一直显示错的专辑列表；服务端缓存读取很快，不重扫盘。
@@ -6355,6 +6371,8 @@
     }
     if (cached && cached.albums && cached.albums.length) {
       try { await FM.covers.load(); } catch (e) {}
+      /* 拉封面期间已经切走了：这份索引属于旧库，再 restore + 渲染就会串到新库头上 */
+      if (id !== FM.fs.activeId) return;
       L.restore(id);
       FM.store.write('lastLib', id);
       FM.store.touch('lastLib');

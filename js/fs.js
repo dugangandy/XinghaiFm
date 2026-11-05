@@ -148,7 +148,9 @@
     if (API_TOKEN) headers.Authorization = 'Bearer ' + API_TOKEN;
     /* 带上当前库：服务端读接口据此定位到本客户端的库，不再依赖「按用户的活动库」，
        避免同一账号多设备/多会话时互相串库 */
-    if (activeId) headers['x-fm-lib'] = activeId;
+    /* 显式指定的库优先：封面写入这类操作要落到「发起时」那个库，
+       不能因为请求还在飞的时候切了库，就写到新库去 */
+    if (activeId && headers['x-fm-lib'] === undefined) headers['x-fm-lib'] = activeId;
     o.headers = headers;
     return fetch(API_BASE + path, o).then(function (r) {
       if (!REMOTE) {

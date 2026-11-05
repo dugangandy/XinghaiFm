@@ -1527,8 +1527,11 @@ const server = http.createServer(async function (req, res) {
       const entry = await covers.saveCoverForDir(root, payload.dirName, payload.payload || {});
       return json(res, { ok: true, entry: entry });
     } catch (e) {
-      console.log('[cover] 保存失败：' + e.message);
-      return send(res, 500, 'save failed');
+      /* 把原因回传给界面：权限类错误（EACCES）光看「保存失败」根本没法排查 */
+      const reason = (e && e.message) || '未知错误';
+      console.log('[cover] 保存失败：' + reason);
+      return send(res, 500, JSON.stringify({ ok: false, reason: reason }),
+        { 'content-type': 'application/json; charset=utf-8' });
     }
   }
   if (p === '/api/cover' && req.method === 'DELETE') {
