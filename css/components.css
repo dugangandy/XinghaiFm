@@ -253,6 +253,15 @@
   box-shadow:0 6px 16px -10px rgba(0,0,0,.85);
 }
 .card-fav .i{width:13px;height:13px}
+/* 已隐藏的专辑：打开「显示已隐藏」后混排在网格里，靠角标 + 压暗和普通专辑区分开 */
+.card.is-hidden .card-cover{opacity:.55;filter:saturate(.6)}
+.card-hidden{
+  position:absolute;left:8px;top:8px;z-index:3;
+  width:24px;height:24px;border-radius:50%;display:grid;place-items:center;
+  background:rgba(6,9,16,.52);border:1px solid rgba(255,255,255,.14);color:var(--txt-2);
+  backdrop-filter:blur(8px);
+}
+.card-hidden .i{width:13px;height:13px}
 
 .card-body{padding:8px 3px 0}
 /* 标题最多两行：短标题只占一行，但 min-height 一直留两行的高度，

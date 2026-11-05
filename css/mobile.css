@@ -120,6 +120,16 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .m-tabs-btn:active{transform:scale(.92);color:#fff}
   .m-tabs-add{color:var(--cyan);border-color:rgba(34,211,238,.4);background:rgba(34,211,238,.1)}
   .m-tabs-add .i{width:15px;height:15px}
+  /* 「已隐藏 N」：tab 行最右的切换按钮，右上角挂数量角标（0 个时不渲染） */
+  .m-tabs-hidden{position:relative;color:#bdf3ff;border-color:rgba(34,211,238,.4);background:rgba(34,211,238,.1)}
+  .m-tabs-hidden .i{width:15px;height:15px}
+  .m-tabs-hidden.on{color:#04070d;border-color:transparent;background:var(--grad)}
+  .m-tabs-badge{
+    position:absolute;top:-4px;right:-4px;min-width:14px;height:14px;padding:0 3px;
+    border-radius:99px;background:var(--grad);color:#04070d;font-style:normal;
+    font-size:9px;font-weight:700;line-height:14px;text-align:center;font-variant-numeric:tabular-nums;
+  }
+  .m-tabs-hidden.on .m-tabs-badge{background:#04070d;color:#bdf3ff}
 
   /* ── 快捷入口：原侧栏的整页入口，压成一行（图标 + 文案），有 3 个就三等分 ── */
   .m-quick{display:flex;gap:8px;margin:0 0 14px}

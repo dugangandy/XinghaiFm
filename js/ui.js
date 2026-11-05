@@ -908,10 +908,12 @@
       ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">'
       : '<div class="rings"><i></i><i></i><i></i></div><span class="card-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span>';
     const libAttr = foreign ? ' data-lib="' + esc(o.libId) + '"' : '';
-    return '<article class="card' + (a.fav ? ' fav' : '') + '" data-id="' + a.id + '"' + libAttr + ' draggable="' + (foreign ? 'false' : 'true') + '" style="' +
+    return '<article class="card' + (a.fav ? ' fav' : '') + (a.hidden ? ' is-hidden' : '') + '" data-id="' + a.id + '"' + libAttr + ' draggable="' + (foreign ? 'false' : 'true') + '" style="' +
       U.coverVars(a.seed) + '">' +
       '<div class="card-cover' + (a.cover ? ' has-photo' : '') + '">' +
         art +
+        /* 打开「显示已隐藏」后隐藏专辑是混排在网格里的，靠这个角标区分，否则和普通专辑一模一样 */
+        (a.hidden ? '<span class="card-hidden" title="已隐藏">' + icon('eye-off') + '</span>' : '') +
         (a.fav ? '<span class="card-fav" title="已收藏">' + icon('heart-fill') + '</span>' : '') +
         (foreign && o.libName ? '<span class="card-lib" title="所属资源库">' + esc(o.libName) + '</span>' : '') +
         '<button class="card-play" data-act="play-album" data-id="' + a.id + '"' + libAttr + ' title="播放全部">' + icon('play') + '</button>' +
@@ -992,6 +994,14 @@
     return (lib && lib.name) || L.rootName || '本地资源库';
   }
 
+  /* 已隐藏的专辑数：页头的「已隐藏 N」和手机 tab 行的角标共用一份口径 */
+  function hiddenAlbumCount() {
+    const all = L.albums();
+    let n = 0;
+    for (let i = 0; i < all.length; i++) if (all[i].hidden) n++;
+    return n;
+  }
+
   /* ── 手机端首页工具区：分类 tab 行 + 快捷入口 ── */
   /* 单行分类 tab：全部 → 各分类 →（选中时）编辑 → + 新建。横向滑动，不折行 */
   function mobileCatTabs(activeId) {
@@ -1012,9 +1022,17 @@
     const add = canEdit
       ? '<button class="m-tabs-btn m-tabs-add" data-act="edit-cat" title="新建分类">' + icon('plus') + '</button>'
       : '';
+    /* 已隐藏专辑的入口：手机上页头整行不渲染，只能放这条常驻的 tab 行里，
+       放在最右（编辑 / + 之后）并带数量角标，滚到哪儿都点得到 */
+    const hiddenN = hiddenAlbumCount();
+    const hiddenBtn = hiddenN
+      ? '<button class="m-tabs-btn m-tabs-hidden' + (state.showHidden ? ' on' : '') + '" data-act="toggle-hidden" title="' +
+        (state.showHidden ? '收起已隐藏的专辑' : '显示 ' + hiddenN + ' 个已隐藏专辑') + '">' +
+        icon('eye-off') + '<i class="m-tabs-badge">' + hiddenN + '</i></button>'
+      : '';
     return '<div class="m-tabs">' +
       '<div class="m-tabs-scroll" id="mTabsScroll">' + btns + '</div>' +
-      edit + add +
+      edit + add + hiddenBtn +
       '</div>';
   }
 
@@ -1040,7 +1058,7 @@
   function viewHome() {
     const all = L.allAlbums({ showHidden: state.showHidden });
     const wrap = U.el('div');
-    const hiddenCount = L.albums().filter(a => a.hidden).length;
+    const hiddenN = hiddenAlbumCount();
     const phone = isPhone();
 
     /* 手机首页不出头部那一行（库名 / 专辑数 / 大小）：这些统计挪到「资源库设置」里看，
@@ -1050,9 +1068,17 @@
       const s = L.stats();
       const stats = s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size) +
         (s.done ? ' · 已听完 ' + s.done + ' 集' : '');
+      /* 「已隐藏 N」放页头右侧（首屏可见），不再只在网格底部露一行。
+         这里不用 .head-actions：那个类在 <980px 会被丢掉，而 761~979px 没有手机 tab 行，
+         入口会整段消失。直接作为 .view-head 的第二个子元素，靠 space-between 自动靠右 */
+      const chip = hiddenN
+        ? '<button class="chip' + (state.showHidden ? ' on' : '') + '" data-act="toggle-hidden" title="' +
+          (state.showHidden ? '收起已隐藏的专辑' : '显示 ' + hiddenN + ' 个已隐藏专辑') + '">' +
+          icon('eye-off') + '已隐藏 <b>' + hiddenN + '</b>' + (state.showHidden ? ' · 显示中' : '') + '</button>'
+        : '';
       head = '<div class="view-head"><div>' +
         '<div class="page-title">全部专辑<span class="accent"> · </span><span style="font-size:14px;color:var(--dim);font-weight:500">' + esc(libLabel()) + '</span></div>' +
-        '<div class="page-sub">' + stats + '</div></div></div>';
+        '<div class="page-sub">' + stats + '</div></div>' + chip + '</div>';
     }
 
 
@@ -1081,8 +1107,8 @@
       }
     }
 
-    const hiddenLink = hiddenCount
-      ? '<div style="margin-top:22px;text-align:center"><button class="link-btn" data-act="toggle-hidden">' + (state.showHidden ? '隐藏 ' : '显示 ') + hiddenCount + ' 个已隐藏专辑</button></div>'
+    const hiddenLink = hiddenN
+      ? '<div style="margin-top:22px;text-align:center"><button class="link-btn" data-act="toggle-hidden">' + (state.showHidden ? '隐藏 ' : '显示 ') + hiddenN + ' 个已隐藏专辑</button></div>'
       : '';
 
     wrap.innerHTML = head +
