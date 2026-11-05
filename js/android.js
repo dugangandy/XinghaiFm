@@ -276,6 +276,12 @@
     onNativeVideo,
     get fullscreenOn() { return document.body.classList.contains('app-fs'); },
     openSettings: function () { try { NATIVE.openSettings(); } catch (e) {} },
+    /* 退出登录：清壳里的会话 cookie/token 后回原生登录页。
+       旧 APK 没这个桥方法（网页热更新、壳不更新），返回 false 让网页退回服务端登出 */
+    logout: function () {
+      if (typeof NATIVE.logout !== 'function') return false;
+      try { NATIVE.logout(); return true; } catch (e) { return false; }
+    },
     openDownloads: function () { try { NATIVE.openDownloads(); } catch (e) {} },
     base: function () { try { return NATIVE.baseUrl(); } catch (e) { return ''; } },
     version: function () { try { return NATIVE.version(); } catch (e) { return ''; } },

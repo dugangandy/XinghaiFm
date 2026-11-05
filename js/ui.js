@@ -4272,9 +4272,18 @@
     other.push({ label: '收听统计', icon: 'chart', onClick: function () { go('#/stats'); } });
     const ver = appVersion();
     other.push({ label: '关于', icon: 'headphones', rightText: ver ? 'v' + ver : '', onClick: openAbout });
-    /* 退出登录只对浏览器直连服务器有意义（与 syncMode() 的判定保持一致） */
-    if (!FM.fs.desktop && !FM.android && FM.fs.serverReached) {
-      other.push({ label: '退出登录', icon: 'logout', danger: true, onClick: function () { location.href = '/__auth/logout'; } });
+    /* 退出登录：安卓壳走原生桥（清会话回登录页），浏览器直连走服务端登出。
+       Electron 界面没有登录态；serverReached 只约束网页端，安卓离线时也要能登出 */
+    if (FM.android || (!FM.fs.desktop && FM.fs.serverReached)) {
+      other.push({
+        label: '退出登录', icon: 'logout', danger: true,
+        onClick: function () {
+          /* 旧 APK 没有 logout 桥：退回服务端登出，WebView 会显示登录页 */
+          if (!(FM.android && FM.android.logout && FM.android.logout())) {
+            location.href = '/__auth/logout';
+          }
+        }
+      });
     }
 
     const items = [];
@@ -4628,9 +4637,11 @@
     const s = L.stats();
     const lib = FM.fs.active();
     const v = appVersion();
-    const form = (FM.android && FM.android.native) ? '安卓 App'
-      : (FM.fs.desktop ? '桌面版'
-        : (FM.fs.server ? '网页版 · 直连服务器' : '网页版 · 本地目录'));
+    /* 手机上不显示「运行形态」：App / 移动网页一眼可辨，这行只在桌面端用来区分本地与远程 */
+    const form = isPhone() ? ''
+      : ((FM.android && FM.android.native) ? '安卓 App'
+        : (FM.fs.desktop ? '桌面版'
+          : (FM.fs.server ? '网页版 · 直连服务器' : '网页版 · 本地目录')));
     const libText = !lib ? '未选择'
       : (lib.name + (FM.fs.remote ? ' · 远程 ' + remoteHost() : ''));
     const body = U.el('div', { class: 'about' });
@@ -4641,7 +4652,7 @@
         (v ? '<span class="about-ver">v' + esc(v) + '</span>' : '') +
       '</div>' +
       '<div class="about-rows">' +
-        '<div class="about-row"><span>运行形态</span><b>' + esc(form) + '</b></div>' +
+        (form ? '<div class="about-row"><span>运行形态</span><b>' + esc(form) + '</b></div>' : '') +
         '<div class="about-row"><span>资源库</span><b>' + esc(libText) + '</b></div>' +
         '<div class="about-row"><span>内容</span><b>' + s.albums + ' 个专辑 · ' + s.tracks + ' 集 · ' + fmtS(s.size) + '</b></div>' +
       '</div>' +

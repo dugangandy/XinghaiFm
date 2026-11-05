@@ -555,15 +555,20 @@ class MainActivity : Activity() {
                     p.edit().remove("token").remove("uid").apply()
                     reloginSilently(b) { mountWeb() }
                 }
-                .setNeutralButton("退出登录") { _, _ ->
-                    CookieManager.getInstance().removeAllCookies(null)
-                    CookieManager.getInstance().flush()
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("token").apply()
-                    startActivity(Intent(this@MainActivity, LoginActivity::class.java))
-                    finish()
-                }
                 .setNegativeButton("取消", null)
                 .show()
+        }
+    }
+
+    /* 退出登录：原先是「服务器设置」弹窗里的中立按钮，现由网页设置菜单通过 JS 桥触发。
+       清掉会话后回原生登录页；账号密码按「记住密码」的原有口径保留 */
+    private fun logout() {
+        runOnUiThread {
+            CookieManager.getInstance().removeAllCookies(null)
+            CookieManager.getInstance().flush()
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("token").apply()
+            startActivity(Intent(this@MainActivity, LoginActivity::class.java))
+            finish()
         }
     }
 
@@ -798,6 +803,10 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun openSettings() = showServerDialog()
+
+        /* 网页设置菜单里的「退出登录」；服务器设置弹窗里已不再放这个按钮 */
+        @JavascriptInterface
+        fun logout() = this@MainActivity.logout()
 
         /* 侧栏「下载管理」里的「管理」按钮：打开原生下载页（删除/重试在那儿） */
         @JavascriptInterface
