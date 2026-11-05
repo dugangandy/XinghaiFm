@@ -812,7 +812,8 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .cover-edit-hint{margin:0;font-size:11px;color:var(--dim-2);line-height:1.6}
 
 /* ── 专辑管理（设置 > 专辑管理）：给没有封面的专辑批量补图 ── */
-.am-page{display:flex;flex-direction:column;gap:14px;padding:18px 0 0}
+/* 底部留白给吸底操作条：不留的话滚到底时最后一行的候选会被压住一截 */
+.am-page{display:flex;flex-direction:column;gap:14px;padding:18px 0 26px}
 .am-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
 .am-head-txt{flex:1;min-width:0}
 .am-title{margin:0;font-size:25px;font-weight:700;letter-spacing:-.01em}

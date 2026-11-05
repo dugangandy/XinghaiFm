@@ -3173,8 +3173,9 @@
         });
       }
     });
+    const inNext = new Set(next.map(function (r) { return r.albumId; }));
     job.rows.forEach(function (r) {
-      if (r.saved && !next.some(function (x) { return x.albumId === r.albumId; })) next.push(r);
+      if (r.saved && !inNext.has(r.albumId)) { next.push(r); inNext.add(r.albumId); }
     });
     job.rows = next;
     if (job.done > job.rows.length) job.done = job.rows.length;
@@ -3459,14 +3460,24 @@
       syncCoverJob(coverJob);
     }
     const job = coverJob;
-    /* 换页 / 换库时就地取消；同一个库重绘（保存后刷新）要继续跑 */
+    /* 换页 / 换库时就地取消；同一个库重绘（保存后刷新）要继续跑。
+       顺手把 running 和「搜索中」行复位：worker 要等当前这张搜完才退出，
+       不先复位的话切回来会看到按钮还写着「停止」、行一直转圈 */
     albumViewTeardown = function () {
       if (!coverJob) return;
-      if (state.view !== 'albumManage' || coverJob.libId !== (FM.fs.activeId || '')) coverJob.cancel = true;
+      if (state.view !== 'albumManage' || coverJob.libId !== (FM.fs.activeId || '')) {
+        coverJob.cancel = true;
+        coverJob.running = false;
+        coverJob.rows.forEach(function (r) { if (r.status === 'searching') r.status = 'pending'; });
+      }
     };
 
     const c = amCounts(job);
     const missing = coverAlbumList().filter(function (a) { return !a.cover; }).length;
+    /* 没有待抓取的行（都已出候选/未找到）就把主按钮置灰，免得点了只弹一句「没有待抓取」 */
+    const todoN = job.rows.filter(function (r) {
+      return !r.saved && (r.status === 'pending' || r.status === 'failed');
+    }).length;
     const head =
       '<div class="am-head">' +
         '<div class="am-head-txt">' +
@@ -3476,7 +3487,7 @@
         '</div>' +
         '<button class="btn ' + (job.running ? 'btn-ghost am-stop' : 'btn-primary') + '"' +
           ' data-act="' + (job.running ? 'cover-stop' : 'cover-fetch') + '"' +
-          ((missing || job.running) ? '' : ' disabled') + '>' +
+          ((todoN || job.running) ? '' : ' disabled') + '>' +
           icon(job.running ? 'close' : 'wand') + (job.running ? '停止' : '一键抓取') + '</button>' +
       '</div>';
 
