@@ -24,6 +24,8 @@
   /* 批量补封面的任务状态：只在本次会话内有效，不落盘。
      rows 以专辑 id 为键（渲染时按 albumId 合并），离开页面再回来还能看到上次的抓取结果 */
   let coverJob = null;
+  let amListScroll = 0;           // 专辑管理列表内部滚动位置（保存 / 停止后重绘别跳回顶部）
+  let amScrollPage = -1;          // 上面那个滚动位置属于第几页：翻页后要回顶部
 
   const CAT_COLORS = ['#22d3ee', '#a855f7', '#f472b6', '#34d399', '#fbbf24', '#ff8a65', '#60a5fa', '#c084fc'];
 
@@ -871,6 +873,8 @@
        否则离开后仍会后台查库、写已卸载节点，反复进出还会叠加多个定时器 */
     if (statsViewTeardown) { try { statsViewTeardown(); } catch (e) {} statsViewTeardown = null; }
     if (albumViewTeardown) { try { albumViewTeardown(); } catch (e) {} albumViewTeardown = null; }
+    /* 大图预览挂在 body 上，换页 / 刷新时必须手动收掉 */
+    closeCoverViewer();
     v.innerHTML = '';
     gridTail = null;
     trackTail = null;
@@ -878,6 +882,8 @@
     /* 批量下载/删除页：让页面铺满（没有播放条时不留底部空档） */
     if (!L.albums().length && state.view !== 'stats') { v.classList.remove('dl-view'); renderWelcome(); return; }
     v.classList.toggle('dl-view', state.view === 'dlMore' || state.view === 'dlRemove');
+    /* 专辑管理：页面撑满、列表自己滚，底部操作条不浮在内容上 */
+    v.classList.toggle('am-view', state.view === 'albumManage' && !state.q);
     let node;
     if (state.q) node = viewSearch(state.q);
     else if (state.view === 'album') node = viewAlbum(state.albumId);
@@ -2753,6 +2759,8 @@
         case 'cover-fetch': startCoverFetch(); break;
         case 'cover-stop': stopCoverFetch(); break;
         case 'cover-pick': pickCoverCand(id, Number(actEl.dataset.c)); break;
+        case 'cover-zoom': openCoverViewer(id, Number(actEl.dataset.c)); break;
+        case 'cover-page': setCoverPage(Number(actEl.dataset.p)); break;
         case 'cover-clear': clearCoverPicks(); break;
         case 'cover-save': saveCoverPicks(); break;
         case 'tab-cat': if (id) go('#/cat/' + id); else go('#/'); break;
@@ -3144,17 +3152,34 @@
   const AUTO_COVER_SCORE = 0.9;    /* 自动替换阈值：宁缺勿滥，只信几乎完全同名的喜马拉雅结果 */
   const COVER_WORKERS = 3;         /* 并发数：喜马拉雅对高频请求敏感，3 路够快也不容易被拦 */
   const COVER_PICK_MAX = 6;        /* 每行最多摆几张候选 */
+  const COVER_PAGE_SIZE = 20;      /* 每页 20 条；一键抓取只处理当前页，避免一口气打几百个请求 */
 
   function coverAlbumList() {
     return L.allAlbums({ showHidden: true }).slice();
   }
 
   function newCoverJob() {
-    return { libId: FM.fs.activeId || '', rows: [], running: false, cancel: false, done: 0, total: 0, saveText: '' };
+    return { libId: FM.fs.activeId || '', rows: [], page: 0, running: false, cancel: false, done: 0, total: 0, saveText: '' };
+  }
+
+  function coverPageCount(job) {
+    return Math.max(1, Math.ceil(job.rows.length / COVER_PAGE_SIZE));
+  }
+
+  /* 当前页要渲染 / 要抓取的那 20 条 */
+  function pagedRows(job) {
+    const start = job.page * COVER_PAGE_SIZE;
+    return job.rows.slice(start, start + COVER_PAGE_SIZE);
+  }
+
+  function clampCoverPage(job) {
+    const max = coverPageCount(job) - 1;
+    if (job.page > max) job.page = max;
+    if (job.page < 0) job.page = 0;
   }
 
   /* 把最新专辑清单并进任务：新出现的缺封面专辑补成 pending，
-     已经被别处补过封面的移出（已保存的行除外，留着让用户看到结果） */
+     已经有封面的（包括刚抓完 / 刚保存的）一律移出列表 —— 页面只显示缺封面的专辑 */
   function syncCoverJob(job) {
     const byId = new Map(job.rows.map(function (r) { return [r.albumId, r]; }));
     const next = [];
@@ -3173,10 +3198,6 @@
         });
       }
     });
-    const inNext = new Set(next.map(function (r) { return r.albumId; }));
-    job.rows.forEach(function (r) {
-      if (r.saved && !inNext.has(r.albumId)) { next.push(r); inNext.add(r.albumId); }
-    });
     job.rows = next;
     if (job.done > job.rows.length) job.done = job.rows.length;
     return job;
@@ -3185,7 +3206,6 @@
   function amCounts(job) {
     const c = { auto: 0, pick: 0, none: 0, fail: 0, picked: 0 };
     job.rows.forEach(function (r) {
-      if (r.saved) { c.auto++; return; }
       if (r.status === 'auto') c.auto++;
       else if (r.status === 'pick') { c.pick++; if (r.picked >= 0) c.picked++; }
       else if (r.status === 'none') c.none++;
@@ -3202,7 +3222,6 @@
   }
 
   function coverBadge(r) {
-    if (r.saved) return '<span class="am-badge ok">' + icon('check') + '已保存</span>';
     if (r.status === 'auto') return '<span class="am-badge ok">已自动替换</span>';
     if (r.status === 'searching') return '<span class="am-badge busy"><i class="am-dot"></i>搜索中…</span>';
     if (r.status === 'pick') return '<span class="am-badge warn">' + (r.picked >= 0 ? '已选择' : '待选择') + '</span>';
@@ -3213,7 +3232,6 @@
 
   function coverRowSub(r) {
     if (r.status === 'auto' && r.score) return '相似度 ' + r.score + ' · 已写入 .fm-covers/';
-    if (r.saved) return '已写入 .fm-covers/';
     if (r.status === 'none') return '没搜到相似封面，可稍后重试';
     if (r.status === 'failed') return r.error || '抓取失败，可重试';
     if (r.status === 'searching') return '正在搜索候选封面…';
@@ -3222,7 +3240,9 @@
 
   function coverRowHtml(r) {
     const a = L.album(r.albumId);
-    const url = (a && a.cover) || r.preview || '';
+    /* 预览优先：点了候选就先把行缩略图换成那张，用户能立刻确认选的是哪张；
+       没选或取消时 preview 为空，再回退到已有封面 / 占位 */
+    const url = r.preview || (a && a.cover) || '';
     const thumb = url
       ? '<div class="am-thumb"><img src="' + esc(url) + '" alt="" referrerpolicy="no-referrer" loading="lazy"></div>'
       : '<div class="am-thumb empty">' + icon('image') + '</div>';
@@ -3232,15 +3252,20 @@
     } else if (r.status === 'pick' && r.cands.length) {
       extra = '<div class="am-cands">' + r.cands.map(function (c, i) {
         const src = c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马';
-        return '<button class="am-cand' + (r.picked === i ? ' on' : '') + '"' +
+        /* 卡片本身点一下是选中；右下角的放大镜单独打开大图，用来确认这张到底合不合适 */
+        return '<div class="am-cand' + (r.picked === i ? ' on' : '') + '"' +
           ' data-act="cover-pick" data-id="' + esc(r.albumId) + '" data-c="' + i + '"' +
-          ' title="' + esc(c.title || '') + '">' +
-          '<span class="am-cand-pic"><img src="' + esc(c.url) + '" alt="" referrerpolicy="no-referrer" loading="lazy"><em>' + src + '</em></span>' +
+          ' role="button" tabindex="0" title="' + esc(c.title || '') + '">' +
+          '<span class="am-cand-pic">' +
+            '<img src="' + esc(c.url) + '" alt="" referrerpolicy="no-referrer" loading="lazy"><em>' + src + '</em>' +
+            '<button class="am-cand-zoom" data-act="cover-zoom" data-id="' + esc(r.albumId) +
+              '" data-c="' + i + '" title="放大查看" aria-label="放大查看">' + icon('search') + '</button>' +
+          '</span>' +
           (c.score ? '<span class="am-cand-score">' + Number(c.score).toFixed(2) + '</span>' : '') +
-          '</button>';
+          '</div>';
       }).join('') + '</div>';
     }
-    return '<div class="am-row' + (r.saved ? ' saved' : '') + '" data-row="' + esc(r.albumId) + '" data-status="' + r.status + '">' +
+    return '<div class="am-row" data-row="' + esc(r.albumId) + '" data-status="' + r.status + '">' +
       thumb +
       '<div class="am-info"><b>' + esc(r.title) + '</b><span>' + esc(coverRowSub(r)) + '</span></div>' +
       coverBadge(r) + extra + '</div>';
@@ -3267,7 +3292,7 @@
       if (el) el.textContent = String(v);
     };
     set('auto', c.auto); set('pick', c.pick); set('none', c.none); set('fail', c.fail); set('picked', c.picked);
-    const total = job.rows.length || 1;
+    const total = job.total || 1;
     const fill = page.querySelector('[data-am="fill"]');
     if (fill) fill.style.width = Math.round(Math.min(1, job.done / total) * 100) + '%';
     const txt = page.querySelector('[data-am="text"]');
@@ -3349,14 +3374,15 @@
   function startCoverFetch() {
     const job = coverJob;
     if (!job || job.running) return;
-    const todo = job.rows.filter(function (r) { return !r.saved && (r.status === 'pending' || r.status === 'failed'); });
-    if (!todo.length) { toast('没有待抓取的专辑了'); return; }
+    /* 只抓当前页：几百张一起打会把喜马拉雅惹毛，用户也等不起 */
+    const todo = pagedRows(job).filter(function (r) { return r.status === 'pending' || r.status === 'failed'; });
+    if (!todo.length) { toast('本页没有待抓取的专辑'); return; }
     job.running = true;
     job.cancel = false;
     job.done = 0;
     job.total = todo.length;
     job.saveText = '';
-    todo.forEach(function (r) { r.status = 'pending'; r.error = ''; r.cands = []; r.picked = -1; });
+    todo.forEach(function (r) { r.status = 'pending'; r.error = ''; r.cands = []; r.picked = -1; r.preview = ''; });
     renderMain({ quiet: true });
     runCoverWorkers(job, todo).catch(function (e) {
       console.warn('[cover] 批量抓取中断', e);
@@ -3367,6 +3393,20 @@
       renderAll({ quiet: true });
       toast('抓取中断，可再点一次重试', 'warn');
     });
+  }
+
+  function setCoverPage(p) {
+    const job = coverJob;
+    if (!job || job.running) return;
+    const max = coverPageCount(job) - 1;
+    const next = Math.min(Math.max(0, Number(p) || 0), max);
+    if (next === job.page) return;
+    job.page = next;
+    /* 每页的抓取是独立批次：翻页后进度从「尚未开始」重新计 */
+    job.done = 0;
+    job.total = 0;
+    job.saveText = '';
+    renderMain({ quiet: true });
   }
 
   function stopCoverFetch() {
@@ -3386,6 +3426,8 @@
     const row = job.rows.find(function (r) { return r.albumId === albumId; });
     if (!row || row.saved || row.status !== 'pick' || !row.cands[idx]) return;
     row.picked = row.picked === idx ? -1 : idx;
+    /* 同步行缩略图：选中就预览这张，取消就退回占位/原封面 */
+    row.preview = row.picked >= 0 ? (row.cands[row.picked].url || '') : '';
     paintCoverRow(row);
     paintCoverStat();
   }
@@ -3393,8 +3435,84 @@
   function clearCoverPicks() {
     const job = coverJob;
     if (!job) return;
-    job.rows.forEach(function (r) { if (!r.saved) r.picked = -1; });
+    job.rows.forEach(function (r) {
+      if (r.saved) return;
+      r.picked = -1;
+      r.preview = '';
+    });
     renderMain({ quiet: true });
+  }
+
+  /* ── 候选图放大：72px 缩略图看不出画质和字，点右下角放大镜看 600×600 原图 ──
+     挂到 body 上（不在 #view 里），所以换页时必须显式关掉，否则会留在屏幕上。
+     ← → 换同一行的下一张，Esc / 点空白处关闭。 */
+  let coverViewerEl = null;
+  let coverViewerKey = null;
+
+  function closeCoverViewer() {
+    if (coverViewerKey) { document.removeEventListener('keydown', coverViewerKey); coverViewerKey = null; }
+    if (coverViewerEl) { coverViewerEl.remove(); coverViewerEl = null; }
+  }
+
+  function openCoverViewer(albumId, idx) {
+    const job = coverJob;
+    const row = job && job.rows.find(function (r) { return r.albumId === albumId; });
+    if (!row || !row.cands || !row.cands.length) return;
+    closeCoverViewer();
+    const cands = row.cands;
+    let cur = Math.max(0, Math.min(cands.length - 1, Number(idx) || 0));
+
+    const mask = U.el('div', { class: 'cv-mask' });
+    mask.innerHTML =
+      '<div class="cv-box">' +
+        '<button class="cv-x" data-cv="close" aria-label="关闭">' + icon('close') + '</button>' +
+        '<img class="cv-img" alt="" referrerpolicy="no-referrer">' +
+        '<div class="cv-foot">' +
+          '<span class="cv-title"></span><span class="cv-src"></span><span class="cv-spare"></span>' +
+          '<button class="btn btn-ghost" data-cv="prev">上一张</button>' +
+          '<button class="btn btn-ghost" data-cv="next">下一张</button>' +
+          '<button class="btn btn-primary" data-cv="close">关闭</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(mask);
+    coverViewerEl = mask;
+
+    const img = mask.querySelector('.cv-img');
+    const titleEl = mask.querySelector('.cv-title');
+    const srcEl = mask.querySelector('.cv-src');
+    const prevBtn = mask.querySelector('[data-cv="prev"]');
+    const nextBtn = mask.querySelector('[data-cv="next"]');
+
+    function paint() {
+      const c = cands[cur] || {};
+      img.src = c.url || '';
+      titleEl.textContent = c.title || row.title || '';
+      srcEl.textContent = (c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马') +
+        (c.score ? ' · ' + Number(c.score).toFixed(2) : '');
+      prevBtn.disabled = cur <= 0;
+      nextBtn.disabled = cur >= cands.length - 1;
+      mask.querySelector('.cv-box').classList.toggle('single', cands.length <= 1);
+    }
+    paint();
+
+    mask.addEventListener('click', function (e) {
+      const hit = e.target.closest('[data-cv]');
+      if (hit) {
+        const act = hit.dataset.cv;
+        if (act === 'prev' && cur > 0) { cur--; paint(); }
+        else if (act === 'next' && cur < cands.length - 1) { cur++; paint(); }
+        else if (act === 'close') closeCoverViewer();
+        return;
+      }
+      if (e.target === mask) closeCoverViewer();
+    });
+
+    coverViewerKey = function (e) {
+      if (e.key === 'Escape') { e.preventDefault(); closeCoverViewer(); }
+      else if (e.key === 'ArrowLeft' && cur > 0) { e.preventDefault(); cur--; paint(); }
+      else if (e.key === 'ArrowRight' && cur < cands.length - 1) { e.preventDefault(); cur++; paint(); }
+    };
+    document.addEventListener('keydown', coverViewerKey);
   }
 
   async function saveCoverPicks() {
@@ -3426,7 +3544,6 @@
     const failedIds = new Set((res.failed || []).map(function (f) { return f.album && f.album.id; }));
     items.forEach(function (it) {
       if (failedIds.has(it.album.id)) { it.row.error = '保存失败，可重试'; return; }
-      it.row.saved = true;
       it.row.status = 'auto';
       it.row.picked = -1;
     });
@@ -3453,17 +3570,25 @@
       return wrap;
     }
 
-    if (!coverJob || coverJob.libId !== (FM.fs.activeId || '')) coverJob = newCoverJob();
+    if (!coverJob || coverJob.libId !== (FM.fs.activeId || '')) {
+      coverJob = newCoverJob();
+      amListScroll = 0;
+      amScrollPage = -1;
+    }
     /* 上一次被中断（切页 / 停止）时可能有行停在「搜索中」，这里复位，否则它会一直转圈 */
     if (!coverJob.running) {
       coverJob.rows.forEach(function (r) { if (r.status === 'searching') r.status = 'pending'; });
-      syncCoverJob(coverJob);
+      syncCoverJob(coverJob);      /* 已经补上封面的专辑在这里移出列表 */
+      clampCoverPage(coverJob);    /* 行数变少后页码可能越界 */
     }
     const job = coverJob;
     /* 换页 / 换库时就地取消；同一个库重绘（保存后刷新）要继续跑。
        顺手把 running 和「搜索中」行复位：worker 要等当前这张搜完才退出，
        不先复位的话切回来会看到按钮还写着「停止」、行一直转圈 */
     albumViewTeardown = function () {
+      /* 记下列表内部滚动位置：保存 / 停止后重绘时还原，别让用户重新找刚才那一行 */
+      const sc = refs.view.querySelector('.am-list');
+      if (sc) amListScroll = sc.scrollTop;
       if (!coverJob) return;
       if (state.view !== 'albumManage' || coverJob.libId !== (FM.fs.activeId || '')) {
         coverJob.cancel = true;
@@ -3473,22 +3598,33 @@
     };
 
     const c = amCounts(job);
-    const missing = coverAlbumList().filter(function (a) { return !a.cover; }).length;
-    /* 没有待抓取的行（都已出候选/未找到）就把主按钮置灰，免得点了只弹一句「没有待抓取」 */
-    const todoN = job.rows.filter(function (r) {
-      return !r.saved && (r.status === 'pending' || r.status === 'failed');
+    const pageRows = pagedRows(job);
+    const pages = coverPageCount(job);
+    /* 本页没有待抓取的行（都已出候选/未找到）就把主按钮置灰，免得点了只弹一句「本页没有待抓取」 */
+    const todoN = pageRows.filter(function (r) {
+      return r.status === 'pending' || r.status === 'failed';
     }).length;
+    const pager = pages > 1
+      ? '<span class="am-pager">' +
+          '<button class="am-pager-btn prev" data-act="cover-page" data-p="' + (job.page - 1) + '"' +
+            ((job.page <= 0 || job.running) ? ' disabled' : '') + ' aria-label="上一页">' + icon('chevron') + '</button>' +
+          '<b>' + (job.page + 1) + '</b><i>/</i>' + pages +
+          '<button class="am-pager-btn" data-act="cover-page" data-p="' + (job.page + 1) + '"' +
+            ((job.page >= pages - 1 || job.running) ? ' disabled' : '') + ' aria-label="下一页">' + icon('chevron') + '</button>' +
+        '</span>'
+      : '';
     const head =
       '<div class="am-head">' +
         '<div class="am-head-txt">' +
           '<h1 class="am-title">专辑管理</h1>' +
-          '<p class="am-desc">为还没有封面的专辑补图：喜马拉雅相似度 ≥ ' + AUTO_COVER_SCORE +
-            ' 的自动写入，其余挑一张再保存；未选中的不会写入。</p>' +
+          '<p class="am-desc">这里只列还没有封面的专辑，每页 ' + COVER_PAGE_SIZE +
+            ' 条。一键抓取只处理当前页：喜马拉雅相似度 ≥ ' + AUTO_COVER_SCORE +
+            ' 的自动写入，其余挑一张再保存，未选中的不会写入。</p>' +
         '</div>' +
         '<button class="btn ' + (job.running ? 'btn-ghost am-stop' : 'btn-primary') + '"' +
           ' data-act="' + (job.running ? 'cover-stop' : 'cover-fetch') + '"' +
           ((todoN || job.running) ? '' : ' disabled') + '>' +
-          icon(job.running ? 'close' : 'wand') + (job.running ? '停止' : '一键抓取') + '</button>' +
+          icon(job.running ? 'close' : 'wand') + (job.running ? '停止' : '一键抓取本页') + '</button>' +
       '</div>';
 
     if (!job.rows.length) {
@@ -3500,14 +3636,15 @@
     const stat =
       '<div class="am-stat">' +
         '<div class="am-nums">' +
-          '<span><b data-am="total">' + missing + '</b> 张缺封面</span>' +
+          '<span><b data-am="total">' + job.rows.length + '</b> 张缺封面</span>' +
           '<span class="ok">已替换 <b data-am="auto">' + c.auto + '</b></span>' +
           '<span class="warn">待选 <b data-am="pick">' + c.pick + '</b></span>' +
           '<span class="mute">未找到 <b data-am="none">' + c.none + '</b></span>' +
           (c.fail ? '<span class="bad">失败 <b data-am="fail">' + c.fail + '</b></span>' : '') +
+          pager +
         '</div>' +
         '<div class="am-track"><i data-am="fill" style="width:' +
-          Math.round(Math.min(1, job.done / (job.rows.length || 1)) * 100) + '%"></i></div>' +
+          Math.round(Math.min(1, job.done / (job.total || 1)) * 100) + '%"></i></div>' +
         '<div class="am-prog" data-am="text">' + esc(coverProgressText(job)) + '</div>' +
       '</div>';
 
@@ -3520,7 +3657,13 @@
           ((c.picked && !job.running) ? '' : ' disabled') + '>保存 ' + c.picked + ' 张封面</button>' +
       '</div>';
 
-    wrap.innerHTML = head + stat + '<div class="am-list">' + job.rows.map(coverRowHtml).join('') + '</div>' + bar;
+    wrap.innerHTML = head + stat + '<div class="am-list">' + pageRows.map(coverRowHtml).join('') + '</div>' + bar;
+    const listEl = wrap.querySelector('.am-list');
+    if (listEl) {
+      /* 翻页时回到顶部；同一页重绘（保存 / 停止）才还原滚动位置 */
+      if (amScrollPage !== job.page) { amListScroll = 0; amScrollPage = job.page; }
+      if (amListScroll) listEl.scrollTop = amListScroll;
+    }
     return wrap;
   }
 
