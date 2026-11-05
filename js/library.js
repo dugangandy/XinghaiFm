@@ -326,6 +326,13 @@
     return hit;
   }
 
+  /* 分组 → 专辑 id：扫描对账和构建专辑两处都得用同一套口径，
+     否则对账算出来的「本轮还活着的专辑」跟实际写进 album_meta 的键对不上 */
+  function albumIdOf(group, rootName) {
+    const dirName = group.dirName || (group.key === '__root__' ? (rootName || '未分类单集') : group.key);
+    return U.uid('a', group.key === '__root__' ? dirName : group.key);
+  }
+
   /* ── 构建 ── */
   function build(scan) {
     ensureMetaKeys();
@@ -344,6 +351,11 @@
       : scan.dirMode;
     setDirMode(scanMode);
     const groups = groupFiles(scan.files, dirMode);
+    /* 本轮扫描真正存在的专辑元数据键。album_meta 是跨轮累积的，目录删掉后
+       旧行还在（孤儿行），对账时不能再让它们替已删目录的分类「续命」 */
+    const liveMetaKeys = new Set(groups.map(function (g) {
+      return metaKey(albumIdOf(g, scan.rootName));
+    }));
 
     const metas = db.albumMeta();
     const durs = db.durations();
@@ -375,21 +387,24 @@
     });
     let cats = ensureCats();
     cats = ensureDirCats(catDirs, cats);
-    /* 清理残留的目录分类：平铺模式清全部 d；二级/自动只保留仍对应当前目录的 d。
-       只增不删会留下点进去空空的分类；清理要拿到含 d 的原始列表才能算出 catsDeleted。
-       普通网页用户没有写权限，跳过清理（仅靠 cats() 展示层隐藏），避免 403。 */
-    if (!(FM.fs.serverReached && !FM.fs.isAdmin)) {
+    /* 按本轮扫描结果对账清理残留目录分类：平铺模式清全部 d；二级/自动只留下仍对应
+       当前目录的 d。只增不删会留下点进去空空的分类；清理要拿到含 d 的原始列表才能算出
+       catsDeleted。普通网页用户没有写权限，跳过清理（仅靠 cats() 展示层隐藏），避免 403。
+       扫描结果为空（掉盘 / 扫描失败 / 空库）时不做对账：那是「这一轮没读到」，
+       不是「那些目录都删了」，否则会把分类连引用一起抹掉 */
+    if (groups.length && !(FM.fs.serverReached && !FM.fs.isAdmin)) {
       const keepDir = new Set();
       if (dirGroupMode) {
         const drop = droppedCats();
         catDirs.forEach(function (name) { if (drop.indexOf(name) < 0) keepDir.add(dirCatId(name)); });
       }
-      /* 目录模式下，仍被专辑引用的分类先不删：扫描偶尔漏读某个目录（NAS/移动硬盘掉线）时，
-         不能把它的分类当残留清掉，等目录恢复却空了 */
+      /* 仍被本轮存在的专辑引用的分类先不删：扫描偶尔漏读某个目录（NAS/移动硬盘掉线）时，
+         不能把它的分类当残留清掉。只认 liveMetaKeys —— 已消失专辑的孤儿引用不再有保护力，
+         否则目录删了分类清不掉，引用又被 pullMeta 拉回来，永远留着 */
       const refIds = new Set();
       if (dirGroupMode) {
         Object.keys(metas).forEach(function (k) {
-          if (k.indexOf(rootKey + '|') !== 0) return;
+          if (!liveMetaKeys.has(k)) return;
           const m = metas[k];
           if (m && Array.isArray(m.cats)) m.cats.forEach(function (id) { refIds.add(id); });
         });
@@ -407,7 +422,8 @@
         cats = cats.filter(function (c) { return !staleSet.has(c.id); });
         db.setCatsFor(libId, cats);
         db.touch('cats:' + libId);
-        /* 专辑对这些已删分类的引用一并清掉，避免 albumMeta 留孤儿（只动真正引用到的行） */
+        /* 专辑对这些已删分类的引用一并清掉（含已消失专辑的孤儿行），
+           免得 pullMeta 把无效引用灌回来，继续给分类续命 */
         Object.keys(metas).forEach(function (k) {
           if (k.indexOf(rootKey + '|') !== 0) return;
           const m = metas[k];
@@ -415,6 +431,7 @@
           const kept = m.cats.filter(function (id) { return !staleSet.has(id); });
           if (kept.length !== m.cats.length) { m.cats = kept; touchedMeta[k] = m; }
         });
+        /* 分类本身要落库删行：本地删了但 upsert 不会删行，下次 pullMeta 会把残留又灌回来 */
         pushMeta({ cats: cats, catsDeleted: staleIds });
       }
     }
@@ -432,7 +449,7 @@
       const dirName = group.dirName || (group.key === '__root__' ? (scan.rootName || '未分类单集') : group.key);
       /* 专辑 id：平铺库沿用「目录名哈希」（与旧版完全一致，存量整理数据不受影响），
          两级库用「分类/专辑」相对路径哈希，不同分类下的同名专辑不会撞在一起。 */
-      const albumId = U.uid('a', group.key === '__root__' ? dirName : group.key);
+      const albumId = albumIdOf(group, scan.rootName);
       /* 二级目录 / 自动检测：这一组挂在哪个目录分类下；用户删掉过的分类不再自动挂回去 */
       const dirCat = (dirGroupMode && group.cat && dropped.indexOf(group.cat) < 0) ? dirCatId(group.cat) : '';
       const autoForAlbum = function () {
