@@ -244,8 +244,12 @@
     return [];
   }
 
-  /* 失败时返回 { ok:false, reason }：界面要把原因说出来，否则只会看到「保存失败」 */
-  async function save(album, payload) {
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  /* ── 写盘（不重读索引）──
+     批量补封面时不能每张都 load()：网页端每次 load() 都要为全部封面重新取签名 URL，
+     几十张就会退化成 O(n²)。这里只管把一张图落盘，由调用方决定什么时候刷新索引。 */
+  async function writeCover(album, payload) {
     const dirName = album && (album.dirName || album.key);
     if (!dirName || !payload) return { ok: false, reason: '缺少专辑目录或图片' };
     /* 先记版本：保存成功的 fm:covers 事件会立刻 apply()，得让它用带版本的新 URL；
@@ -257,21 +261,67 @@
         const entry = await window.fmNative.saveCover(dirName, payload);
         if (!entry) return { ok: false, reason: '本地写入失败' };
       } catch (e) { console.warn('[covers] 保存失败', e); return { ok: false, reason: '本地写入异常' }; }
-    } else if (FM.fs.server) {
+      return { ok: true };
+    }
+    if (!FM.fs.server) return { ok: false, reason: '当前模式不支持' };
+    /* 网页端服务端有写接口限流（同 IP 每秒 10 次）：批量写入撞上 429 时退避一次再试 */
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const r = await FM.fs.apiFetch('/api/cover', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ dirName: dirName, payload: payload })
         });
-        if (!r || !r.ok) return { ok: false, reason: '服务端返回 ' + (r ? r.status : '无响应') + '（服务端可能是旧版本，重启 serve.js / 更新 APK）' };
+        if (r && r.ok) return { ok: true };
+        if (r && r.status === 429 && attempt === 0) { await sleep(400); continue; }
+        return { ok: false, reason: '服务端返回 ' + (r ? r.status : '无响应') + '（服务端可能是旧版本，重启 serve.js / 更新 APK）' };
       } catch (e) { console.warn('[covers] 保存失败', e); return { ok: false, reason: '服务端请求失败' }; }
-    } else {
-      return { ok: false, reason: '当前模式不支持' };
     }
+    return { ok: false, reason: '服务端限流，请稍后重试' };
+  }
+
+  /* 失败时返回 { ok:false, reason }：界面要把原因说出来，否则只会看到「保存失败」 */
+  async function save(album, payload) {
+    const res = await writeCover(album, payload);
+    if (!res.ok) return res;
     await load();
     apply();
     return { ok: true };
+  }
+
+  /* 只写盘、不刷新索引：批量抓取时逐张自动写入，最后统一 reload() */
+  async function saveOne(album, payload) {
+    return writeCover(album, payload);
+  }
+
+  /* 批量写入：items = [{ album, payload }]，顺序执行（避免把服务端限流打满），
+     结束只 load + apply 一次；单张失败不影响其余条目。 */
+  let batchDepth = 0;
+  function beginBatch() { batchDepth++; }
+  function endBatch() { if (batchDepth > 0) batchDepth--; }
+
+  async function saveMany(items, onProgress) {
+    const list = Array.isArray(items) ? items : [];
+    let ok = 0;
+    const failed = [];
+    beginBatch();
+    try {
+      for (let i = 0; i < list.length; i++) {
+        const it = list[i] || {};
+        const res = await writeCover(it.album, it.payload);
+        if (res.ok) ok++; else failed.push({ album: it.album, reason: res.reason });
+        if (FM.fs.server) await sleep(120);       /* 错开限流窗口 */
+        if (onProgress) { try { onProgress(ok, failed.length, i + 1, list.length); } catch (e) {} }
+      }
+    } finally {
+      endBatch();
+    }
+    if (ok) { await load(); apply(); }
+    return { ok: ok, failed: failed };
+  }
+
+  function reload() {
+    return load().then(function (n) { apply(); return n; });
   }
 
   async function remove(album) {
@@ -297,9 +347,11 @@
   }
 
   FM.covers = {
-    load, apply, of, search, save, remove,
+    load, apply, of, search, save, remove, reload, saveOne, saveMany, beginBatch, endBatch,
     get ready() { return loaded; },
     get count() { return index.length; },
-    get searchError() { return lastError; }
+    get searchError() { return lastError; },
+    /* 批量写入期间为 true：桌面端每张封面都会推 fm:covers 事件，回调里据此跳过整页刷新 */
+    get batching() { return batchDepth > 0; }
   };
 })(window.FM);

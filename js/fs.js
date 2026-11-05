@@ -295,9 +295,25 @@
       const j = await res.json();
       serverReached = true;
       /* auth=false 是 --no-auth 免密模式：前端据此隐藏用户管理入口 */
-      if (j) noAuth = j.auth === false;
-      /* 主机没装 chokidar / 打包漏了依赖时会下发 false：前端据此隐藏监听开关 */
-      if (j) watchSupported = j.watchAvailable !== false;
+      if (j) {
+        noAuth = j.auth === false;
+        /* 主机没装 chokidar / 打包漏了依赖时会下发 false：前端据此隐藏监听开关 */
+        watchSupported = j.watchAvailable !== false;
+        /* 角色与「有没有资源库」无关：server:false（该用户还没加库 / 库都失效）时
+           同样要拿到，否则管理员会被当成普通用户，看不到服务器设置这些入口 */
+        try {
+          const meR = await apiFetch('/api/me', { cache: 'no-store' });
+          if (meR.ok) {
+            const m = await meR.json();
+            userRole = m.role || '';
+            myUid = m.uid || '';
+          } else {
+            /* 会话失效：别留着上一次的角色继续放开管理入口 */
+            userRole = '';
+            myUid = '';
+          }
+        } catch (e) {}
+      }
       return j && j.server ? j : null;
     } catch (e) { serverReached = false; return null; }
   }
@@ -369,11 +385,7 @@
         serverMode = true;
         watchSupported = srv.watchAvailable !== false;
         serverVersion = srv.version || '';
-        /* 多用户下取当前登录用户的角色：前端据此决定普通用户能否进入「资源库设置」 */
-        try {
-          const meR = await apiFetch('/api/me', { cache: 'no-store' });
-          if (meR.ok) { const m = await meR.json(); userRole = m.role || ''; myUid = m.uid || ''; }
-        } catch (e) {}
+        /* 角色已在 detectServer() 里取过（与有没有库解耦），这里不再重复请求 */
         if (srv.multi) {
           try {
             const r = await apiFetch('/api/libs', { cache: 'no-store' });

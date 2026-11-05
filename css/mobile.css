@@ -614,3 +614,23 @@ body.app-fs .vstage{
   .hbar{max-width:40px}
   .hero-foot{flex-wrap:wrap;gap:6px}
 }
+
+/* 专辑管理 · 移动端：主按钮占满一行，行内缩略图缩一档，候选条横向滑动 */
+@media (max-width:760px){
+  .am-page{padding-top:6px;gap:12px}
+  .am-title{font-size:20px}
+  .am-desc{font-size:11.5px}
+  .am-head .btn{width:100%;justify-content:center}
+  .am-row{grid-template-columns:40px minmax(0,1fr) auto;gap:10px;padding:10px 11px}
+  .am-thumb{width:40px;height:40px;border-radius:9px}
+  .am-info b{font-size:13px}
+  .am-cands{padding-left:0}
+  .am-cand,.am-cand-pic{width:60px}
+  .am-cand-pic{height:60px}
+  .am-sk{width:60px;height:60px}
+  .am-stat{padding:11px 12px}
+  .am-nums{gap:12px}
+  .am-bar{gap:8px;padding:10px 12px;border-radius:12px 12px 0 0}
+  .am-note{display:none}
+  .am-bar .btn{flex:1;justify-content:center}
+}

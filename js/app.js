@@ -282,6 +282,9 @@
       window.fmNative.onCovers(function (info) {
         /* 补封面期间切了库，这次结果和当前库无关，忽略 */
         if (info && info.libId && FM.fs.activeId && info.libId !== FM.fs.activeId) return;
+        /* 批量补封面：每张都会推一次事件，逐次重读索引 + 整页重绘代价太大，
+           由批量任务自己在结束时刷新（FM.covers.saveMany） */
+        if (FM.covers && FM.covers.batching) return;
         FM.covers.load().then(function (n) {
           if (!n) return;
           FM.covers.apply();

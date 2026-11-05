@@ -391,7 +391,10 @@
        当前目录的 d。只增不删会留下点进去空空的分类；清理要拿到含 d 的原始列表才能算出
        catsDeleted。普通网页用户没有写权限，跳过清理（仅靠 cats() 展示层隐藏），避免 403。
        扫描结果为空（掉盘 / 扫描失败 / 空库）时不做对账：那是「这一轮没读到」，
-       不是「那些目录都删了」，否则会把分类连引用一起抹掉 */
+       不是「那些目录都删了」，否则会把分类连引用一起抹掉。
+       残缺扫描同理：目录分类要连续两轮缺失才删（候选记在 store 里），
+       避免一次掉盘就把分类和人工归类一起抹掉 */
+    const stalePendingKey = 'dirCatStale:' + (libId || rootKey);
     if (groups.length && !(FM.fs.serverReached && !FM.fs.isAdmin)) {
       const keepDir = new Set();
       if (dirGroupMode) {
@@ -409,7 +412,7 @@
           if (m && Array.isArray(m.cats)) m.cats.forEach(function (id) { refIds.add(id); });
         });
       }
-      const staleIds = cats
+      const candidates = cats
         .filter(function (c) {
           if (String(c.id).charAt(0) !== 'd') return false;
           if (keepDir.has(c.id)) return false;
@@ -417,6 +420,23 @@
           return true;
         })
         .map(function (c) { return c.id; });
+      /* 目录分类要连续两轮缺失才删：一次残缺扫描（NAS / 移动硬盘掉线、目录权限变了）
+         不足以证明目录被删，否则会把该目录的分类连同人工归类一起抹掉。
+         平铺模式下的 d 分类本来就该全清，不适用两轮确认 */
+      const savedRaw = FM.store.read(stalePendingKey, []);
+      const savedPending = (Array.isArray(savedRaw) ? savedRaw : [])
+        .filter(function (id) { return typeof id === 'string'; });
+      const prevPending = dirGroupMode ? savedPending : [];
+      const staleIds = dirGroupMode
+        ? candidates.filter(function (id) { return prevPending.indexOf(id) >= 0; })
+        : candidates;
+      /* 只记「仍然缺失但还没满两轮」的：已确认删除的、目录又回来的都要从候选里去掉 */
+      const pending = dirGroupMode
+        ? candidates.filter(function (id) { return staleIds.indexOf(id) < 0; })
+        : [];
+      if (pending.join('|') !== savedPending.join('|')) {
+        try { FM.store.write(stalePendingKey, pending); } catch (e) {}
+      }
       if (staleIds.length) {
         const staleSet = new Set(staleIds);
         cats = cats.filter(function (c) { return !staleSet.has(c.id); });

@@ -810,6 +810,111 @@ body.has-player .view.dl-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .cover-edit-tools .btn:disabled,
 .cover-edit-more .btn:disabled{opacity:.45;pointer-events:none}
 .cover-edit-hint{margin:0;font-size:11px;color:var(--dim-2);line-height:1.6}
+
+/* ── 专辑管理（设置 > 专辑管理）：给没有封面的专辑批量补图 ── */
+.am-page{display:flex;flex-direction:column;gap:14px;padding:18px 0 0}
+.am-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
+.am-head-txt{flex:1;min-width:0}
+.am-title{margin:0;font-size:25px;font-weight:700;letter-spacing:-.01em}
+.am-desc{margin:7px 0 0;font-size:12.5px;line-height:1.7;color:var(--dim);max-width:660px}
+.am-head .btn{flex:none;margin-left:auto}
+/* 抓取中把主按钮换成「停止」：黄框提示它现在是打断动作，不是主操作 */
+.am-stop{color:#ffd166;border-color:rgba(255,209,102,.4);background:rgba(255,209,102,.08)}
+
+.am-stat{display:flex;flex-direction:column;gap:9px;padding:12px 14px;
+  border:1px solid var(--line);border-radius:13px;background:var(--panel-2)}
+.am-nums{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--txt-2)}
+.am-nums b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums}
+.am-nums .ok b{color:#5eead4}
+.am-nums .warn b{color:#ffd166}
+.am-nums .mute b{color:var(--dim-2)}
+.am-nums .bad b{color:#ff8095}
+.am-track{height:4px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden}
+.am-track i{display:block;height:100%;width:0;border-radius:99px;background:var(--grad);
+  box-shadow:0 0 14px rgba(34,211,238,.45);transition:width .35s var(--ease)}
+.am-prog{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+
+.am-list{display:flex;flex-direction:column;gap:8px}
+.am-row{
+  display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;align-items:center;
+  padding:12px 14px;border:1px solid var(--line);border-radius:13px;
+  background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.012));
+  transition:.2s var(--ease);
+}
+.am-row:hover{border-color:rgba(34,211,238,.26);transform:translateY(-1px)}
+.am-row.saved{opacity:.66}
+.am-row.saved:hover{opacity:.85}
+.am-thumb{
+  width:48px;height:48px;border-radius:10px;overflow:hidden;display:grid;place-items:center;
+  background:linear-gradient(135deg,rgba(34,211,238,.2),rgba(139,92,246,.2));
+  color:rgba(233,238,251,.55);
+}
+.am-thumb img{display:block;width:100%;height:100%;object-fit:cover}
+.am-thumb .i{width:17px;height:17px}
+.am-info{min-width:0}
+.am-info b{display:block;font-size:13.5px;font-weight:600;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.am-info span{display:block;margin-top:3px;font-size:11px;color:var(--dim-2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.am-badge{
+  flex:none;display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:99px;
+  border:1px solid var(--line);font-size:10.5px;color:var(--dim);white-space:nowrap;
+}
+.am-badge .i{width:11px;height:11px}
+.am-badge.ok{color:#5eead4;border-color:rgba(94,234,212,.34);background:rgba(94,234,212,.1)}
+.am-badge.warn{color:#ffd166;border-color:rgba(255,209,102,.34);background:rgba(255,209,102,.1)}
+.am-badge.busy{color:var(--cyan);border-color:rgba(34,211,238,.34);background:rgba(34,211,238,.08)}
+.am-badge.bad{color:#ff8095;border-color:rgba(255,128,149,.34);background:rgba(255,128,149,.1)}
+.am-badge.mute{color:var(--dim-2);background:rgba(255,255,255,.04)}
+.am-dot{width:5px;height:5px;border-radius:50%;background:currentColor;animation:amPulse 1s infinite}
+@keyframes amPulse{50%{opacity:.25}}
+
+/* 候选条：跟「编辑封面」弹窗里那套 .cover-cand 保持同一视觉，尺寸放大到 72px 好点 */
+.am-cands{grid-column:1/-1;display:flex;gap:8px;overflow-x:auto;padding:2px 0 2px 60px;scrollbar-width:thin}
+.am-cand{
+  position:relative;flex:none;width:72px;padding:0;border:0;background:none;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  font-family:inherit;color:inherit;transition:.18s var(--ease);
+}
+.am-cand:active{transform:scale(.96)}
+.am-cand-pic{position:relative;display:block;width:72px;height:72px;border-radius:10px;overflow:hidden;
+  background:rgba(255,255,255,.05)}
+.am-cand-pic img{display:block;width:100%;height:100%;object-fit:cover}
+.am-cand-pic em{
+  position:absolute;left:3px;top:3px;padding:0 5px;border-radius:5px;
+  font-size:8px;font-style:normal;line-height:1.6;color:#e6f3ff;background:rgba(0,0,0,.62);
+}
+.am-cand.on .am-cand-pic{box-shadow:0 0 0 2px rgba(34,211,238,.85)}
+.am-cand.on::after{
+  content:"✓";position:absolute;right:6px;top:-3px;width:17px;height:17px;border-radius:50%;
+  display:grid;place-items:center;font-size:10px;line-height:1;color:#04070d;background:var(--cyan);
+  box-shadow:0 0 12px rgba(34,211,238,.6);
+}
+.am-cand-score{font-size:9px;color:var(--dim-2);font-variant-numeric:tabular-nums}
+.am-sk{flex:none;width:72px;height:72px;border-radius:10px;
+  background:linear-gradient(100deg,rgba(255,255,255,.05) 30%,rgba(255,255,255,.12) 48%,rgba(255,255,255,.05) 66%);
+  background-size:220% 100%;animation:amShine 1.2s infinite}
+@keyframes amShine{to{background-position:-120% 0}}
+
+.am-bar{
+  position:sticky;bottom:0;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:2px;
+  padding:11px 14px;border:1px solid var(--line);border-bottom:0;border-radius:13px 13px 0 0;
+  background:rgba(12,17,28,.92);backdrop-filter:blur(16px);
+}
+.am-picked{font-size:12.5px;color:var(--txt-2)}
+.am-picked b{color:var(--cyan);font-variant-numeric:tabular-nums}
+.am-note{margin-left:auto;font-size:11px;color:var(--dim-2)}
+.am-bar .btn{height:36px;padding:0 15px;font-size:12.5px}
+
+.am-empty{
+  display:flex;flex-direction:column;align-items:center;gap:10px;padding:64px 20px;text-align:center;
+  border:1px dashed var(--line);border-radius:16px;color:var(--dim);
+}
+.am-empty .i{width:34px;height:34px;color:var(--cyan);opacity:.8}
+.am-empty h3{margin:2px 0 0;font-size:15px;color:var(--txt)}
+.am-empty p{margin:0;max-width:420px;font-size:12px;line-height:1.7;color:var(--dim)}
+.am-empty .btn{margin-top:6px}
 .confirm{display:flex;align-items:flex-start;gap:13px;padding:2px 0 6px}
 .confirm-ico{
   flex:none;width:38px;height:38px;border-radius:12px;display:grid;place-items:center;

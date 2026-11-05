@@ -20,6 +20,10 @@
   let trackTail = null;       // 手机端还没画出来的曲目（滚动加载用）
   let searchTail = null;      // 搜索结果按库分组后、还没画出来的条目（滚动加载用）
   let statsViewTeardown = null;   // 统计页的实时订阅与定时器，换页时必须显式清掉
+  let albumViewTeardown = null;   // 专辑管理页的批量抓取任务，换页 / 换库时必须停掉
+  /* 批量补封面的任务状态：只在本次会话内有效，不落盘。
+     rows 以专辑 id 为键（渲染时按 albumId 合并），离开页面再回来还能看到上次的抓取结果 */
+  let coverJob = null;
 
   const CAT_COLORS = ['#22d3ee', '#a855f7', '#f472b6', '#34d399', '#fbbf24', '#ff8a65', '#60a5fa', '#c084fc'];
 
@@ -538,7 +542,7 @@
     /* 手机上侧栏整块不出现（导航改为首页快捷入口），这里省掉一次 progress() 全遍历 */
     if (isPhone()) { refs.nav.innerHTML = ''; return; }
     const items = navItems();
-    refs.nav.innerHTML = items.map(function (it) {
+    let html = items.map(function (it) {
       const on = (state.view === it.key
         || (it.key === 'downloads' && state.view.indexOf('dl') === 0)   /* dlAlbum / dlRemove */
         || (it.key === 'fav' && state.view === 'favTracks')) && !state.q;
@@ -546,6 +550,15 @@
         icon(it.icon) + '<span>' + it.label + '</span>' +
         (it.count ? '<span class="count">' + it.count + '</span>' : '') + '</button>';
     }).join('');
+    /* 「设置」分组：只放一个「专辑管理」，需要能写 .fm-covers/ 且是管理员；
+       普通网页用户看不到入口，也就不必在页面里再挡一次 */
+    if (canManageLib() && (FM.fs.native || FM.fs.server)) {
+      const on = state.view === 'albumManage' && !state.q;
+      html += '<div class="nav-group">设置</div>' +
+        '<button class="nav-item sub' + (on ? ' active' : '') + '" data-hash="#/settings/albums">' +
+        icon('image') + '<span>专辑管理</span></button>';
+    }
+    refs.nav.innerHTML = html;
   }
 
   function renderCats() {
@@ -818,6 +831,7 @@
     else if (seg[0] === 'downloads' && seg[2] === 'remove') { state.view = 'dlRemove'; state.albumId = seg[1]; }
     else if (seg[0] === 'downloads' && seg[1]) { state.view = 'dlAlbum'; state.albumId = seg[1]; }
     else if (seg[0] === 'fav' && seg[1] === 'tracks') { state.view = 'favTracks'; }
+    else if (seg[0] === 'settings' && seg[1] === 'albums') { state.view = 'albumManage'; }
     else { state.view = seg[0]; }
     if (state.view === 'dlRemove') state.dlSel = {};
     if (state.view === 'dlMore') state.dlMoreSel = {};
@@ -856,6 +870,7 @@
     /* 统计页有 tick 订阅和 30 秒定时器：必须在清空 DOM 前停掉，
        否则离开后仍会后台查库、写已卸载节点，反复进出还会叠加多个定时器 */
     if (statsViewTeardown) { try { statsViewTeardown(); } catch (e) {} statsViewTeardown = null; }
+    if (albumViewTeardown) { try { albumViewTeardown(); } catch (e) {} albumViewTeardown = null; }
     v.innerHTML = '';
     gridTail = null;
     trackTail = null;
@@ -876,6 +891,7 @@
     else if (state.view === 'continue') node = viewContinue();
     else if (state.view === 'recent') node = viewRecent();
     else if (state.view === 'stats') node = viewStats();
+    else if (state.view === 'albumManage') node = viewAlbumManage();
     else node = viewHome();
     if (node) {
       /* 后台静默刷新：别让整页再播一遍入场动画，看起来像"跳"了一下 */
@@ -2358,7 +2374,10 @@
         '<span class="step"><b>2</b>添加资源库</span>' +
         '<span class="step"><b>3</b>手机自动读到</span>';
       actions = '<button class="btn btn-primary" data-act="retry" style="height:44px;padding:0 26px">' + icon('refresh') + '重试连接</button>' +
-        '<button class="btn" data-act="app-settings" style="height:44px;padding:0 20px">' + icon('edit') + '服务器地址</button>';
+        /* 服务器地址同样只对管理员开放；连不上服务端无法判定角色时保留恢复入口 */
+        (canManageLib()
+          ? '<button class="btn" data-act="app-settings" style="height:44px;padding:0 20px">' + icon('edit') + '服务器地址</button>'
+          : '');
     } else if (web) {
       /* 连到服务端但还没资源库：管理员可以给服务器指定目录，普通用户只能等管理员加 */
       if (FM.fs.isAdmin) {
@@ -2730,6 +2749,12 @@
         case 'more-album': albumMenu(id, actEl); break;
         case 'more-track': trackMenu(id, actEl); break;
         case 'edit-cat': editCat(id); break;
+        /* 专辑管理：一键抓取 / 停止 / 选候选 / 清空 / 批量保存 */
+        case 'cover-fetch': startCoverFetch(); break;
+        case 'cover-stop': stopCoverFetch(); break;
+        case 'cover-pick': pickCoverCand(id, Number(actEl.dataset.c)); break;
+        case 'cover-clear': clearCoverPicks(); break;
+        case 'cover-save': saveCoverPicks(); break;
         case 'tab-cat': if (id) go('#/cat/' + id); else go('#/'); break;
         case 'nav': if (actEl.dataset.hash) go(actEl.dataset.hash); break;
         case 'open-downloads': if (FM.android) FM.android.openDownloads(); break;
@@ -2775,7 +2800,7 @@
         case 'scan': addLibFlow(); break;
         case 'rescan': doScan(); break;
         case 'retry': location.reload(); break;
-        case 'app-settings': if (FM.android) FM.android.openSettings(); break;
+        case 'app-settings': if (FM.android && canManageLib()) FM.android.openSettings(); break;
         case 'lib-menu': openLibMenu(actEl); break;
         case 'relocate-lib': relocateFlow(FM.fs.active(), null); break;
         case 'toggle-hidden': state.showHidden = !state.showHidden; FM.db.setState(Object.assign(FM.db.state(), { showHidden: state.showHidden })); FM.store.touch('state'); FM.fs.pushMeta({ prefs: { showHidden: state.showHidden } }); renderAll(); break;
@@ -3107,6 +3132,385 @@
     const btns = m.box.querySelectorAll('.modal-foot button');
     delBtn = btns[0]; saveBtn = btns[2];
     updateActions();
+  }
+
+  /* ── 专辑管理：批量补封面 ──────────────────────────────────────
+   * 只处理「当前资源库里还没有封面」的专辑。一键抓取时：
+   *   - 喜马拉雅候选相似度 ≥ AUTO_COVER_SCORE：直接写入（几乎同名才敢自动替换）
+   *   - 其余：把候选图摆出来，用户点选后点「保存」才批量写入
+   * 未选择的专辑一张都不写，这是需求的硬约束。
+   * 搜索复用 FM.covers.search（网页端 /api/covers/search、桌面端 IPC），
+   * 写入走 FM.covers.saveOne / saveMany —— 后者批量期间只刷新一次索引。 */
+  const AUTO_COVER_SCORE = 0.9;    /* 自动替换阈值：宁缺勿滥，只信几乎完全同名的喜马拉雅结果 */
+  const COVER_WORKERS = 3;         /* 并发数：喜马拉雅对高频请求敏感，3 路够快也不容易被拦 */
+  const COVER_PICK_MAX = 6;        /* 每行最多摆几张候选 */
+
+  function coverAlbumList() {
+    return L.allAlbums({ showHidden: true }).slice();
+  }
+
+  function newCoverJob() {
+    return { libId: FM.fs.activeId || '', rows: [], running: false, cancel: false, done: 0, total: 0, saveText: '' };
+  }
+
+  /* 把最新专辑清单并进任务：新出现的缺封面专辑补成 pending，
+     已经被别处补过封面的移出（已保存的行除外，留着让用户看到结果） */
+  function syncCoverJob(job) {
+    const byId = new Map(job.rows.map(function (r) { return [r.albumId, r]; }));
+    const next = [];
+    coverAlbumList().forEach(function (a) {
+      if (a.cover) return;
+      const old = byId.get(a.id);
+      if (old) {
+        old.title = a.title;
+        old.dirName = a.dirName || a.key;
+        old.hidden = !!a.hidden;
+        next.push(old);
+      } else {
+        next.push({
+          albumId: a.id, dirName: a.dirName || a.key, title: a.title, hidden: !!a.hidden,
+          status: 'pending', cands: [], picked: -1, score: '', error: '', saved: false
+        });
+      }
+    });
+    job.rows.forEach(function (r) {
+      if (r.saved && !next.some(function (x) { return x.albumId === r.albumId; })) next.push(r);
+    });
+    job.rows = next;
+    if (job.done > job.rows.length) job.done = job.rows.length;
+    return job;
+  }
+
+  function amCounts(job) {
+    const c = { auto: 0, pick: 0, none: 0, fail: 0, picked: 0 };
+    job.rows.forEach(function (r) {
+      if (r.saved) { c.auto++; return; }
+      if (r.status === 'auto') c.auto++;
+      else if (r.status === 'pick') { c.pick++; if (r.picked >= 0) c.picked++; }
+      else if (r.status === 'none') c.none++;
+      else if (r.status === 'failed') c.fail++;
+    });
+    return c;
+  }
+
+  function coverProgressText(job) {
+    if (job.saveText) return job.saveText;
+    if (job.running) return '正在抓取 ' + job.done + ' / ' + job.total;
+    if (job.done && job.total) return '已处理 ' + job.done + ' / ' + job.total;
+    return '尚未开始';
+  }
+
+  function coverBadge(r) {
+    if (r.saved) return '<span class="am-badge ok">' + icon('check') + '已保存</span>';
+    if (r.status === 'auto') return '<span class="am-badge ok">已自动替换</span>';
+    if (r.status === 'searching') return '<span class="am-badge busy"><i class="am-dot"></i>搜索中…</span>';
+    if (r.status === 'pick') return '<span class="am-badge warn">' + (r.picked >= 0 ? '已选择' : '待选择') + '</span>';
+    if (r.status === 'failed') return '<span class="am-badge bad">抓取失败</span>';
+    if (r.status === 'none') return '<span class="am-badge mute">未找到</span>';
+    return '<span class="am-badge mute">待抓取</span>';
+  }
+
+  function coverRowSub(r) {
+    if (r.status === 'auto' && r.score) return '相似度 ' + r.score + ' · 已写入 .fm-covers/';
+    if (r.saved) return '已写入 .fm-covers/';
+    if (r.status === 'none') return '没搜到相似封面，可稍后重试';
+    if (r.status === 'failed') return r.error || '抓取失败，可重试';
+    if (r.status === 'searching') return '正在搜索候选封面…';
+    return (r.dirName || '') + (r.hidden ? ' · 已隐藏' : '');
+  }
+
+  function coverRowHtml(r) {
+    const a = L.album(r.albumId);
+    const url = (a && a.cover) || r.preview || '';
+    const thumb = url
+      ? '<div class="am-thumb"><img src="' + esc(url) + '" alt="" referrerpolicy="no-referrer" loading="lazy"></div>'
+      : '<div class="am-thumb empty">' + icon('image') + '</div>';
+    let extra = '';
+    if (r.status === 'searching') {
+      extra = '<div class="am-cands">' + '<i class="am-sk"></i><i class="am-sk"></i><i class="am-sk"></i>' + '</div>';
+    } else if (r.status === 'pick' && r.cands.length) {
+      extra = '<div class="am-cands">' + r.cands.map(function (c, i) {
+        const src = c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马';
+        return '<button class="am-cand' + (r.picked === i ? ' on' : '') + '"' +
+          ' data-act="cover-pick" data-id="' + esc(r.albumId) + '" data-c="' + i + '"' +
+          ' title="' + esc(c.title || '') + '">' +
+          '<span class="am-cand-pic"><img src="' + esc(c.url) + '" alt="" referrerpolicy="no-referrer" loading="lazy"><em>' + src + '</em></span>' +
+          (c.score ? '<span class="am-cand-score">' + Number(c.score).toFixed(2) + '</span>' : '') +
+          '</button>';
+      }).join('') + '</div>';
+    }
+    return '<div class="am-row' + (r.saved ? ' saved' : '') + '" data-row="' + esc(r.albumId) + '" data-status="' + r.status + '">' +
+      thumb +
+      '<div class="am-info"><b>' + esc(r.title) + '</b><span>' + esc(coverRowSub(r)) + '</span></div>' +
+      coverBadge(r) + extra + '</div>';
+  }
+
+  function paintCoverRow(row) {
+    const page = refs.view.querySelector('.am-page');
+    if (!page) return;
+    const el = page.querySelector('[data-row="' + row.albumId + '"]');
+    if (!el) return;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = coverRowHtml(row);
+    el.replaceWith(tmp.firstElementChild);
+  }
+
+  function paintCoverStat() {
+    const job = coverJob;
+    if (!job) return;
+    const page = refs.view.querySelector('.am-page');
+    if (!page) return;
+    const c = amCounts(job);
+    const set = function (k, v) {
+      const el = page.querySelector('[data-am="' + k + '"]');
+      if (el) el.textContent = String(v);
+    };
+    set('auto', c.auto); set('pick', c.pick); set('none', c.none); set('fail', c.fail); set('picked', c.picked);
+    const total = job.rows.length || 1;
+    const fill = page.querySelector('[data-am="fill"]');
+    if (fill) fill.style.width = Math.round(Math.min(1, job.done / total) * 100) + '%';
+    const txt = page.querySelector('[data-am="text"]');
+    if (txt) txt.textContent = coverProgressText(job);
+    const saveBtn = page.querySelector('[data-act="cover-save"]');
+    if (saveBtn) {
+      saveBtn.disabled = !c.picked || job.running;
+      saveBtn.textContent = '保存 ' + c.picked + ' 张封面';
+    }
+    const clearBtn = page.querySelector('[data-act="cover-clear"]');
+    if (clearBtn) clearBtn.disabled = !c.picked;
+  }
+
+  async function fetchCoverForRow(job, row) {
+    if (job.cancel) return;
+    const a = L.album(row.albumId);
+    if (!a) { row.status = 'failed'; row.error = '专辑已不在资源库里'; paintCoverRow(row); return; }
+    row.status = 'searching';
+    paintCoverRow(row);
+    let list = [];
+    try { list = await FM.covers.search(a.title || row.title, { limit: COVER_PICK_MAX, page: 0 }); } catch (e) { list = []; }
+    if (job.cancel) { row.status = 'pending'; paintCoverRow(row); return; }
+    const cands = (list || []).filter(function (c) { return c && c.url; });
+    /* 只有喜马拉雅来源才允许自动写入：极客/百度是按词搜出来的图，标题对不上也不能信 */
+    const best = cands.slice()
+      .sort(function (x, y) { return (Number(y.score) || 0) - (Number(x.score) || 0); })
+      .find(function (c) { return c.source === 'xmly' && Number(c.score) >= AUTO_COVER_SCORE; });
+    if (best) {
+      const res = await FM.covers.saveOne(a, {
+        kind: 'xmly', url: best.url, albumId: best.id, title: best.title, source: 'xmly'
+      });
+      if (res.ok) {
+        row.status = 'auto';
+        row.saved = true;
+        row.score = Number(best.score).toFixed(2);
+        row.preview = best.url;
+      } else {
+        row.status = 'failed';
+        row.error = res.reason || '写入失败';
+      }
+    } else if (cands.length) {
+      row.status = 'pick';
+      row.cands = cands.slice(0, COVER_PICK_MAX);
+      row.picked = -1;
+    } else if (FM.covers.searchError) {
+      row.status = 'failed';
+      row.error = FM.covers.searchError;
+    } else {
+      row.status = 'none';
+    }
+    job.done++;
+    paintCoverRow(row);
+    paintCoverStat();
+  }
+
+  async function runCoverWorkers(job, todo) {
+    let cursor = 0;
+    async function worker() {
+      for (;;) {
+        if (job.cancel) return;
+        const row = todo[cursor++];
+        if (!row) return;
+        await fetchCoverForRow(job, row);
+      }
+    }
+    const workers = [];
+    for (let i = 0; i < Math.min(COVER_WORKERS, todo.length); i++) workers.push(worker());
+    await Promise.all(workers);
+    job.running = false;
+    if (job.cancel) return;
+    /* 抓取期间自动写入的那批，到这里一次性重读索引（省掉几十次 load） */
+    try { await FM.covers.reload(); } catch (e) {}
+    renderAll({ quiet: true });
+    const c = amCounts(job);
+    toast('抓取完成：自动替换 ' + c.auto + ' 张，待选 ' + c.pick + ' 张' +
+      (c.none ? '，未找到 ' + c.none + ' 张' : '') + (c.fail ? '，失败 ' + c.fail + ' 张' : ''));
+  }
+
+  function startCoverFetch() {
+    const job = coverJob;
+    if (!job || job.running) return;
+    const todo = job.rows.filter(function (r) { return !r.saved && (r.status === 'pending' || r.status === 'failed'); });
+    if (!todo.length) { toast('没有待抓取的专辑了'); return; }
+    job.running = true;
+    job.cancel = false;
+    job.done = 0;
+    job.total = todo.length;
+    job.saveText = '';
+    todo.forEach(function (r) { r.status = 'pending'; r.error = ''; r.cands = []; r.picked = -1; });
+    renderMain({ quiet: true });
+    runCoverWorkers(job, todo).catch(function (e) {
+      console.warn('[cover] 批量抓取中断', e);
+      const j = coverJob;
+      if (!j) return;
+      j.running = false;
+      j.rows.forEach(function (r) { if (r.status === 'searching') r.status = 'pending'; });
+      renderAll({ quiet: true });
+      toast('抓取中断，可再点一次重试', 'warn');
+    });
+  }
+
+  function stopCoverFetch() {
+    const job = coverJob;
+    if (!job || !job.running) return;
+    job.cancel = true;
+    job.running = false;
+    /* 正在搜的那几行不会再回来（worker 看到 cancel 就退出），复位成待抓取，下次能接着跑 */
+    job.rows.forEach(function (r) { if (r.status === 'searching') r.status = 'pending'; });
+    renderMain({ quiet: true });
+    toast('已停止抓取，已自动替换的封面已写入');
+  }
+
+  function pickCoverCand(albumId, idx) {
+    const job = coverJob;
+    if (!job) return;
+    const row = job.rows.find(function (r) { return r.albumId === albumId; });
+    if (!row || row.saved || row.status !== 'pick' || !row.cands[idx]) return;
+    row.picked = row.picked === idx ? -1 : idx;
+    paintCoverRow(row);
+    paintCoverStat();
+  }
+
+  function clearCoverPicks() {
+    const job = coverJob;
+    if (!job) return;
+    job.rows.forEach(function (r) { if (!r.saved) r.picked = -1; });
+    renderMain({ quiet: true });
+  }
+
+  async function saveCoverPicks() {
+    const job = coverJob;
+    if (!job || job.running) return;
+    const picked = job.rows.filter(function (r) {
+      return r.status === 'pick' && r.picked >= 0 && r.cands[r.picked] && !r.saved;
+    });
+    if (!picked.length) { toast('先点选要用的候选封面', 'warn'); return; }
+    const items = [];
+    picked.forEach(function (r) {
+      const a = L.album(r.albumId);
+      if (!a) return;
+      const c = r.cands[r.picked];
+      items.push({
+        row: r, album: a,
+        payload: { kind: 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' }
+      });
+    });
+    if (!items.length) { toast('这些专辑已不在资源库里了', 'warn'); return; }
+    job.saveText = '正在保存 0 / ' + items.length;
+    renderMain({ quiet: true });
+    const res = await FM.covers.saveMany(items, function (ok, fail, i, total) {
+      if (!coverJob) return;
+      coverJob.saveText = '正在保存 ' + i + ' / ' + total;
+      paintCoverStat();
+    });
+    if (coverJob) coverJob.saveText = '';
+    const failedIds = new Set((res.failed || []).map(function (f) { return f.album && f.album.id; }));
+    items.forEach(function (it) {
+      if (failedIds.has(it.album.id)) { it.row.error = '保存失败，可重试'; return; }
+      it.row.saved = true;
+      it.row.status = 'auto';
+      it.row.picked = -1;
+    });
+    renderAll({ quiet: true });
+    const failN = (res.failed || []).length;
+    toast(failN ? ('已保存 ' + res.ok + ' 张，' + failN + ' 张失败') : ('已保存 ' + res.ok + ' 张封面'),
+      failN ? 'warn' : undefined);
+  }
+
+  function viewAlbumManage() {
+    const wrap = U.el('div', { class: 'am-page' });
+
+    if (!canManageLib()) {
+      wrap.innerHTML = '<div class="am-head"><h1 class="am-title">专辑管理</h1></div>' +
+        '<div class="am-empty">' + icon('eye-off') + '<h3>只有管理员可以管理封面</h3>' +
+        '<p>当前账号是只读的，补封面请让管理员在主机上操作。</p>' +
+        '<button class="btn btn-primary" data-act="back">返回</button></div>';
+      return wrap;
+    }
+    if (!(FM.fs.native || FM.fs.server)) {
+      wrap.innerHTML = '<div class="am-head"><h1 class="am-title">专辑管理</h1></div>' +
+        '<div class="am-empty">' + icon('image') + '<h3>当前模式不支持写入封面</h3>' +
+        '<p>纯浏览器打开本地目录时没有写盘权限，请在桌面端或连到服务端后使用。</p></div>';
+      return wrap;
+    }
+
+    if (!coverJob || coverJob.libId !== (FM.fs.activeId || '')) coverJob = newCoverJob();
+    /* 上一次被中断（切页 / 停止）时可能有行停在「搜索中」，这里复位，否则它会一直转圈 */
+    if (!coverJob.running) {
+      coverJob.rows.forEach(function (r) { if (r.status === 'searching') r.status = 'pending'; });
+      syncCoverJob(coverJob);
+    }
+    const job = coverJob;
+    /* 换页 / 换库时就地取消；同一个库重绘（保存后刷新）要继续跑 */
+    albumViewTeardown = function () {
+      if (!coverJob) return;
+      if (state.view !== 'albumManage' || coverJob.libId !== (FM.fs.activeId || '')) coverJob.cancel = true;
+    };
+
+    const c = amCounts(job);
+    const missing = coverAlbumList().filter(function (a) { return !a.cover; }).length;
+    const head =
+      '<div class="am-head">' +
+        '<div class="am-head-txt">' +
+          '<h1 class="am-title">专辑管理</h1>' +
+          '<p class="am-desc">为还没有封面的专辑补图：喜马拉雅相似度 ≥ ' + AUTO_COVER_SCORE +
+            ' 的自动写入，其余挑一张再保存；未选中的不会写入。</p>' +
+        '</div>' +
+        '<button class="btn ' + (job.running ? 'btn-ghost am-stop' : 'btn-primary') + '"' +
+          ' data-act="' + (job.running ? 'cover-stop' : 'cover-fetch') + '"' +
+          ((missing || job.running) ? '' : ' disabled') + '>' +
+          icon(job.running ? 'close' : 'wand') + (job.running ? '停止' : '一键抓取') + '</button>' +
+      '</div>';
+
+    if (!job.rows.length) {
+      wrap.innerHTML = head + '<div class="am-empty">' + icon('check') + '<h3>所有专辑都有封面了</h3>' +
+        '<p>新专辑加进资源库后，这里会自动出现待补清单。</p></div>';
+      return wrap;
+    }
+
+    const stat =
+      '<div class="am-stat">' +
+        '<div class="am-nums">' +
+          '<span><b data-am="total">' + missing + '</b> 张缺封面</span>' +
+          '<span class="ok">已替换 <b data-am="auto">' + c.auto + '</b></span>' +
+          '<span class="warn">待选 <b data-am="pick">' + c.pick + '</b></span>' +
+          '<span class="mute">未找到 <b data-am="none">' + c.none + '</b></span>' +
+          (c.fail ? '<span class="bad">失败 <b data-am="fail">' + c.fail + '</b></span>' : '') +
+        '</div>' +
+        '<div class="am-track"><i data-am="fill" style="width:' +
+          Math.round(Math.min(1, job.done / (job.rows.length || 1)) * 100) + '%"></i></div>' +
+        '<div class="am-prog" data-am="text">' + esc(coverProgressText(job)) + '</div>' +
+      '</div>';
+
+    const bar =
+      '<div class="am-bar">' +
+        '<span class="am-picked">已选 <b data-am="picked">' + c.picked + '</b> 张</span>' +
+        '<button class="btn btn-ghost" data-act="cover-clear"' + (c.picked ? '' : ' disabled') + '>清空选择</button>' +
+        '<span class="am-note">未选择的专辑不会写入</span>' +
+        '<button class="btn btn-primary" data-act="cover-save"' +
+          ((c.picked && !job.running) ? '' : ' disabled') + '>保存 ' + c.picked + ' 张封面</button>' +
+      '</div>';
+
+    wrap.innerHTML = head + stat + '<div class="am-list">' + job.rows.map(coverRowHtml).join('') + '</div>' + bar;
+    return wrap;
   }
 
   function renameAlbum(id) {
@@ -4211,11 +4615,14 @@
     if (list.length) items.push({ sep: true });
     if (canManageLib()) items.push({ label: '资源库设置…', icon: 'edit', onClick: openLibDrawer });
     if (canManageUsers()) items.push({ label: '用户管理', icon: 'users', onClick: openUserDrawer });
-    if (FM.android) {
-      items.push({ label: '服务器地址…', icon: 'chevron', onClick: function () { FM.android.openSettings(); } });
-    }
-    if (FM.fs.desktop) {
-      items.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'chevron', onClick: openRemoteDialog });
+    /* 服务器设置属于主机级配置，只有管理员能看到（同 openSettingsMenu 的口径） */
+    if (canManageLib()) {
+      if (FM.android) {
+        items.push({ label: '服务器地址…', icon: 'server', onClick: function () { FM.android.openSettings(); } });
+      }
+      if (FM.fs.desktop) {
+        items.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'server', onClick: openRemoteDialog });
+      }
     }
     openMenu(anchor, items);
   }
@@ -4241,10 +4648,14 @@
         label: '重新扫描', icon: 'refresh', sub: '重新读取主机上的资源库目录', onClick: doScan
       });
     }
-    if (FM.fs.desktop) {
-      resource.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'server', onClick: openRemoteDialog });
-    } else if (FM.android) {
-      resource.push({ label: '服务器设置…', icon: 'server', onClick: function () { FM.android.openSettings(); } });
+    /* 服务器设置属于主机级配置：只有管理员可见。
+       连不上服务端时拿不到角色，保留入口以便管理员修正地址后恢复连接 */
+    if (canManageLib()) {
+      if (FM.fs.desktop) {
+        resource.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'server', onClick: openRemoteDialog });
+      } else if (FM.android) {
+        resource.push({ label: '服务器设置…', icon: 'server', onClick: function () { FM.android.openSettings(); } });
+      }
     }
 
     const maintenance = [];

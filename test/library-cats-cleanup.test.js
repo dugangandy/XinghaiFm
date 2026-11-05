@@ -93,6 +93,10 @@ test('重扫对账：目录已删，孤儿专辑的引用不再给残留 d 分�
   metas[orphan] = { cats: [dOld], auto: true, root: '/lib' };
 
   L.build(mkScan(['历史/明朝那些事/01.mp3']));
+  assert.deepEqual(deletedIds(), [], '第一轮缺失只记候选，不删');
+
+  /* 第二轮仍然缺这个目录，才认定是真删了 */
+  L.build(mkScan(['历史/明朝那些事/01.mp3']));
 
   assert.deepEqual(deletedIds(), [dOld], '残留目录分类要落库删行');
   assert.deepEqual(cats.map(c => c.id).sort(), [dHist, 'c1'].sort(), '手工分类和现存目录分类都保留');
@@ -167,6 +171,38 @@ test('空扫描结果（掉盘/扫描失败）：不按「全都不存在」对�
   assert.deepEqual(deletedIds(), [], '这一轮没读到 ≠ 目录都删了');
   assert.deepEqual(cats.map(c => c.id), [dHist]);
   assert.deepEqual(metas[live].cats, [dHist]);
+});
+
+test('部分目录读不到（掉盘）：一轮残缺扫描不动分类，连续两轮才清', () => {
+  reset('cat');
+  cats = [
+    { id: dHist, name: '历史', order: 0 },
+    { id: dLit, name: '文学', order: 1 }
+  ];
+  metas[metaKeyOf('历史/明朝那些事')] = { cats: [dHist], auto: true, root: '/lib' };
+  const partial = mkScan(['历史/明朝那些事/01.mp3']);
+
+  L.build(partial);
+  assert.deepEqual(deletedIds(), [], '第一次缺失只是候选，分类和引用都还在');
+  assert.ok(cats.some(c => c.id === dLit), '文学分类不能被一轮残缺扫描清掉');
+
+  L.build(partial);
+  assert.deepEqual(deletedIds(), [dLit], '连续两轮缺失才落库删行');
+});
+
+test('缺失的目录又回来了：候选作废，重新从头计数', () => {
+  reset('cat');
+  cats = [
+    { id: dHist, name: '历史', order: 0 },
+    { id: dLit, name: '文学', order: 1 }
+  ];
+
+  L.build(mkScan(['历史/明朝那些事/01.mp3']));                        /* 文学缺失 → 候选 */
+  L.build(mkScan(['历史/明朝那些事/01.mp3', '文学/散文集/01.mp3']));  /* 文学回来 → 候选清空 */
+  L.build(mkScan(['历史/明朝那些事/01.mp3']));                        /* 再次缺失，只算第一轮 */
+
+  assert.deepEqual(deletedIds(), [], '候选被目录重新出现打断过，不能累计');
+  assert.ok(cats.some(c => c.id === dLit));
 });
 
 test('本地分类缓存落后于数据库：只清本次删掉的分类，别的引用不动', () => {

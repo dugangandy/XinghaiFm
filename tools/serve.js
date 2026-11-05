@@ -956,7 +956,7 @@ async function assetsVersion() {
 
 /* ── 诊断：正常不吭声，出问题时能有据可查 ────────────────────────
  * 1) 事件循环停顿：Node 被同步操作卡住时，视频流也会跟着断，一眼能看出来
- * 2) 慢请求：超过 1 秒的请求打一行（含媒体 Range）
+ * 2) 慢请求：超过 3 秒的请求打一行（含媒体 Range）
  * 3) FM_DEBUG=1：把媒体/进度这类关键请求逐条打出来，用来对时间线
  */
 const DEBUG_REQ = /^(1|true|yes)$/i.test(String(process.env.FM_DEBUG || ''));
@@ -978,7 +978,7 @@ const server = http.createServer(async function (req, res) {
     if (res.__media) return;                 /* 媒体流自己记（它的总时长=传输时长，不是耗时） */
     const ms = Date.now() - t0;
     const label = req.method + ' ' + u.pathname;
-    if (ms > 1000) console.log('[slow] ' + label + ' ' + res.statusCode + ' ' + ms + 'ms');
+    if (ms > 3000) console.log('[slow] ' + label + ' ' + res.statusCode + ' ' + ms + 'ms');
     else if (DEBUG_REQ && /^\/api\/(media|progress|meta|scan|ticket|covers)/.test(u.pathname)) {
       console.log('[req] ' + label + ' ' + res.statusCode + ' ' + ms + 'ms' + (req.headers.range ? ' range=' + req.headers.range : ''));
     }

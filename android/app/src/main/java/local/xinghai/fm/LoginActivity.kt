@@ -4,9 +4,8 @@
  * 记住登录态：下次启动用 token 校验 /api/config，通过直接进主页。
  * 已经登录过的用户不会看到登录表单：先铺 slogan 页（和网页启动页同一句），
  * 校验通过就进主页，失败（token 失效）才把表单拿出来。
- * 服务器地址是下拉列表（生产 / 测试 / 自定义）：列表与输入框默认不露 URL，
- * 只有长按或鼠标悬浮（tooltip）才显示；勾了「记住密码」后两个地址共用一份账号密码，
- * 切地址不用重打。
+ * 登录页不再提供服务器选择：地址取本机已保存的值，未配置时默认生产环境。
+ * 切换环境只在「服务器设置」里做（该入口仅管理员可见）。
  */
 package local.xinghai.fm
 
@@ -15,8 +14,6 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -31,10 +28,8 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.TextView
-import android.widget.Toast
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -48,25 +43,24 @@ class LoginActivity : Activity() {
     private val DIM = 0xFF7A869E.toInt()
     private val HINT = 0xFF59637A.toInt()
 
-    private lateinit var serverPick: TextView
-    private lateinit var urlInput: EditText       /* 只有「自定义」时才露出来 */
     private lateinit var userInput: EditText
     private lateinit var passInput: EditText
     private lateinit var rememberBox: CheckBox
     private lateinit var loginBtn: Button
     private lateinit var errorView: TextView
+    /* 连不上且当前地址不是生产环境时露出来的退路（服务器设置要登录后才进得去） */
+    private lateinit var switchEnv: TextView
     private lateinit var progress: ProgressBar
     private var retryToken = ""
-    /* 下拉里选中的地址；选「自定义」时 customMode = true，地址以 urlInput 为准 */
+    /* 当前设备配置的服务器地址：登录页不显示也不允许修改 */
     private var base = ""
-    private var customMode = false
     /* 登录表单是否已经建出来：已登录过的用户先看 slogan 页，表单可能一直不建，
        所以 setBusy / err 这些碰控件的入口都要先问一句 */
     private var hasForm = false
 
     private val ui = Handler(Looper.getMainLooper())
 
-    /* 登录页只列名字，地址藏在 tooltip 里（长按 / 鼠标悬浮才显示）；和服务器设置页共用一份 */
+    /* 未配置地址时默认生产环境；与「服务器设置」共用同一份预设 */
     private val servers = Servers.list
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -123,23 +117,10 @@ class LoginActivity : Activity() {
             gravity = Gravity.CENTER_HORIZONTAL; setPadding(0, dp(8), 0, dp(22))
         }, lp())
 
+        /* 登录页不显示服务器选项：用本机已配置的地址，未配置时默认生产环境 */
         base = prefs().getString("base", "").orEmpty()
-        if (base.isEmpty()) base = servers[0].second      /* 首次进：默认生产 */
-        customMode = servers.none { it.second == base }
+        if (base.isEmpty()) base = servers[0].second
 
-        serverPick = TextView(this).apply {
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            setPadding(dp(12), dp(11), dp(12), dp(11))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(10).toFloat()
-                setColor(0x1AFFFFFF)
-                setStroke(dp(1), 0x33FFFFFF)
-            }
-            setOnClickListener { pickServer() }
-        }
-        urlInput = field("服务器地址  http://192.168.1.8:8080", InputType.TYPE_TEXT_VARIATION_URI)
-        urlInput.setText(base)
         userInput = field("用户名", InputType.TYPE_CLASS_TEXT)
         passInput = field("密码", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         rememberBox = CheckBox(this).apply {
@@ -151,8 +132,6 @@ class LoginActivity : Activity() {
                 if (on) prefs().edit().putString("password", passInput.text.toString()).apply()
             }
         }
-        box.addView(serverPick, lp(top = 10))
-        box.addView(urlInput, lp(top = 8))
         box.addView(userInput, lp(top = 10))
         box.addView(passInput, lp(top = 10))
         box.addView(rememberBox, lp(top = 4))
@@ -162,6 +141,17 @@ class LoginActivity : Activity() {
             setPadding(dp(4), dp(10), dp(4), 0); visibility = View.GONE
         }
         box.addView(errorView, lp())
+
+        switchEnv = TextView(this).apply {
+            text = "改用生产环境重试"
+            textSize = 12.5f
+            setTextColor(0xFF22D3EE.toInt())
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(10), dp(4), 0)
+            visibility = View.GONE
+            setOnClickListener { useProduction() }
+        }
+        box.addView(switchEnv, lp())
 
         loginBtn = Button(this).apply {
             text = "登录"
@@ -214,58 +204,14 @@ class LoginActivity : Activity() {
         setContentView(root)
     }
 
-    /* 首次使用 / token 失效：建登录表单（并把上次的地址、记住的账号密码带出来） */
+    /* 首次使用 / token 失效：建登录表单（把记住的账号密码带出来） */
     private fun showForm() {
         if (hasForm) return
         buildUi()
-        refreshServer()
         fillSaved()
     }
 
-    /* 选中的地址不摆在明面上，只留名字；地址挂在 tooltip 上（悬浮 / 长按才显示） */
-    private fun refreshServer() {
-        if (!hasForm) return
-        val preset = servers.firstOrNull { it.second == base }?.takeUnless { customMode }
-        serverPick.text = "服务器：" + (if (preset != null) preset.first else "自定义") + "  ▾"
-        /* tooltip 要 API 26+；低版本靠长按 toast 兜底 */
-        if (Build.VERSION.SDK_INT >= 26) serverPick.tooltipText = currentUrl().ifEmpty { null }
-        serverPick.setOnLongClickListener {
-            val url = currentUrl()
-            if (url.isNotEmpty()) { toast(url); true } else false
-        }
-        /* 自定义时才把地址输入框露出来（那本来就是用户自己填的） */
-        urlInput.visibility = if (customMode) View.VISIBLE else View.GONE
-        if (customMode) urlInput.setText(base)
-    }
-
-    private fun currentUrl(): String = normalize(if (customMode) urlInput.text.toString() else base)
-
-    /* 下拉：生产 / 测试 / 自定义…（列表里同样只有名字，不铺地址） */
-    private fun pickServer() {
-        val pop = PopupMenu(this, serverPick)
-        servers.forEachIndexed { i, s -> pop.menu.add(0, i, i, s.first) }
-        pop.menu.add(0, servers.size, servers.size, "自定义…")
-        pop.setOnMenuItemClickListener { item ->
-            val before = currentUrl()
-            if (item.itemId < servers.size) {
-                base = servers[item.itemId].second
-                customMode = false
-            } else if (!customMode) {
-                /* 从预设切自定义时先带出当前地址，方便改端口 */
-                customMode = true
-            }
-            /* 换了服务器，旧服务器的 token 不作数，别再拿它去重试 / 自动登录 */
-            retryToken = ""
-            saveBase(normalize(if (customMode) urlInput.text.toString() else base))
-            refreshServer()
-            if (currentUrl() != before) prefs().edit().remove("token").apply()
-            fillSaved()
-            true
-        }
-        pop.show()
-    }
-
-    /* 记住的账号密码在两个地址之间共用：切地址后只补空着的框，已经填了的不动 */
+    /* 记住的账号密码带出来：只补空着的框，已经填了的不动 */
     private fun fillSaved() {
         if (!hasForm) return
         if (userInput.text.isEmpty()) userInput.setText(prefs().getString("username", "").orEmpty())
@@ -305,8 +251,24 @@ class LoginActivity : Activity() {
         errorView.visibility = if (msg.isEmpty()) View.GONE else View.VISIBLE
     }
 
+    /* 连不上且当前地址不是生产环境时给一条退路：登录页没有服务器选择，
+       而「服务器设置」要进主页才能打开，旧地址一旦失效就会彻底卡在登录页 */
+    private fun showSwitchEnv(show: Boolean) {
+        if (!hasForm) return
+        val prod = normalize(servers[0].second)
+        switchEnv.visibility = if (show && normalize(base) != prod) View.VISIBLE else View.GONE
+    }
+
+    private fun useProduction() {
+        base = servers[0].second
+        saveBase(normalize(base))
+        showSwitchEnv(false)
+        err("")
+        doLogin()
+    }
+
     private fun doLogin() {
-        val target = normalize(if (customMode) urlInput.text.toString() else base)
+        val target = normalize(base)
         /* 有未失效 token 且没填密码：走「重试连接」而不是重新登录 */
         if (retryToken.isNotEmpty() && passInput.text.isEmpty()) {
             if (target.isNotEmpty()) { saveBase(target); autoLogin(target, retryToken); return }
@@ -317,11 +279,11 @@ class LoginActivity : Activity() {
         if (user.isEmpty()) { err("请填写用户名"); return }
         if (pass.isEmpty()) { err("请填写密码"); return }
         saveBase(target)
-        /* 勾了「记住密码」就把这份账号密码存下来，生产/测试共用，切地址不用重打 */
+        /* 勾了「记住密码」就把这份账号密码存下来，下次登录自动带出 */
         prefs().edit().putString("username", user).apply {
             if (rememberBox.isChecked) putString("password", pass) else remove("password")
         }.apply()
-        setBusy(true); err("")
+        setBusy(true); err(""); showSwitchEnv(false)
         Thread {
             try {
                 val json = JSONObject().put("username", user).put("password", pass).toString()
@@ -342,11 +304,11 @@ class LoginActivity : Activity() {
                         }
                         401 -> ui.post { setBusy(false); err("用户名或密码不正确") }
                         429 -> ui.post { setBusy(false); err(text.ifBlank { "尝试过多，请稍后再试" }) }
-                        else -> ui.post { setBusy(false); err(Msg.NET_FAIL) }
+                        else -> ui.post { setBusy(false); err(Msg.NET_FAIL); showSwitchEnv(true) }
                     }
                 }
             } catch (e: Exception) {
-                ui.post { setBusy(false); err(Msg.NET_FAIL) }
+                ui.post { setBusy(false); err(Msg.NET_FAIL); showSwitchEnv(true) }
             }
         }.start()
     }
@@ -399,5 +361,4 @@ class LoginActivity : Activity() {
         finish()
     }
 
-    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 }
