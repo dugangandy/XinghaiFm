@@ -1011,14 +1011,6 @@ function listenStatsQuery(db, uid, fromDay, toDay) {
     return { day: r.day, secs: Number(r.secs) || 0, byHour: parseByHour(r.by_hour), byCat: parseByCat(r.by_cat) };
   });
 }
-function listenStatsGoalGet(db, uid) {
-  return Math.max(0, Math.min(1440, parseInt(getSetting(db, 'listenGoal:' + (uid || ''), '0')) || 0));
-}
-function listenStatsGoalSet(db, uid, min) {
-  min = Math.max(0, Math.min(1440, Math.round(Number(min) || 0)));
-  setSetting(db, 'listenGoal:' + (uid || ''), String(min));
-  return min;
-}
 
 /* ── remote（设备级） ── */
 function getRemote(db) {
@@ -1081,7 +1073,7 @@ module.exports = {
   listShares, setLibShare, addLibShareTarget, removeLibShare, syncUserSharedLibs,
   listFavs, setFav, clearFavs,
   listFavTracks, setFavTrack, clearFavTracks,
-  listenStatsAdd, listenStatsQuery, listenStatsGoalGet, listenStatsGoalSet,
+  listenStatsAdd, listenStatsQuery,
   META_VERSION, META_LIMIT, libRootKey,
   libDirGroup, setLibDirGroup, libDirMode, setLibDirMode, normDirMode, DIR_MODES,
   catsList, catsReplace, catsDelete,

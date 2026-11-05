@@ -804,14 +804,6 @@ function bindIpc() {
     try { return { ok: true, rows: DB.listenStatsQuery(getDb(), adminUid(), String(fromDay || ''), String(toDay || '')) }; }
     catch (err) { return { ok: false, rows: [] }; }
   });
-  ipcMain.handle('fm:listenGoalGet', function () {
-    try { return { ok: true, min: DB.listenStatsGoalGet(getDb(), adminUid()) }; }
-    catch (err) { return { ok: false, min: 0 }; }
-  });
-  ipcMain.handle('fm:listenGoalSet', function (e, min) {
-    try { return { ok: true, min: DB.listenStatsGoalSet(getDb(), adminUid(), Number(min) || 0) }; }
-    catch (err) { return { ok: false, min: 0 }; }
-  });
 
   /* ── 转码：Chromium 认不全的 flv 先重封装成 mp4 再播（ape / wv / wma 前端直接提示不支持） ──
      返回 { url, ext, cached } 或 { error, message }。前端拿到 url 直接当媒体源用；

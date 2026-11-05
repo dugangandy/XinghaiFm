@@ -1235,43 +1235,6 @@
       return { ok: !j || j.ok !== false, rows: (j && j.rows) || [] };
     } catch (e) { return { ok: false, rows: [] }; }
   }
-  async function listenGoalGet() {
-    if (metaChannel() === 'local') {
-      try { const st = FM.db.state(); return { ok: true, min: Math.max(0, Math.min(1440, Number(st.listenGoal) || 0)) }; }
-      catch (e) { return { ok: false, min: 0 }; }
-    }
-    if (DESKTOP_FS) {
-      try { const r = await window.fmNative.listenGoalGet(); return r || { ok: false, min: 0 }; }
-      catch (e) { return { ok: false, min: 0 }; }
-    }
-    try {
-      const r = await apiFetch('/api/listen/goal', { cache: 'no-store' });
-      if (!r.ok) return { ok: false, min: 0 };
-      const j = await r.json();
-      return { ok: !j || j.ok !== false, min: (j && j.min) || 0 };
-    } catch (e) { return { ok: false, min: 0 }; }
-  }
-  async function listenGoalSet(min) {
-    min = Math.max(0, Math.min(1440, Math.round(Number(min) || 0)));
-    if (metaChannel() === 'local') {
-      try { const st = FM.db.state(); st.listenGoal = min; FM.db.setState(st); FM.store.touch('state'); return { ok: true, min: min }; }
-      catch (e) { return { ok: false, min: min }; }
-    }
-    if (DESKTOP_FS) {
-      try { const r = await window.fmNative.listenGoalSet(min); return r || { ok: false, min: min }; }
-      catch (e) { return { ok: false, min: min }; }
-    }
-    try {
-      const r = await apiFetch('/api/listen/goal', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ min: min })
-      });
-      if (!r.ok) return { ok: false, min: min };
-      const j = await r.json();
-      return { ok: !j || j.ok !== false, min: (j && j.min) || min };
-    } catch (e) { return { ok: false, min: min }; }
-  }
-
   /* ── 收藏：跟用户绑定，存数据库 ──
      桌面端走 IPC（本机 fm.db），服务端/远程走 /api/favs，网页本地库退回 localStorage。 */
   async function loadFavs(libId) {
@@ -1690,7 +1653,7 @@
 
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, flushPending, canSyncMeta, pushProgress, refreshLibs,
-    listenAdd, listenQuery, listenGoalGet, listenGoalSet,
+    listenAdd, listenQuery,
     queueCache, prefsCache, applyPrefs, pickPrefs, PREFS_KEYS, clearLastTrack,
     setDirGroup, setDirMode, setWatch, share,
     get watchSupported() { return watchSupported; },

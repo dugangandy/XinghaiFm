@@ -1339,21 +1339,6 @@ const server = http.createServer(async function (req, res) {
     try { return json(res, { ok: true, rows: DB.listenStatsQuery(db, uid, from, to) }); }
     catch (e) { console.warn('[listen] 查询失败：' + e.message); return json(res, { ok: false, rows: [] }); }
   }
-  if (p === '/api/listen/goal') {
-    if (req.method === 'GET') {
-      try { return json(res, { ok: true, min: DB.listenStatsGoalGet(db, uid) }); }
-      catch (e) { console.warn('[listen] 目标读取失败：' + e.message); return json(res, { ok: false, min: 0 }); }
-    }
-    if (req.method !== 'POST') return send(res, 405, 'GET/POST only');
-    if (!writeAllowed(ip, 10, 'listen')) return send(res, 429, 'too many writes');
-    let body = '';
-    for await (const chunk of req) { body += chunk; if (body.length > 256) return send(res, 413, 'too large'); }
-    let rec = null;
-    try { rec = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
-    const min = Math.max(0, Math.min(1440, Math.round(Number(rec && rec.min) || 0)));
-    try { return json(res, { ok: true, min: DB.listenStatsGoalSet(db, uid, min) }); }
-    catch (e) { return send(res, 500, 'write failed'); }
-  }
   if (p === '/api/favs') {
     const own = function (id) { return userLibs(uid).some(function (l) { return l.id === id; }); };
     if (req.method === 'GET') {

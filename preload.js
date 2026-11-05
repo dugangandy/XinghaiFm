@@ -56,11 +56,9 @@ contextBridge.exposeInMainWorld('fmNative', {
   setFav: (libId, albumId, on) => ipcRenderer.invoke('fm:setFav', libId, albumId, on),
   favTracks: (libId) => ipcRenderer.invoke('fm:favTracks', libId),
   setFavTrack: (libId, trackId, on) => ipcRenderer.invoke('fm:setFavTrack', libId, trackId, on),
-  /* 收听时长统计：增量上报（day/秒数/小时/分类），查询区间，读写每日目标（分钟） */
+  /* 收听时长统计：增量上报（day/秒数/小时/分类）与区间查询 */
   listenAdd: (day, deltaSecs, hour, catId) => ipcRenderer.invoke('fm:listenAdd', day, deltaSecs, hour, catId),
   listenQuery: (fromDay, toDay) => ipcRenderer.invoke('fm:listenQuery', fromDay, toDay),
-  listenGoalGet: () => ipcRenderer.invoke('fm:listenGoalGet'),
-  listenGoalSet: (min) => ipcRenderer.invoke('fm:listenGoalSet', min),
   /* 后台补完封面时通知一次，页面据此重读封面索引 */
   onCovers: (cb) => ipcRenderer.on('fm:covers', (e, info) => { try { cb(info); } catch (err) {} })
 });

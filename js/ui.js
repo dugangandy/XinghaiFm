@@ -368,27 +368,27 @@
     if (ok) FM.store.resetBroken();
     if (ok) {
       toast(r.count
-        ? '已清理 ' + r.count + ' 份索引缓存（约 ' + fmtFreed(r.bytes) + '），重新进库会重新扫描'
-        : '本地缓存已清理', null, { key: TOAST_CACHE, ms: 4200 });
+        ? '已清除 ' + r.count + ' 个资源库的索引缓存（约 ' + fmtFreed(r.bytes) + '），下次打开资源库时将重新扫描'
+        : '索引缓存已清除', null, { key: TOAST_CACHE, ms: 4200 });
     } else {
       toast(r.count
-        ? '已清理 ' + r.count + ' 份索引缓存，仍然写不进去 —— 请检查手机剩余存储'
-        : '本地缓存仍然写不进去，请检查手机剩余存储', 'warn', { key: TOAST_CACHE, ms: 6000 });
+        ? '已清除 ' + r.count + ' 个资源库的索引缓存，但仍无法写入，请检查设备剩余存储'
+        : '索引缓存已清除，但仍无法写入，请检查设备剩余存储', 'warn', { key: TOAST_CACHE, ms: 6000 });
     }
     return ok;
   }
 
-  /* 设置菜单里的「清除缓存…」：先把清什么、留什么说清楚，再动手。
+  /* 设置菜单里的「清除索引缓存…」：先把清什么、留什么说清楚，再动手。
      没超配额时也允许主动清（换库前腾地方），所以不复用警告那条文案 */
   function clearCacheFlow() {
     let s = { count: 0, bytes: 0 };
     try { s = FM.store.indexCacheSize(); } catch (e) {}
-    if (!s.count) { toast('本机没有可清理的索引缓存'); return; }
+    if (!s.count) { toast('暂无可清理的索引缓存'); return; }
     confirmModal({
-      title: '清除本地缓存？',
-      message: '会清掉 ' + s.count + ' 份资源库索引（约 ' + fmtFreed(s.bytes) + '）。',
-      note: '分类、进度、收藏和设置都保留，不受影响；清完再进资源库会重新扫描一次。',
-      icon: 'folder', okText: '清除'
+      title: '清除索引缓存？',
+      message: '将删除 ' + s.count + ' 个资源库的索引缓存（约 ' + fmtFreed(s.bytes) + '）。',
+      note: '分类、播放进度、收藏与设置不受影响；下次打开资源库时将重新扫描。',
+      icon: 'broom', okText: '清除缓存', danger: true
     }).then(function (ok) { if (ok) clearLocalCache(); });
   }
 
@@ -398,10 +398,10 @@
     const switching = !!toastSlots[TOAST_SWITCH] && !!(lib && lib.name);
     if (toastSlots[TOAST_SWITCH]) { dismissToast(toastSlots[TOAST_SWITCH]); delete toastSlots[TOAST_SWITCH]; }
     toast(switching
-      ? '已切换到「' + lib.name + '」，但本地缓存写不下，本次改动不会保存'
-      : '本地缓存已满或不可用，改动可能无法保存',
+      ? '已切换到「' + lib.name + '」，但索引缓存无法写入，本次改动不会保存'
+      : '索引缓存已满或不可用，改动可能无法保存',
       'warn',
-      { key: TOAST_CACHE, ms: 7000, action: { label: '清理缓存', onPick: clearLocalCache } });
+      { key: TOAST_CACHE, ms: 7000, action: { label: '清除索引缓存', onPick: clearLocalCache } });
   }
 
   /* 分类与专辑整理（归类/置顶/重命名/隐藏）已改为写 fm.db：桌面走 IPC、网页和手机走 /api/meta，
@@ -1043,7 +1043,7 @@
     const hiddenCount = L.albums().filter(a => a.hidden).length;
     const phone = isPhone();
 
-    /* 手机首页不出头部那一行（库名 / 专辑数 / 大小）：这些统计挪到「我的资源库」里看，
+    /* 手机首页不出头部那一行（库名 / 专辑数 / 大小）：这些统计挪到「资源库设置」里看，
        手机上一进来就是 tab 行 + 内容，省掉一次 stats() 全遍历 */
     let head = '';
     if (!phone) {
@@ -2143,7 +2143,8 @@
   function viewStats() {
     const wrap = U.el('div'); wrap.className = 'stats-view';
     let mode = 'day';
-    let lastBars = null, lastMax = 1, lastTodayIndex = -1, cacheGoalMin = 0;
+    let lastData = null;                 /* 最近一次 summary，liveTick 用它替换今日值 */
+    let resyncing = false;               /* 今日档跨小时重绘中，避免每秒重复触发 */
     let liveTimer = null, unsub = null, alive = true;
 
     wrap.innerHTML =
@@ -2151,265 +2152,138 @@
         '<h1 class="stats-title">收听统计</h1>' +
         '<div class="seg" id="statsSeg">' +
           '<button class="seg-btn active" data-mode="day">今日</button>' +
-          '<button class="seg-btn" data-mode="week">本周</button>' +
+          '<button class="seg-btn" data-mode="d7">7 天</button>' +
+          '<button class="seg-btn" data-mode="d30">30 天</button>' +
         '</div>' +
       '</div>' +
-      '<div class="stats-grid">' +
-        '<section class="stat-card stat-duration">' +
-          '<div class="stat-card-label">收听时长 · <span id="durLabel">今日</span></div>' +
-          '<div class="dur-big" id="durBig">0<span class="dur-unit">分钟</span></div>' +
-          '<div class="dur-sub" id="durSub">今天还没开始收听</div>' +
-          '<div class="mini-bars" id="durBars"></div>' +
-        '</section>' +
-        '<section class="stat-card stat-streak">' +
-          '<div class="stat-card-label">连续收听</div>' +
-          '<div class="streak-row">' +
-            '<div class="streak-cell"><div class="streak-num" id="streakCur">0</div><div class="streak-cap">当前连听 (天)</div></div>' +
-            '<div class="streak-sep"></div>' +
-            '<div class="streak-cell"><div class="streak-num" id="streakMax">0</div><div class="streak-cap">历史最长 (天)</div></div>' +
-          '</div>' +
-          '<div class="streak-tip" id="streakTip">开始收听后，这里会记录你的第一天</div>' +
-        '</section>' +
-        '<section class="stat-card stat-goal">' +
-          '<div class="stat-card-label">每日目标完成率</div>' +
-          '<div class="goal-wrap" id="goalWrap">' +
-            '<div class="goal-ring" id="goalRing"><svg class="ring-svg" viewBox="0 0 100 100"><defs><linearGradient id="statsRingGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs><circle class="ring-bg" cx="50" cy="50" r="42"/><circle class="ring-fg" cx="50" cy="50" r="42"/></svg><div class="goal-pct" id="goalPct">0%</div></div>' +
-            '<div class="goal-side"><div class="goal-today" id="goalToday">0分 / 0分</div><button class="goal-set" id="goalSetBtn">设定目标</button></div>' +
-          '</div>' +
-          '<div class="goal-empty" id="goalEmpty" hidden><div class="goal-empty-tip">还没有设定每日收听目标</div><button class="goal-set" id="goalSetBtn2">设定每日目标</button></div>' +
-        '</section>' +
-        '<section class="stat-card stat-annual">' +
-          '<div class="annual-head"><div class="stat-card-label">年度报告</div><div class="year-sel" id="yearSel"></div></div>' +
-          '<div class="annual-empty" id="annualEmpty">今年还没有收听记录，开始收听后这里会生成你的专属年报</div>' +
-          '<div class="annual-grid" id="annualGrid" hidden>' +
-            '<div class="annual-kpi"><div class="annual-num" id="aTotal">0</div><div class="annual-cap">全年总时长</div></div>' +
-            '<div class="annual-kpi"><div class="annual-num" id="aDays">0</div><div class="annual-cap">收听天数</div></div>' +
-            '<div class="annual-kpi"><div class="annual-num" id="aPeak">--:00</div><div class="annual-cap">最活跃时段</div></div>' +
-            '<div class="annual-block"><div class="ab-title">月度分布</div><div class="month-bars" id="monthBars"></div></div>' +
-            '<div class="annual-block"><div class="ab-title">内容类型占比</div><div class="cat-donut" id="catDonut"></div></div>' +
-          '</div>' +
-          '<button class="annual-share" id="annualShare" hidden>生成年度总结</button>' +
-        '</section>' +
-      '</div>';
+      '<section class="stats-hero">' +
+        '<div class="hero-top"><div class="hero-label">收听时长 · <b id="scopeLabel">今日</b></div></div>' +
+        '<div class="hero-num"><span class="val" id="durBig">0</span><span class="hero-unit" id="durUnit">分钟</span></div>' +
+        '<div class="hero-sub" id="durSub">今天还没开始收听</div>' +
+        '<div class="hero-bars" id="durBars" aria-hidden="true"></div>' +
+        '<div class="hero-foot">' +
+          '<span id="rangeText">今天 · 0–23 时</span>' +
+          '<span>共 <b id="countNum">0</b> <span id="countUnit">小时</span>有记录</span>' +
+        '</div>' +
+      '</section>';
 
     const $ = function (id) { return wrap.querySelector('#' + id); };
-    const pad2 = function (n) { return (n < 10 ? '0' : '') + n; };
 
-    /* 模块一 · 时长
-       「今天」在 bars 里的位置由 summary 的 todayIndex 给出：日模式是最后一根，
-       周模式是周一~周日里的某一天，不能想当然当成最后一根。 */
-    function renderBars(c, bars, m, ti) {
-      lastBars = bars;
-      lastTodayIndex = ti;
+    /* 标签：今日档 0/6/12/18/23 时与当前小时；7 天每根日期；30 天每 5 天一个 */
+    function labelsOf(bars, ti) {
+      return bars.map(function (b, i) {
+        if (mode === 'day') {
+          if (i === ti) return '现在';
+          if (i % 6 === 0 || i === 23) return i + '时';
+          return '';
+        }
+        if (i === ti) return '今天';
+        if (mode === 'd30' && (bars.length - 1 - i) % 5 !== 0) return '';
+        const d = new Date(String(b.day).replace(/-/g, '/'));
+        return (d.getMonth() + 1) + '/' + d.getDate();
+      });
+    }
+
+    function renderBars(data) {
+      const bars = data.bars, ti = data.todayIndex;
+      const labs = labelsOf(bars, ti);
       const max = Math.max.apply(null, bars.map(function (b) { return b.secs; }).concat([1]));
-      lastMax = max;
+      const c = $('durBars');
+      c.classList.toggle('dense', bars.length > 12);
       c.innerHTML = bars.map(function (b, i) {
-        const h = Math.max(3, (b.secs / max) * 100);
-        let label;
-        if (m === 'week') label = '周' + '一二三四五六日'[i];
-        else { const d = new Date(b.day.replace(/-/g, '/')); label = (i === ti) ? '今天' : d.getDate() + '日'; }
-        return '<div class="mbar' + (i === ti ? ' on' : '') + '"><div class="mbar-fill" style="height:' + h + '%"></div><div class="mbar-lab">' + label + '</div></div>';
+        const h = Math.max(4, (b.secs / max) * 100);
+        return '<div class="hbar' + (i === ti ? ' on' : '') + '">' +
+          '<div class="hbar-track"><div class="hbar-fill" style="height:' + h + '%">' +
+          (i === ti ? '<span class="hbar-dot"></span>' : '') +
+          '</div></div>' +
+          '<div class="hbar-lab">' + labs[i] + '</div></div>';
       }).join('');
     }
-    function showDuration(total, m) {
-      const big = $('durBig'), sub = $('durSub');
-      if (total >= 3600) big.innerHTML = (total / 3600).toFixed(1) + '<span class="dur-unit">小时</span>';
-      else big.innerHTML = Math.floor(total / 60) + '<span class="dur-unit">分钟</span>';
-      sub.textContent = total > 0 ? (m === 'day' ? '今日已收听 ' : '本周已收听 ') + FM.stats.fmt(total) : (m === 'day' ? '今天还没开始收听' : '本周还没开始收听');
+
+    function scopeName(m) { return m === 'day' ? '今日' : (m === 'd7' ? '近 7 天' : '近 30 天'); }
+    function dayLabel(s) {
+      const d = new Date(String(s).replace(/-/g, '/'));
+      return (d.getMonth() + 1) + '月' + d.getDate() + '日';
     }
+
+    function showDuration(total) {
+      const big = $('durBig');
+      if (total >= 3600) { big.textContent = (total / 3600).toFixed(1); $('durUnit').textContent = '小时'; }
+      else { big.textContent = String(Math.floor(total / 60)); $('durUnit').textContent = '分钟'; }
+      const empty = mode === 'day' ? '今天还没开始收听'
+        : (mode === 'd7' ? '最近 7 天还没开始收听' : '最近 30 天还没开始收听');
+      $('durSub').textContent = total > 0 ? scopeName(mode) + '已收听 ' + FM.stats.fmt(total) : empty;
+    }
+
+    function paint(data) {
+      lastData = data;
+      $('scopeLabel').textContent = scopeName(mode);
+      showDuration(data.total);
+      renderBars(data);
+      $('rangeText').textContent = data.mode === 'day'
+        ? '今天 · 0–23 时'
+        : dayLabel(data.from) + ' – ' + dayLabel(data.to);
+      const filled = data.bars.filter(function (b) { return b.secs > 0; }).length;
+      $('countNum').textContent = filled;
+      $('countUnit').textContent = data.mode === 'day' ? '小时' : '天';
+    }
+
     async function refreshDuration(m) {
-      const s = await FM.stats.summary(m);
-      if (!alive) return;
-      showDuration(s.total, m);
-      renderBars($('durBars'), s.bars, m, s.todayIndex);
+      let data = null;
+      try { data = await FM.stats.summary(m); } catch (e) { data = null; }
+      /* 请求期间切了档位就作废，避免用旧数据覆盖新档位 */
+      if (!alive || !data || m !== mode) return;
+      paint(data);
     }
+
     function setMode(m) {
       mode = m;
       wrap.querySelectorAll('.seg-btn').forEach(function (x) { x.classList.toggle('active', x.dataset.mode === m); });
-      $('durLabel').textContent = (m === 'day') ? '今日' : '本周';
       refreshDuration(m);
     }
-    /* 打开统计页 / 30 秒定时：先等基线刷新完，再统一重绘四个模块，
-       避免 refresh 与查询并发导致首屏显示 0 或旧值 */
+
+    /* 打开统计页 / 30 秒定时：先等基线刷新完，再取数重绘，避免首屏显示 0 或旧值 */
     async function refreshAll() {
       try { await FM.stats.refresh(); } catch (e) {}
       if (!alive) return;
       refreshDuration(mode);
-      refreshStreak();
-      refreshCompletion();
-      refreshAnnual(annualYear);
     }
 
-    /* 模块二 · 连续天数 */
-    async function refreshStreak() {
-      const s = await FM.stats.streak();
-      if (!alive) return;
-      $('streakCur').textContent = s.current;
-      $('streakMax').textContent = s.longest;
-      const tip = $('streakTip');
-      if (!s.listened) { tip.className = 'streak-tip'; tip.textContent = '开始收听后，这里会记录你的第一天'; }
-      else if (s.broken) { tip.className = 'streak-tip warn'; tip.textContent = '已中断，今天补上就好'; }
-      else if (FM.stats.today().secs > 0) { tip.className = 'streak-tip ok'; tip.textContent = '进行中 · 已连续 ' + s.current + ' 天'; }
-      else { tip.className = 'streak-tip ok'; tip.textContent = '进行中 · 昨天已收听，今天继续'; }
-    }
-
-    /* 模块三 · 完成率 */
-    function setRing(pct) {
-      const fg = wrap.querySelector('.ring-fg');
-      if (!fg) return;
-      const C = 2 * Math.PI * 42;
-      fg.style.strokeDasharray = C;
-      fg.style.strokeDashoffset = C * (1 - pct / 100);
-    }
-    async function refreshCompletion() {
-      const c = await FM.stats.completion();
-      if (!alive) return;
-      cacheGoalMin = c.goalMin;
-      if (!c.goalMin) { $('goalWrap').hidden = true; $('goalEmpty').hidden = false; return; }
-      $('goalWrap').hidden = false; $('goalEmpty').hidden = true;
-      const pct = c.pct;
-      setRing(pct); $('goalPct').textContent = pct + '%';
-      $('goalToday').textContent = FM.stats.fmt(c.todaySec) + ' / ' + c.goalMin + '分钟';
-    }
-
-    /* 模块四 · 年度报告 */
-    function renderMonthBars(c, monthly) {
-      const max = Math.max.apply(null, monthly.concat([1]));
-      c.innerHTML = monthly.map(function (v, i) {
-        const h = Math.max(4, (v / max) * 100);
-        return '<div class="mon-bar"><div class="mon-fill" style="height:' + h + '%"></div><div class="mon-lab">' + (i + 1) + '</div></div>';
-      }).join('');
-    }
-    function renderDonut(c, byCat) {
-      const map = FM.stats.catMeta();
-      const entries = Object.keys(byCat).map(function (k) { return { k: k, v: byCat[k] }; }).sort(function (a, b) { return b.v - a.v; });
-      const total = entries.reduce(function (s, e) { return s + e.v; }, 0) || 1;
-      const R = 46, C = 2 * Math.PI * R, cx = 50, cy = 50;
-      let off = 0, segs = '';
-      entries.forEach(function (e) {
-        const len = C * (e.v / total);
-        const meta = FM.stats.resolveCat(e.k, map);
-        segs += '<circle cx="' + cx + '" cy="' + cy + '" r="' + R + '" fill="none" stroke="' + meta.color + '" stroke-width="12" stroke-dasharray="' + len + ' ' + (C - len) + '" stroke-dashoffset="' + (-off) + '" transform="rotate(-90 ' + cx + ' ' + cy + ')"/>';
-        off += len;
-      });
-      let legend = '';
-      entries.slice(0, 6).forEach(function (e) {
-        const meta = FM.stats.resolveCat(e.k, map);
-        legend += '<div class="donut-leg"><i style="background:' + meta.color + '"></i><span>' + esc(meta.name) + '</span><b>' + Math.round(e.v / total * 100) + '%</b></div>';
-      });
-      c.innerHTML = '<svg class="donut-svg" viewBox="0 0 100 100">' + segs + '</svg><div class="donut-legend">' + legend + '</div>';
-    }
-    let annualYear = new Date().getFullYear();
-    async function refreshAnnual(year) {
-      const d = await FM.stats.annual(year);
-      if (!alive) return;
-      if (d.total <= 0) { $('annualEmpty').hidden = false; $('annualGrid').hidden = true; $('annualShare').hidden = true; return; }
-      $('annualEmpty').hidden = true; $('annualGrid').hidden = false; $('annualShare').hidden = false;
-      $('aTotal').textContent = FM.stats.fmt(d.total);
-      $('aDays').textContent = d.days + ' 天';
-      const pk = d.peak || { start: 0, end: 0 };
-      $('aPeak').textContent = pad2(pk.start) + '–' + pad2(pk.end + 1) + '时';
-      renderMonthBars($('monthBars'), d.monthly);
-      renderDonut($('catDonut'), d.byCat);
-    }
-    function buildYearSel() {
-      const cy = new Date().getFullYear(), y = $('yearSel');
-      y.innerHTML = [0, 1, 2, 3].map(function (i) {
-        const yr = cy - i;
-        return '<button class="year-btn' + (i === 0 ? ' active' : '') + '" data-year="' + yr + '">' + yr + '</button>';
-      }).join('');
-      y.onclick = function (e) {
-        const b = e.target.closest('.year-btn'); if (!b) return;
-        y.querySelectorAll('.year-btn').forEach(function (x) { x.classList.toggle('active', x === b); });
-        annualYear = parseInt(b.dataset.year, 10);
-        refreshAnnual(annualYear);
-      };
-    }
-
-    /* 实时：仅用内存里的今日数据，不触发后端请求。
-       周汇总只把「今天那一根」替换成实时值再求和，其余柱沿用上次查询结果，
-       不能把前 6 根加起来再补一次 tSec（那会重复计今天并丢掉周日）。 */
+    /* 实时：只用内存里的今日数据，不触发后端请求。
+       今日档替换「当前小时」那根，7/30 天档替换最后一根；
+       柱子按实时最大值重新归一，避免今日值反超后其他柱比例失真。 */
     function liveTick() {
-      if (!alive) return;
+      if (!alive || !lastData) return;
       const tSec = FM.stats.today().secs;
-      let total = tSec;
-      if (mode === 'week' && lastBars && lastTodayIndex >= 0) {
-        total = 0;
-        for (let i = 0; i < lastBars.length; i++) total += (i === lastTodayIndex ? tSec : lastBars[i].secs);
+
+      /* 今日档跨小时：高亮该挪到新的一格，整组重绘一次 */
+      if (mode === 'day' && lastData.todayIndex !== new Date().getHours()) {
+        if (!resyncing) {
+          resyncing = true;
+          refreshDuration('day').then(function () { resyncing = false; });
+        }
+        return;
       }
-      showDuration(total, mode);
-      const bar = wrap.querySelector('.mbar.on .mbar-fill');
-      if (bar) bar.style.height = Math.min(100, Math.max(3, (tSec / lastMax) * 100)) + '%';
-      const pct = cacheGoalMin > 0 ? Math.min(100, Math.round(tSec / (cacheGoalMin * 60) * 100)) : 0;
-      setRing(pct); $('goalPct').textContent = pct + '%';
-      $('goalToday').textContent = FM.stats.fmt(tSec) + ' / ' + cacheGoalMin + '分钟';
-    }
 
-    /* 目标编辑弹层 */
-    function openGoalModal() {
-      const m = document.createElement('div'); m.className = 'stats-share-modal';
-      m.innerHTML = '<div class="ssm-card ssm-goal">' +
-        '<div class="ssm-title">设定每日收听目标</div>' +
-        '<div class="ssm-goal-row"><button class="ssm-step" data-d="-5">−</button>' +
-        '<input class="ssm-input" type="number" min="0" max="1440" value="' + (cacheGoalMin || 30) + '">' +
-        '<button class="ssm-step" data-d="5">+</button><span class="ssm-unit">分钟/天</span></div>' +
-        '<div class="ssm-actions"><button class="ssm-save ssm-ok">保存</button><button class="ssm-close">取消</button></div>' +
-        '</div>';
-      document.body.appendChild(m);
-      const input = m.querySelector('.ssm-input');
-      m.querySelectorAll('.ssm-step').forEach(function (b) { b.onclick = function () { input.value = Math.max(0, Math.min(1440, (parseInt(input.value, 10) || 0) + parseInt(b.dataset.d, 10))); }; });
-      m.querySelector('.ssm-close').onclick = function () { m.remove(); };
-      m.querySelector('.ssm-ok').onclick = async function () {
-        const v = Math.max(0, Math.min(1440, parseInt(input.value, 10) || 0));
-        const btn = this;
-        btn.disabled = true;
-        let res = null;
-        try { res = await FM.stats.goalSet(v); } catch (e) { res = null; }
-        btn.disabled = false;
-        /* 写入失败（429 / 断网 / 数据库异常）时保留弹层并提示，别伪装成成功 */
-        if (!res || res.ok === false) { toast('目标没保存上，请稍后重试', 'warn'); return; }
-        m.remove(); refreshCompletion();
-      };
-      m.addEventListener('click', function (e) { if (e.target === m) m.remove(); });
-    }
+      const ti = lastData.todayIndex;
+      const bars = lastData.bars.map(function (b, i) { return i === ti ? tSec : b.secs; });
+      const max = Math.max.apply(null, bars.concat([1]));
+      showDuration(mode === 'day' ? tSec : lastData.total - lastData.todaySec + tSec);
 
-    /* 分享图弹层 */
-    async function openShare(year) {
-      toast('正在生成年度总结…');
-      let blob;
-      try { blob = await FM.stats.buildShareImage(year); } catch (e) { blob = null; }
-      if (!blob) { toast('生成失败'); return; }
-      const url = URL.createObjectURL(blob);
-      const m = document.createElement('div'); m.className = 'stats-share-modal';
-      m.innerHTML = '<div class="ssm-card"><img class="ssm-img" src="' + url + '" alt="年度总结"/>' +
-        '<div class="ssm-actions"><button class="ssm-save">保存图片</button><button class="ssm-share">分享</button><button class="ssm-close">关闭</button></div></div>';
-      document.body.appendChild(m);
-      const close = function () { m.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 1000); };
-      m.querySelector('.ssm-close').onclick = close;
-      m.querySelector('.ssm-save').onclick = function () { const a = document.createElement('a'); a.href = url; a.download = '星海FM-' + year + '-年报.png'; a.click(); };
-      m.querySelector('.ssm-share').onclick = async function () {
-        try {
-          const file = new File([blob], '星海FM-' + year + '-年报.png', { type: 'image/png' });
-          if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: '我的星海FM年报', text: year + ' 我的收听年报' });
-          else { toast('当前环境不支持分享，已为你保存'); const a = document.createElement('a'); a.href = url; a.download = '星海FM-' + year + '-年报.png'; a.click(); }
-        } catch (e) {}
-      };
-      m.addEventListener('click', function (e) { if (e.target === m) close(); });
+      const nodes = wrap.querySelectorAll('.hbar');
+      for (let i = 0; i < nodes.length; i++) {
+        const f = nodes[i].querySelector('.hbar-fill');
+        if (f) f.style.height = Math.max(4, Math.min(100, (bars[i] / max) * 100)) + '%';
+      }
     }
 
     /* 事件绑定 */
     $('statsSeg').onclick = function (e) { const b = e.target.closest('.seg-btn'); if (b) setMode(b.dataset.mode); };
-    $('goalSetBtn').onclick = openGoalModal;
-    $('goalSetBtn2').onclick = openGoalModal;
-    $('annualShare').onclick = function () { openShare(annualYear); };
 
     /* 初次填充：等基线刷新完成后统一重绘，避免首屏显示 0 或旧值 */
-    buildYearSel();
-    wrap.querySelectorAll('.seg-btn').forEach(function (x) { x.classList.toggle('active', x.dataset.mode === mode); });
-    $('durLabel').textContent = '今日';
     refreshAll();
 
-    /* 实时刷新：播放中随 tick 更新时长与完成率；每 30 秒完整重绘一次 */
+    /* 实时刷新：播放中随 tick 更新时长与当前柱；每 30 秒重新取数一次 */
     unsub = FM.stats.on('tick', liveTick);
     liveTimer = setInterval(refreshAll, 30000);
 
@@ -2445,7 +2319,7 @@
         : '<span class="step"><b>1</b>主机放入音频</span>' +
           '<span class="step"><b>2</b>重新扫描</span>' +
           '<span class="step"><b>3</b>分类、倍速、播放</span>';
-      /* 手机端的扫描入口在顶栏设置里（「立即同步」）；这里只留重试（连不上主机时用）。
+      /* 手机端的扫描入口在顶栏设置里（「重新扫描」）；这里只留重试（连不上主机时用）。
          网页端普通用户禁用扫描（只读）。 */
       actions = FM.android
         ? '<button class="btn" data-act="retry" style="height:44px;padding:0 22px">' + icon('refresh') + '重试连接</button>'
@@ -4320,53 +4194,70 @@
     openMenu(anchor, items);
   }
 
-  /* ── 设置（手机顶栏入口）──
-     侧栏在手机上不出现，原来的资源库 / 扫描 / 服务器入口全部收进这个菜单 */
+  /* ── 设置（顶栏齿轮，三端共用）──
+     侧栏在手机上不出现，资源库 / 扫描 / 服务器入口全部收进这个菜单；
+     按「资源 / 维护 / 其他」分组，避免一长串平铺 */
   function openSettingsMenu() {
-    const items = [];
-    if (canManageLib()) items.push({ label: '我的资源库', icon: 'library', onClick: openLibDrawer });
-    if (canManageUsers()) items.push({ label: '用户管理', icon: 'users', onClick: openUserDrawer });
-    /* 这个菜单只出现在手机顶栏；目录结构只在桌面端改，这里不给入口 */
+    const resource = [];
+    if (canManageLib()) resource.push({ label: '资源库设置', icon: 'library', onClick: openLibDrawer });
+    if (canManageUsers()) resource.push({ label: '用户管理', icon: 'users', onClick: openUserDrawer });
+    /* 目录结构只在桌面端改（canEditGroup 判定），dirModeItems 自带分组标题 */
     const curLib = FM.fs.active();
     if (curLib && canEditGroup()) {
       dirModeItems(curLib, function () { renderAll({ quiet: true }); })
-        .forEach(function (it) { items.push(it); });
+        .forEach(function (it) { resource.push(it); });
     }
     /* 扫描是主机上的重活，只有管理权限才给入口（网页端普通用户只读）。
-       手机端也放这一项（「立即同步」）：主动触发一次主机重扫并即时拉取，
-       不用再干等 30 秒轮询；主机那边开了目录自动监听时也可以不用它。 */
+       三端统一叫「重新扫描」：主动触发一次主机重扫并即时拉取，
+       不用等 30 秒轮询；sub 说明它只读取主机目录，不是上传同步 */
     if (canManageLib()) {
-      items.push({ label: FM.android ? '立即同步' : '重新扫描', icon: 'refresh', onClick: doScan });
+      resource.push({
+        label: '重新扫描', icon: 'refresh', sub: '重新读取主机上的资源库目录', onClick: doScan
+      });
     }
     if (FM.fs.desktop) {
-      items.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'chevron', onClick: openRemoteDialog });
+      resource.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'server', onClick: openRemoteDialog });
     } else if (FM.android) {
-      items.push({ label: '服务器设置…', icon: 'chevron', onClick: function () { FM.android.openSettings(); } });
+      resource.push({ label: '服务器设置…', icon: 'server', onClick: function () { FM.android.openSettings(); } });
     }
-    items.push({ sep: true });
+
+    const maintenance = [];
     /* 本机索引缓存（index:<libId>）随库变大，而所有库共用 WebView 那点 localStorage 配额：
-       给一个随时能清的手动出口；写不进去时那条警告里的「清理缓存」走的是同一个函数。
-       rightText 只报份数（遍历键名），体积等点开确认框再算，免得展开菜单去读几 MB 的值 */
+       给一个随时能清的手动出口；写不进去时那条警告里的「清除索引缓存」走的是同一个函数。
+       rightText 只报库数（遍历键名），体积等点开确认框再算，免得展开菜单去读几 MB 的值 */
     let cacheCount = 0;
     try { cacheCount = FM.store.indexCacheCount(); } catch (e) {}
-    items.push({
-      label: '清除缓存…', icon: 'folder',
-      rightText: cacheCount ? cacheCount + ' 份' : '',
+    maintenance.push({
+      label: '清除索引缓存…', icon: 'broom',
+      rightText: cacheCount ? cacheCount + ' 个库' : '',
       onClick: clearCacheFlow
     });
-    /* 在线更新只在 APK 里有（下载/安装都得壳配合）。版本号走右侧小字、不占第二行；
+    /* 在线更新只在 APK 里有（下载/安装都得壳配合）。状态走右侧小字、不占第二行；
        静默查到新版本后直接改那行字，不用重开菜单 */
     if (FM.android && FM.android.native) {
-      items.push({
-        label: '检查更新', icon: 'refresh', cls: 'upd-item', rightText: updMenuTail(),
+      maintenance.push({
+        label: '软件更新', icon: 'update', cls: 'upd-item', rightText: updMenuTail(),
         onClick: onUpdateMenu
       });
     }
-    items.push({ label: '关于星海 FM', icon: 'headphones', onClick: openAbout });
+
+    const other = [];
+    const ver = appVersion();
+    other.push({ label: '关于', icon: 'headphones', rightText: ver ? 'v' + ver : '', onClick: openAbout });
     /* 退出登录只对浏览器直连服务器有意义（与 syncMode() 的判定保持一致） */
     if (!FM.fs.desktop && !FM.android && FM.fs.serverReached) {
-      items.push({ label: '退出登录', icon: 'logout', danger: true, onClick: function () { location.href = '/__auth/logout'; } });
+      other.push({ label: '退出登录', icon: 'logout', danger: true, onClick: function () { location.href = '/__auth/logout'; } });
     }
+
+    const items = [];
+    function section(title, list) {
+      if (!list.length) return;
+      items.push({ head: title });
+      list.forEach(function (it) { items.push(it); });
+    }
+    section('资源', resource);
+    section('维护', maintenance);
+    section('其他', other);
     updMenu = openMenu(refs.btnSettings, items);
     if (FM.android && FM.android.native && FM.android.canUpdate) {
       /* 展开菜单就查一次（60 秒内复用上次结果），回来后只改那行小字 */
@@ -4417,15 +4308,15 @@
 
   /* 菜单项右侧那行小字：版本号 / 下载中 / 待安装，单行显示不折行 */
   function updMenuTail() {
-    if (!FM.android.canUpdate) return '需手动更新';
+    if (!FM.android.canUpdate) return '需手动安装';
     const s = upd.info, st = upd.state;
     const fresh = updHasNew();
     if (fresh && st && st.version === s.version) {
       if (st.state === 'downloading') return '下载中 ' + updPct(st) + '%';
       if (st.state === 'ready' || st.state === 'installing' || st.state === 'need_permission') return '待安装';
     }
-    if (fresh) return 'v' + s.version;
-    if (s && s.has === false) return '无安装包';
+    if (fresh) return '可更新 v' + s.version;
+    /* 服务端没放包时也归到「已是最新」：对使用者而言结论一致，不必区分内情 */
     if (s) return '已是最新';
     return '';
   }
@@ -4492,15 +4383,18 @@
           if (localStorage.getItem('fm_upd_notified') === s.version) return s;
           localStorage.setItem('fm_upd_notified', s.version);
         } catch (e) {}
-        toast('发现新版本 v' + s.version + '，设置 → 检查更新');
+        /* 轻提示直接给出更新入口，不必让用户再找设置菜单 */
+        toast('发现新版本 v' + s.version, null, {
+          ms: 5000,
+          action: { label: '更新', onPick: openUpdateDialog }
+        });
       }
       return s;
     });
   }
 
   function toastLatest(s) {
-    if (s == null) { toast('暂时无法检查更新', 'warn'); return; }
-    if (s.has === false) { toast('服务器上没有可用的安装包', 'warn'); return; }
+    if (s == null) { toast('暂时无法检查更新，请检查网络后重试', 'warn'); return; }
     toast('已是最新版本 v' + appVersion());
   }
 
@@ -4509,7 +4403,7 @@
      所以给 300ms 宽限：结果先到就只弹 toast（或只弹下载框），不闪。 */
   function onUpdateMenu() {
     if (!FM.android.canUpdate) {
-      toast('当前版本不支持在线更新，请手动安装最新 APK', 'warn');
+      toast('当前版本不支持在线更新，请手动安装最新版本', 'warn');
       return;
     }
     /* 缓存里已经有新版：不用再等，直接弹（里面能看进度/直接安装） */
@@ -4530,15 +4424,17 @@
     });
   }
 
+  /* 原因码保持与安卓壳上报的一致（旧壳也会带 checksum / bad_apk），
+     只是把语义重叠的两条合并成同一句，不让用户看到两种"校验失败" */
   const UPD_REASON = {
     network: '下载失败，请检查网络后重试',
-    space: '手机存储空间不足，清理后再试',
-    checksum: '安装包不完整，请重试',
+    space: '存储空间不足，请清理后重试',
+    checksum: '安装包校验未通过，请重新下载',
     auth: '登录已过期，请重新登录',
-    bad: '服务器上的安装包已不可用，请稍后重试',
-    bad_apk: '安装包校验失败，请重新下载',
+    bad: '服务器上的安装包暂不可用，请稍后重试',
+    bad_apk: '安装包校验未通过，请重新下载',
     signature: '安装包签名与当前 App 不一致，请卸载后重装',
-    io: '安装包打不开，请重新下载'
+    io: '安装包无法打开，请重新下载'
   };
 
   /* ── 更新弹窗：检查中 / 下载中 / 待安装 / 需要权限 / 失败 都在同一个框里换按钮 ── */
@@ -4558,7 +4454,7 @@
     body.appendChild(note);
 
     const modal = openModal({
-      title: '检查更新',
+      title: '软件更新',
       body: body,
       actions: [],
       onClose: function () { if (upd.dialog && upd.dialog.mask === modal.mask) upd.dialog = null; }
@@ -4616,37 +4512,37 @@
       note.textContent = '';
       if (phase === 'checking') { left.textContent = '正在检查更新…'; right.textContent = ''; }
       else if (phase === 'latest') {
-        left.textContent = s.has === false ? '服务器上没有可用的安装包' : '已是最新版本 v' + current;
+        left.textContent = '已是最新版本 v' + current;
         right.textContent = '';
       }
       else if (phase === 'download') {
         left.textContent = '下载中 ' + pct + '%';
         right.textContent = updSize(loaded) + ' / ' + updSize(total);
       } else if (phase === 'ready') {
-        left.textContent = st.state === 'installing' ? '已交给系统安装器…' : '下载完成，点「安装」覆盖升级';
+        left.textContent = st.state === 'installing' ? '已交由系统安装' : '安装包已就绪，安装后将覆盖当前版本';
         right.textContent = updSize(total);
-        if (st.state !== 'installing') note.textContent = '安装完成后 App 会自动重启';
+        if (st.state !== 'installing') note.textContent = '安装完成后将自动重启 App';
       } else if (phase === 'need') {
-        left.textContent = '需要允许「安装未知应用」';
+        left.textContent = '需允许安装未知应用';
         right.textContent = '';
-        note.textContent = '开启后返回，再点一次安装';
+        note.textContent = '授权后返回本页，再次点击安装';
       } else if (phase === 'error') {
-        left.textContent = UPD_REASON[st.reason] || '下载失败，请重试';
+        left.textContent = UPD_REASON[st.reason] || '下载失败，请重新下载';
         right.textContent = '';
       } else {
-        left.textContent = '准备下载';
+        left.textContent = '可下载';
         right.textContent = total > 0 ? updSize(total) : '';
       }
 
       const acts = [];
-      if (phase === 'latest') acts.push({ label: '知道了', cls: 'btn-primary' });
+      if (phase === 'latest') acts.push({ label: '关闭', cls: 'btn-primary' });
       else if (phase === 'download') acts.push({ label: '取消', onClick: function () { FM.android.cancelUpdate(); } });
       else if (phase === 'idle') acts.push({ label: '下载', cls: 'btn-primary', onClick: startDownload });
       else if (phase === 'ready') {
         if (st.state === 'installing') {
           acts.push({ label: '关闭' });
         } else {
-          acts.push({ label: '稍后' });
+          acts.push({ label: '稍后安装' });
           acts.push({ label: '安装', cls: 'btn-primary', onClick: function () { FM.android.installApk(); return false; } });
         }
       } else if (phase === 'need') {
@@ -5421,7 +5317,7 @@
   const DIR_MODE_LABEL = {
     flat: ['默认', '每个文件夹是专辑', 'folder'],
     cat: ['二级目录', '一级文件夹是分类，二级是专辑', 'grid'],
-    auto: ['自动检测', '自动识别分类和专辑', 'refresh']
+    auto: ['自动检测', '自动识别分类和专辑', 'wand']
   };
   function libDirMode(l) {
     const m = l && l.dirMode;
@@ -5779,7 +5675,7 @@
   /* 服务端模式：别人（桌面 / 网页 / 主机自动监听）扫完写进服务端缓存后，把那份索引静默同步过来。
      全程 refresh=false，只是在服务端读缓存，不会触发走盘。
      调用时机：启动 / 回前台 / 切库 / 重连，以及前台每 60 秒的周期检查（js/app.js）。
-     需要立刻刷新时也可以用顶栏设置里的「立即同步」手动触发一次主机重扫。
+     需要立刻刷新时也可以用顶栏设置里的「重新扫描」手动触发一次主机重扫。
      gap 是两次机会性检查之间的最小间隔：切库 / 启动用默认 30 秒，回前台用 5 分钟
      （回前台那几百毫秒是 WebView 重新出图的窗口，别在那儿做下载 + 解析 + 重绘的重活）。 */
   let stampCheckedAt = 0;

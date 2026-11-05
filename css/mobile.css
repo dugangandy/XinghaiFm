@@ -44,8 +44,9 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .scan-state > span,.link-state > span{display:none}
   .link-state.auth{border:0;background:none}
   .topbar #btnLogout{display:none}
-  .topbar .icon-btn.sm-only{display:grid;width:34px;height:34px}
-  .topbar .icon-btn.sm-only .i{width:19px;height:19px}
+  /* 设置齿轮三端共用，手机上收到 34px；不再靠 .sm-only 控制显隐 */
+  .topbar #btnSettings{width:34px;height:34px}
+  .topbar #btnSettings .i{width:19px;height:19px}
 
   /* ── 内容区 ── */
   .view{padding:4px 12px calc(var(--pb-h) + var(--sab) + 18px)}
@@ -589,12 +590,16 @@ body.app-fs .vstage{
 
 /* 收听统计 · 移动端 */
 @media (max-width:780px){
-  .stats-grid{grid-template-columns:1fr}
-  .annual-grid{grid-template-columns:1fr 1fr}
-  .stats-view{padding:4px 10px 32px}
+  .stats-view{padding:28px 12px 48px}
   .stats-title{font-size:22px}
-  .dur-big{font-size:40px}
-  .mini-bars{height:74px}
-  .month-bars{height:104px}
-  .cat-donut{justify-content:center}
+  .seg-btn{padding:6px 11px;font-size:12px}
+  .stats-hero{padding:20px 18px 18px;border-radius:22px}
+  .hero-num .val{font-size:56px}
+  .hero-unit{font-size:16px}
+  .hero-bars{height:132px;gap:8px;margin-top:24px}
+  .hero-bars.dense{gap:3px}
+  .hero-bars.dense .hbar-track{width:4px}
+  .hbar-track{width:8px}
+  .hbar{max-width:40px}
+  .hero-foot{flex-wrap:wrap;gap:6px}
 }
