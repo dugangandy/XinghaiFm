@@ -39,6 +39,8 @@
 .chip:hover{color:#fff;border-color:var(--line-2);background:rgba(255,255,255,.07)}
 .chip.on{color:#04070d;background:var(--grad);border-color:transparent;font-weight:600}
 .chip.on .i{opacity:1}
+/* 高亮态是渐变底：数字要跟着走深色，否则白字压在浅渐变上几乎看不见 */
+.chip.on b{color:inherit}
 .rate-chip{font-variant-numeric:tabular-nums;letter-spacing:.02em;color:var(--txt);min-width:52px;justify-content:center}
 
 .btn{
