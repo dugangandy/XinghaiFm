@@ -1037,9 +1037,9 @@
   }
 
   /* 手机首页的快捷入口：承接原侧栏里的整页导航（首页本身不用出现在这里）。
-     一行放图标 + 文案，不显示数量角标 */
+     一行放图标 + 文案，不显示数量角标；收听统计不放手机入口，桌面侧栏的保留 */
   function mobileQuickRow() {
-    const items = navItems({ count: false }).filter(function (it) { return it.key !== 'home'; });
+    const items = navItems({ count: false }).filter(function (it) { return it.key !== 'home' && it.key !== 'stats'; });
     return '<div class="m-quick">' + items.map(function (it) {
       return '<button class="m-quick-item" data-act="nav" data-hash="' + it.hash + '">' +
         icon(it.icon) + '<span>' + it.label + '</span>' +
@@ -4222,7 +4222,7 @@
 
   /* ── 设置（顶栏齿轮，三端共用）──
      侧栏在手机上不出现，资源库 / 扫描 / 服务器入口全部收进这个菜单；
-     按「资源 / 维护 / 其他」分组，避免一长串平铺 */
+     资源 / 维护 / 其他三段只用分隔线隔开，不加分组标题（手机上标题太占高度） */
   function openSettingsMenu() {
     const resource = [];
     if (canManageLib()) resource.push({ label: '资源库设置', icon: 'library', onClick: openLibDrawer });
@@ -4268,6 +4268,8 @@
     }
 
     const other = [];
+    /* 收听统计是整页视图，手机上不在首页快捷入口里，统一从设置菜单进 */
+    other.push({ label: '收听统计', icon: 'chart', onClick: function () { go('#/stats'); } });
     const ver = appVersion();
     other.push({ label: '关于', icon: 'headphones', rightText: ver ? 'v' + ver : '', onClick: openAbout });
     /* 退出登录只对浏览器直连服务器有意义（与 syncMode() 的判定保持一致） */
@@ -4276,14 +4278,14 @@
     }
 
     const items = [];
-    function section(title, list) {
+    function section(list) {
       if (!list.length) return;
-      items.push({ head: title });
+      if (items.length) items.push({ sep: true });
       list.forEach(function (it) { items.push(it); });
     }
-    section('资源', resource);
-    section('维护', maintenance);
-    section('其他', other);
+    section(resource);
+    section(maintenance);
+    section(other);
     updMenu = openMenu(refs.btnSettings, items);
     if (FM.android && FM.android.native && FM.android.canUpdate) {
       /* 展开菜单就查一次（60 秒内复用上次结果），回来后只改那行小字 */
