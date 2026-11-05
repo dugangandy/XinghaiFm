@@ -187,6 +187,36 @@ test('自动检测：音频放在 MP3 / 音频 这类容器目录里时不算专
   assert.equal(groups[0].dirName, 'Kubernetes入门实战课');
 });
 
+test('自动检测：「08【战略篇】第8章：xxx」这类章节目录不单独成专辑', () => {
+  const groups = L.groupFiles([
+    f('极客时间/说服高手/08【战略篇】第8章：说服高手进阶技巧/01.mp3'),
+    f('极客时间/说服高手/09【战略篇】第9章：收尾/01.mp3')
+  ], 'auto');
+  assert.deepEqual(keys(groups), ['极客时间/说服高手'], '两个章并回课程这一张专辑');
+  assert.equal(groups[0].dirName, '说服高手');
+  assert.equal(groups[0].cat, '极客时间');
+  assert.equal(groups[0].files.length, 2);
+});
+
+test('自动检测：编号 + 括号的章节目录同样不单独成专辑', () => {
+  const groups = L.groupFiles([
+    f('计算机/极客时间/web安全/03【进阶篇】注入攻击/01.mp3'),
+    f('计算机/极客时间/web安全/第10讲 收尾/01.mp3')
+  ], 'auto');
+  assert.deepEqual(keys(groups), ['计算机/极客时间/web安全']);
+});
+
+test('自动检测：数字开头的真专辑名不被当成章节', () => {
+  const groups = L.groupFiles([
+    f('小说/1984/01.mp3'),
+    f('小说/24个比利/01.mp3'),
+    f('小说/7号房的礼物/01.mp3')
+  ], 'auto');
+  assert.deepEqual(keys(groups), [
+    '小说/1984', '小说/24个比利', '小说/7号房的礼物'
+  ].sort());
+});
+
 test('自动检测：根目录散落文件仍归「未分类单集」', () => {
   const groups = L.groupFiles([f('散集.mp3'), f('三体/01.mp3')], 'auto');
   const root = groups.find(g => g.key === '__root__');
