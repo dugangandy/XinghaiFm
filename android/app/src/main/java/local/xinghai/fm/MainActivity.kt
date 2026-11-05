@@ -7,9 +7,11 @@ package local.xinghai.fm
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -20,6 +22,7 @@ import android.os.Looper
 import android.os.StatFs
 import android.provider.Settings
 import android.text.InputType
+import android.view.ActionMode
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -93,6 +96,12 @@ class MainActivity : Activity() {
     private var loadFailed = false
     private var lastBack = 0L
     private var authRetried = false
+    /* 网页上报的「这次长按允许选字」：只对输入框和 .selectable 纯文字为 true。
+       由 JS 线程写、触摸线程读，用 @Volatile 保证看见最新值。
+       默认 true：登录页（/__auth 是独立 HTML，不加载 android.js）等没有上报的页面
+       必须保持原生行为，否则用户名/密码框连长按粘贴都点不出来 */
+    @Volatile
+    private var selectAllowed = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -195,6 +204,24 @@ class MainActivity : Activity() {
     }
 
     /* ── WebView ── */
+    /* 不建文本选择 ActionMode：页面里的选字手柄和「复制/全选/分享」工具栏都由它派生，
+       关掉就从原生这层断掉。只有网页上报 selectAllowed（输入框内、或 .selectable 纯文字上）时放行，
+       否则搜索框、资源库地址输入框会连长按粘贴都用不了。
+       两个重载都要覆写：View 的单参内部虽然会转到双参，但 WebView 自己覆写了单参，
+       内部路径不一定再回到这里（补上零成本，别指望它去猜） */
+    private inner class NoSelectWeb(ctx: Context) : WebView(ctx) {
+        override fun startActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? {
+            if (!selectAllowed) return null
+            return super.startActionMode(callback, type)
+        }
+
+        @Suppress("DEPRECATION")
+        override fun startActionMode(callback: ActionMode.Callback?): ActionMode? {
+            if (!selectAllowed) return null
+            return super.startActionMode(callback)
+        }
+    }
+
     @Suppress("SetJavaScriptEnabled")
     private fun mountWeb() {
         web?.let { runCatching { root.removeView(it); it.destroy() } }
@@ -202,11 +229,20 @@ class MainActivity : Activity() {
         root.removeAllViews()
         offline = null
 
-        val w = WebView(this)
+        val w = NoSelectWeb(this)
         web = w
         w.setBackgroundColor(BG)
         w.overScrollMode = View.OVER_SCROLL_NEVER
         w.isVerticalScrollBarEnabled = false
+        /* 压掉原生的长按 contextmenu（图片/链接的「保存图片」「打开链接」）。
+           选区本身在渲染进程里起、不走 View.performLongClick，所以这里拦不住选字——
+           那道防线是上面的 NoSelectWeb.startActionMode 加网页层的 user-select:none。
+           返回 true = 消费长按，因此「允许选字」的位置返回 false：
+           网页报过 selectAllowed，或者命中输入框（EDIT_TEXT，交给网页自己弹粘贴/选择菜单） */
+        w.setOnLongClickListener {
+            val editable = w.hitTestResult.type == WebView.HitTestResult.EDIT_TEXT_TYPE
+            !(selectAllowed || editable)
+        }
         with(w.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -240,6 +276,12 @@ class MainActivity : Activity() {
                 if (base.isNotEmpty() && url.startsWith(base)) return false
                 runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
                 return true
+            }
+
+            /* 换页时先恢复成「允许选字」：主页跳登录页（/__auth 不加载 android.js）后
+               收不到新上报，残留的 false 会把登录框的长按粘贴一起禁掉 */
+            override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+                selectAllowed = true
             }
 
             override fun onReceivedError(view: WebView, req: WebResourceRequest, err: WebResourceError) {
@@ -722,6 +764,14 @@ class MainActivity : Activity() {
                 }
                 PlaybackService.current?.updateTrack(t, sub ?: "", cover ?: "")
             }
+        }
+
+        /* 网页上报「这次长按允许选字」：手指落在输入框或 .selectable 纯文字上才为 true。
+           只改一个标记，别在这里碰 UI（该方法由 WebView 的 JS 线程调用）。
+           名字跟语义对齐（不是「是否在编辑」，是「是否允许选字」），网页侧同名调用 */
+        @JavascriptInterface
+        fun setSelectAllowed(on: Boolean) {
+            selectAllowed = on
         }
 
         /* 网页脚本就绪（android.js 首次 syncMedia 之后调一次）：

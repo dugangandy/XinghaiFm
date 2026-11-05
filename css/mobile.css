@@ -10,6 +10,20 @@
 html{-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent}
 button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulation}
 
+/* ── 手势收敛：触屏上把页面当「应用」而不是文档 ──
+ * 双指捏合 / 双击放大不再改变页面比例；界面文字也不再被长按选中（滑动时误选半屏很烦）。
+ * 只对触屏生效（pointer:coarse），桌面 Electron 与电脑浏览器的右键、选字、缩放一行不动。
+ * touch-action 用 pan-x pan-y 而不是 none：纵横滚动/拖动照常，只去掉缩放资格；
+ * 已有的 .scrub{touch-action:none}、.m-tabs-scroll{touch-action:pan-x} 是更严格的子集，不受影响。 */
+@media (pointer:coarse){
+  html{touch-action:pan-x pan-y}
+  body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  /* 反向放行：输入控件要能移动光标、长按粘贴；.selectable 留给库路径这类纯文字信息 */
+  input,textarea,select,
+  [contenteditable]:not([contenteditable="false"]),
+  .selectable,.selectable *{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
+}
+
 /* 播放条避开手势条（浏览器里才非 0） */
 .playerbar{bottom:var(--sab)}
 

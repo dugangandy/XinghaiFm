@@ -335,6 +335,42 @@
   FM.player.on('state', function () { syncMedia(true); });
   FM.player.on('track', function () { syncMedia(true); });
   FM.player.on('stop', function () { syncMedia(true); });
+  /* ── 手势收敛（壳内补刀）──
+     网页层已经用 touch-action / user-select 把缩放和选字压住了，这里补原生路径拦不住的两处：
+     1) 长按图片、链接时弹出的系统 contextmenu；
+     2) iOS 那套 gesturestart（个别 WebView 也会派发，写上零成本）。
+     输入控件与 .selectable 纯文字（库路径、服务器地址）一律放行，别把「长按复制」一起禁掉。 */
+  const SELECTABLE = 'input,textarea,select,[contenteditable]:not([contenteditable="false"]),.selectable';
+  function selectableAt(el) {
+    return !!(el && el.nodeType === 1 && el.closest && el.closest(SELECTABLE));
+  }
+  document.addEventListener('contextmenu', function (e) {
+    if (!selectableAt(e.target)) e.preventDefault();
+  }, { passive: false });
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (type) {
+    document.addEventListener(type, function (e) { e.preventDefault(); }, { passive: false });
+  });
+
+  /* 选字白名单 → 壳：壳里默认不建文本选择 ActionMode（MainActivity.NoSelectWeb），
+     只在上面的两种情况放行。手指落下和焦点变化时各算一次；状态没变就不跨 JNI
+     （老 APK 没这个方法，typeof 挡一下，此时壳里那条 startActionMode 覆写也不存在，互不影响；
+     壳侧默认也是「允许」，所以没上报过的页面——比如不加载本脚本的登录页——保持原生行为）。 */
+  let allowSelect = null;
+  function reportSelect(on) {
+    if (allowSelect === on) return;
+    allowSelect = on;
+    try { if (typeof NATIVE.setSelectAllowed === 'function') NATIVE.setSelectAllowed(on); } catch (e) {}
+  }
+  /* 手指落点优先：输入框失焦后如果还留着焦点，不能因此把整页选字放开 */
+  document.addEventListener('touchstart', function (e) {
+    reportSelect(selectableAt(e.target));
+  }, { capture: true, passive: true });
+  document.addEventListener('focusin', function (e) { reportSelect(selectableAt(e.target)); }, true);
+  document.addEventListener('focusout', function () {
+    /* 焦点已经移走，等一拍再看最终落点（从一个输入框直接点进另一个） */
+    setTimeout(function () { reportSelect(selectableAt(document.activeElement)); }, 0);
+  }, true);
+
   /* 回前台补一次状态。每次 syncMedia(true) 都是三次跨 JNI 调用，Java 侧每个还会重发
      一次通知栏，所以「秒切回来（瞄一眼通知）」这种内容没变就推的情况要省掉。
      但也不能无限省：Bridge.setPlaying 在播放时会顺带 PlaybackService.start()，这条推送
