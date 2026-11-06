@@ -1002,8 +1002,9 @@
       if (d) dur += d;
       if (p) {
         if (p.t > lastAt) lastAt = p.t;
-        if (p.p > 5) { started++; pos += Math.min(p.p, d || p.p); }
-        if (p.done) doneCount++;
+        /* 听完过的集按整集计入：重听时 p 会回到开头，不能让专辑的「已听 %」跟着倒退 */
+        if (p.done) { started++; pos += d || p.p; doneCount++; }
+        else if (p.p > 5) { started++; pos += Math.min(p.p, d || p.p); }
       }
     });
     const pct = dur > 0 ? Math.min(100, Math.round(pos / dur * 100)) : (list.length ? Math.round(doneCount / list.length * 100) : 0);
