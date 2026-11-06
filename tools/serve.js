@@ -614,9 +614,11 @@ async function walkAndCache(root) {
   /* 同 main.js：先收集文件，再 8 路并发 stat，别一个文件一个 stat 串着等 */
   const pending = [];
   const STAT_CONC = 8;
+  let rootOk = true;          // 根目录这一层 readdir 是否成功（下面据此决定能不能落盘）
   async function walk(dir, prefix, depth) {
     let list;
-    try { list = await fsp.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
+    try { list = await fsp.readdir(dir, { withFileTypes: true }); }
+    catch (e) { if (depth === 1) rootOk = false; return; }
     for (const ent of list) {
       if (SKIP_DIR.test(ent.name)) continue;
       const rel = prefix ? prefix + '/' + ent.name : ent.name;
@@ -643,6 +645,15 @@ async function walkAndCache(root) {
     out.push({ rel: it.rel, name: it.name, ext: it.ext, size: it.size, mtime: it.mtime, depth: it.depth });
   });
   const data = { rootName: path.basename(root), root: root, scannedAt: Date.now(), files: out };
+  /* 根目录自己读不出来（NAS 关机、外接盘拔掉、SMB 会话断了）：readdir 出错在上面是静默
+     return 的，照旧落盘就成了「0 条」的新缓存，界面上整个库瞬间变空。这里保留上次结果、
+     不写盘，等目录回来再扫。 */
+  if (!rootOk) {
+    const prev = readScanCache(root);
+    console.log('[scan] 根目录不可用，保留上次缓存：' + root);
+    if (prev) return Object.assign({}, prev, { stale: true, missing: true });
+    return Object.assign({}, data, { missing: true });   // 没有旧缓存可留，也不落盘
+  }
   writeScanCache(root, data);
   return data;
 }
