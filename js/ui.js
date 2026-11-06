@@ -2001,7 +2001,7 @@
       '<span class="tk-idx">' + (t.order + 1) + '</span>' +
       '<span class="tk-eq"><i></i><i></i><i></i></span>' +
       '<div class="tk-main tk-col">' +
-        '<span class="tk-title-row">' + dlFlag(t) + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span>' + vid + '</span>' +
+        '<span class="tk-title-row">' + dlFlag(t) + vid + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span></span>' +
         '<span class="tk-sub">' + icon('clock') + sub + flag + '</span>' +
       '</div>' +
       '<button class="tk-more" data-act="more-track" data-id="' + t.id + '">' + icon('more') + '</button>' +
@@ -2019,7 +2019,8 @@
     const playing = !foreign && P.current && P.current.id === t.id;
     const pct = p && dur ? Math.min(100, Math.round((p.p || 0) / dur * 100)) : 0;
     const albumTitle = o.albumTitle || (a ? a.title : '');
-    const sub = (t.kind === 'video' ? '视频 · ' : '') + albumTitle +
+    const vid = t.kind === 'video' ? '<span class="tk-flag vid">' + icon('video') + '视频</span>' : '';
+    const sub = albumTitle +
       (foreign && o.libName ? ' · ' + o.libName : '') +
       (!foreign && p && p.t ? ' · ' + U.fmtAgo(p.t) : '');
     const libAttr = (o.libId && !o.self) ? ' data-lib="' + esc(o.libId) + '"' : '';
@@ -2027,7 +2028,7 @@
       (o.noIdx ? '' : '<span class="tk-idx">' + (t.order + 1) + '</span>') +
       '<span class="tk-eq"><i></i><i></i><i></i></span>' +
       '<div class="tk-main" style="flex-direction:column;align-items:flex-start;gap:3px">' +
-        '<span class="tk-title-row">' + (foreign ? '' : dlFlag(t)) + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span></span>' +
+        '<span class="tk-title-row">' + (foreign ? '' : dlFlag(t)) + vid + '<span class="tk-name" title="' + esc(t.title) + '">' + esc(t.title) + '</span></span>' +
         '<span style="font-size:10.5px;color:var(--dim-2)">' + esc(sub) + '</span>' +
       '</div>' +
       (pct ? '<span class="tk-prog">' + pct + '%</span>' : '') +
@@ -4603,6 +4604,7 @@
     refs.sheetQueue.innerHTML = q.map(function (t, i) {
       return '<div class="q-item' + (i === P.index ? ' on' : '') + '" data-qi="' + i + '">' +
         '<span class="q-idx"><i class="num">' + (i + 1) + '</i><svg class="i q-pico"><use href="#i-play"/></svg></span>' +
+        (t.kind === 'video' ? '<span class="tk-flag vid">' + icon('video') + '视频</span>' : '') +
         '<span class="q-name">' + esc(t.title) + '</span>' +
         '<span class="q-dur">' + (t.duration ? fmtT(t.duration) : '') + '</span></div>';
     }).join('') || '<div class="empty" style="padding:40px 10px"><p>队列为空</p></div>';
