@@ -4325,6 +4325,12 @@
       pbLeft.addEventListener('click', function (e) {
         if (e.target.closest('#pbFav')) return;
         if (!P.current) return;
+        /* 壳内视频没有网页播放页可展开：点封面/标题 = 把原生播放器叫回来。
+           只是回到界面，别把暂停中的视频硬起播（接着播是播放键的事） */
+        if (FM.android && P.current.kind === 'video') {
+          if (P.openNative) P.openNative({ autoplay: false });
+          return;
+        }
         openSheet();
         /* 从播放条展开详情页时接着播，别一进去是暂停态 */
         if (!P.playing) P.toggle();

@@ -765,13 +765,21 @@ class MainActivity : Activity() {
 
     /* ── JS 桥：只暴露必要方法，网页全部来自自己连的那台服务器 ── */
     private inner class Bridge {
+        /* 视频播放页在场时，通知栏的标题/状态/进度由它自己用 ExoPlayer 喂
+           （VideoPlayerActivity.publish），网页这边的推送让路：
+           两边都往同一条通知上写，会互相覆盖成「暂停」。current 是 @Volatile，JS 线程读没问题 */
+        private fun videoOwnsNotice(): Boolean = VideoPlayerActivity.current != null
+
         @JavascriptInterface
         fun setPlaying(on: Boolean) {
+            val owned = videoOwnsNotice()
             runOnUiThread {
                 /* 后台里被通知栏按下暂停时不要再 startForegroundService（12+ 会抛异常） */
                 if (on || PlaybackService.current != null) {
                     runCatching { PlaybackService.start(this@MainActivity) }
-                    PlaybackService.current?.updatePlaying(on)
+                    /* 视频接管期间别覆盖它的播放态，但服务本身该拉活还得拉：
+                       服务被系统收掉后通知栏会消失，回到前台要有能力重建 */
+                    if (!owned) PlaybackService.current?.updatePlaying(on)
                 }
             }
         }
@@ -779,6 +787,13 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun setTrack(title: String?, sub: String?, cover: String?) {
             val t = title ?: ""
+            /* 网页开始放别的了：上次视频的会话快照作废，
+               免得过后点通知又冒出一个已经换成音频的视频会话。
+               视频页活着时网页推送本来就被挡（见 videoOwnsNotice），不会误清 */
+            if (!videoOwnsNotice() && t.isNotEmpty() && t != VideoPlayerActivity.sessionTrackTitle()) {
+                VideoPlayerActivity.clearSession()
+            }
+            if (videoOwnsNotice()) return
             runOnUiThread {
                 /* 有曲目就把前台服务拉起来，哪怕没在播：冷启动后通知栏也要显示上一集，
                    否则界面底部有节目、通知栏却是空的（以前只有 setPlaying(true) 才建服务）。
@@ -806,13 +821,20 @@ class MainActivity : Activity() {
             this@MainActivity.js("window.FM && FM.android && FM.android.mediaAction && FM.android.mediaAction('" + cmd + "')")
         }
 
+        /* 原生视频播放页还在吗：网页用它判断「视频交给原生」这个状态是不是已经过期
+           （页面被系统回收后网页还停在原生态，底栏播放键、封面点击就全都没反应） */
+        @JavascriptInterface
+        fun videoAlive(): Boolean = VideoPlayerActivity.current != null
+
         @JavascriptInterface
         fun setNav(hasPrev: Boolean, hasNext: Boolean) {
+            if (videoOwnsNotice()) return
             runOnUiThread { PlaybackService.current?.updateNav(hasPrev, hasNext) }
         }
 
         @JavascriptInterface
         fun setProgress(posMs: Double, durMs: Double) {
+            if (videoOwnsNotice()) return
             /* NaN / Infinity → 0；上限 24 小时，防止脏值把锁屏时长撑爆 */
             val p = if (posMs.isFinite()) posMs.toLong().coerceIn(0L, MAX_MS) else 0L
             val d = if (durMs.isFinite()) durMs.toLong().coerceIn(0L, MAX_MS) else 0L

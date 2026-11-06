@@ -312,6 +312,16 @@
     }
   };
 
+  /* 原生视频播放页还在不在。旧 APK 没这个桥方法：一律当「还在」，
+     调用方不用到处判断桥方法存不存在，行为也就退回改造前 */
+  FM.android.videoAlive = function () {
+    try {
+      return typeof NATIVE.videoAlive === 'function' ? !!NATIVE.videoAlive() : true;
+    } catch (e) {
+      return true;
+    }
+  };
+
   /* 播放进度 → 锁屏/通知栏进度条（节流到 1s；seek 大跳变或切集后首帧立即推） */
   let lastProgPush = 0;
   let lastPos = -1;
@@ -383,6 +393,17 @@
     if (document.hidden) { hiddenAt = Date.now(); return; }
     if (Date.now() - hiddenAt < HEARTBEAT_MS && stateKey() === lastPushKey) return;
     syncMedia(true);
+  });
+
+  /* 回前台自检：原生播放页已经不在了（被系统回收 / 被 MainActivity 清栈），
+     网页却还停在「视频交给原生」，底栏播放键和封面就会全都没反应。
+     这种把状态交回网页播放器；点播放会按队列和进度重新拉起原生播放页。
+     （壳那边 onDestroy 会补一条 closed，这条只是兜住「JS 回调也丢了」的情况） */
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) return;
+    if (!FM.player.nativeVideo) return;
+    if (FM.android.videoAlive()) return;
+    FM.player.onNative('closed', {});
   });
 
   /* 首帧之后补一次，让通知栏在没播放时也有正确的标题；

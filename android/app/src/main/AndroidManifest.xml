@@ -55,6 +55,15 @@
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode"
             android:theme="@style/AppTheme" />
 
+        <!-- 通知栏 / 系统媒体控件的点击跳板：没有界面，决定去处后立刻退出。
+             用 Activity 当跳板是为了绕开「后台启动 Activity」的限制，见 OpenActivity 注释 -->
+        <activity
+            android:name=".OpenActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".PlaybackService"
             android:exported="false"

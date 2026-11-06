@@ -72,6 +72,33 @@ class PlaybackService : Service() {
             pendingCmd = null
             return if (SystemClock.elapsedRealtime() - pendingAt < 60000) c else null
         }
+
+        /* 点通知 / 系统媒体控件之后回到哪儿（由 OpenActivity 转发，跑在前台不受后台启动限制）：
+         *   视频播放页还在（含退到后台只听声音）→ 重排到前台，不碰 MainActivity
+         *     （MainActivity 是 singleTask，拉它会把栈上的视频页清掉 = 播放器没了）
+         *   视频页被系统回收了 → 按上次的会话（队列 + 位置 + 是否在播）直接把播放器拉回来，
+         *     不绕网页走一圈，省掉先闪一下专辑列表
+         *   没有会话（用户已经把视频关掉了）→ 老实回网页主页，别把关掉的视频又翻出来 */
+        fun openUi(ctx: Context) {
+            val vp = VideoPlayerActivity.current
+            if (vp != null && !vp.isFinishing) {
+                runCatching {
+                    ctx.startActivity(
+                        Intent(ctx, VideoPlayerActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    )
+                }
+                return
+            }
+            val restore = VideoPlayerActivity.restoreIntent(ctx)
+            if (restore != null && runCatching { ctx.startActivity(restore) }.isSuccess) return
+            runCatching {
+                ctx.startActivity(
+                    Intent(ctx, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                )
+            }
+        }
     }
 
     private var session: MediaSession? = null
@@ -131,6 +158,9 @@ class PlaybackService : Service() {
         /* 服务是异步建起来的：网页第一次 setPlaying 时 current 还是 null，那条「正在播放」会丢掉，
            通知栏就会停在「播放」按钮、也不是常驻的。建好后让网页把当前状态重推一遍。 */
         MainActivity.current?.js("window.FM && FM.android && FM.android.syncMedia && FM.android.syncMedia(true)")
+        /* 视频接管期间网页的推送被挡掉了（MainActivity.Bridge.videoOwnsNotice），
+           服务重建后得由播放页把标题/状态重推一次，否则通知栏停在空标题 */
+        VideoPlayerActivity.current?.publish()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -185,8 +215,21 @@ class PlaybackService : Service() {
         refresh(notify = false)
     }
 
-    /* ── 把指令送回网页里的播放器 ── */
+    /* ── 把指令送回播放器 ── */
     private fun act(cmd: String) {
+        /* 点通知本体 / 系统媒体控件：回到播放界面，和播放控制不是一回事 */
+        if (cmd == "open") {
+            openUi(this)
+            return
+        }
+        /* 视频播放页在场（前台，或退到后台只听声音）：这条通知显示的就是这条视频，
+           指令交给它执行，别再发给网页里已经暂停的音频播放器。
+           划掉通知也要把视频一起停，不然就是「有声音、没入口」 */
+        val vp = VideoPlayerActivity.current
+        if (vp != null && !vp.isFinishing) {
+            if (cmd == "dismiss") vp.dismissFromNotification() else vp.onMediaCommand(cmd)
+            return
+        }
         /* 用户把通知栏这条划掉了（暂停态才可划）：服务跟着收掉，别留个没有入口的前台服务。
            个别机型播放中也能划掉，那种先把声音停掉，否则又会变成「有声音没入口」 */
         if (cmd == "dismiss") {
@@ -362,10 +405,10 @@ class PlaybackService : Service() {
     }
 
     private fun build(): Notification {
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+        val open = openPending()
+        /* 系统媒体控件（Android 11+ 通知栏那块 / 锁屏）点的是 sessionActivity，
+           通知本体点的是 contentIntent，两个都给同一个去处 */
+        session?.setSessionActivity(open)
         val style = Notification.MediaStyle().setMediaSession(session?.sessionToken).setShowActionsInCompactView(0, 1, 2)
         val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL) else Notification.Builder(this)
         return builder
@@ -389,6 +432,17 @@ class PlaybackService : Service() {
             .setStyle(style)
             .build()
     }
+
+    /* 点通知 / 点系统媒体控件 → 都交给 OpenActivity 这个跳板决定去处。
+       用 getActivity 而不是 getService：从服务里 startActivity 会被 10+ 的后台启动限制拦住
+       （点了没反应），Activity 跳板是用户点起来的，转发起界面不受限制。
+       另外 sessionActivity 也得设：Android 11+ 通知栏那块媒体控件点的是它，
+       只设 contentIntent 的话，点「正在播放的这一条」会落到别处（比如 App 的启动页）。
+       用 requestCode 5，别和下面几个播放控制（1~4）撞 */
+    private fun openPending(): PendingIntent = PendingIntent.getActivity(
+        this, 5, Intent(this, OpenActivity::class.java),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
 
     private fun cmd(c: String, code: Int): PendingIntent = PendingIntent.getService(
         this, code,

@@ -46,6 +46,18 @@
   let prepareRel = '';    // 正在等的是哪条文件：同一集重载时复用它，别杀刚转了一半的任务
   let pausedAt = 0;       // 上次暂停的时刻，用来判断恢复时要不要回退
   let pausedTrackId = null;
+  /* 后台里暂停超过这么久，恢复播放前把数据源重挂一次：安卓 WebView 长时间空闲后
+     音频输出可能已经被系统拆掉，play() 照样推进进度却没有声音 */
+  const REARM_AFTER = 5 * 60 * 1000;
+  /* 回到前台后的这段时间内恢复也算：坏掉的是音频输出，用户往往是先切回 App 再点播放键 */
+  const REARM_GRACE = 2 * 60 * 1000;
+  let rearming = false;   // 正在重挂数据源，别被并发的 play() 再来一次
+  const NATIVE_OPEN_GAP = 2000;   // 拉起原生播放器的冷却，挡住双击/多入口重复拉起
+  let nativeOpenAt = 0;
+  let visibleAt = Date.now();
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) visibleAt = Date.now();
+  });
   let sleepTimer = null;
   let sleepEnd = 0;
   let sleepMode = 0;        // 0 关闭 / 'time' 定时 / 'chapter' 本集播完
@@ -337,10 +349,71 @@
   }
 
   /* ── 播放控制 ── */
+  /* 长时间后台暂停后恢复播放：安卓壳里 Chromium 可能已经把音频输出拆掉了，
+     play() 照样落地、进度照走、通知栏也显示在播，但一点声音都没有。
+     网页层拿不到「是否真的出声」（壳里 WebAudio 是禁用的），只能先重挂一次数据源，
+     让解码/输出管线重建；短暂停不走这条路，不折腾。
+     返回 false 表示期间用户切了集 / 按了暂停，调用方别再硬起播。
+     重挂失败（源失效、拿不到元数据）不拦播放：返回 true，让原来的 play() 自己去报错。 */
+  async function rearm(el, my, at) {
+    try {
+      const pos = el.currentTime || 0;
+      const r0 = el.playbackRate;
+      el.load();
+      await once(el, 'loadedmetadata');
+      if (my !== loadToken || el !== media || pausedAt !== at) return false;
+      /* 元数据没到（超时/源失效）：别硬 seek，也别改倍速，交给 play() */
+      if (el.readyState < 1) return true;
+      const d = el.duration;
+      const to = (isFinite(d) && d > 0) ? Math.min(pos, Math.max(0, d - 0.5)) : pos;
+      if (to > 0) { try { el.currentTime = to; } catch (e) {} }
+      el.playbackRate = r0;
+      ev.emit('time', el.currentTime, isFinite(d) ? d : 0);
+      return true;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  /* 这次恢复要不要重挂数据源：同一条内容、停够久，且「现在在后台」或「刚回到前台不久」
+     —— 坏掉的是音频输出，用户经常是先切回 App 再点播放键，只认 document.hidden 会漏掉这条 */
+  function needsRearm() {
+    if (rearming || !pausedAt || !cur || pausedTrackId !== cur.id) return false;
+    if (Date.now() - pausedAt < REARM_AFTER) return false;
+    return document.hidden || (Date.now() - visibleAt < REARM_GRACE);
+  }
+
+  /* 壳内视频：原生播放页已经不在了（被系统回收 / 被 MainActivity 清栈），
+     网页这边却还停在「视频交给原生」，底栏播放键、封面点击就全都没反应。
+     这种按当前队列和进度把原生播放页重新拉起来；页面还在（后台放着）就什么都不做。
+     opts.autoplay：点播放键要接着播；点封面只是回到界面，别硬起播。 */
+  function openNative(opts) {
+    const o = opts || {};
+    if (!FM.android || !cur || cur.kind !== 'video') return false;
+    if (FM.android.videoAlive()) return false;
+    /* 原生页从 startActivity 到 onCreate 登记 current 有几百毫秒空窗，双击/多入口
+       会在这里各拉一次；singleTop 会让第二次走 onNewIntent 从头重播，先挡一下 */
+    if (Date.now() - nativeOpenAt < NATIVE_OPEN_GAP) return false;
+    nativeOpenAt = Date.now();
+    nativeVideo = false;
+    nativePlaying = false;
+    ev.emit('state', false);
+    load(cur, { autoplay: o.autoplay !== false });
+    return true;
+  }
+
   async function play() {
     if (!cur) return;
-    if (nativeVideo) return;
+    if (nativeVideo) { openNative({ autoplay: true }); return; }
     if (!media.src) { await load(cur, { autoplay: true }); return; }
+    if (needsRearm()) {
+      rearming = true;
+      try {
+        if (!(await rearm(media, loadToken, pausedAt))) return;
+      } finally {
+        rearming = false;
+      }
+    }
     try {
       await media.play();
     } catch (e) {
@@ -352,7 +425,7 @@
 
   function toggle() {
     if (!cur) return;
-    if (nativeVideo) return;
+    if (nativeVideo) { openNative({ autoplay: true }); return; }
     if (media.paused) play(); else pause();
   }
 
@@ -503,6 +576,15 @@
     }
   }
 
+  /* 「已听完」是既成事实，粘性：重播一集时进度回到开头，不能因此把它擦掉
+     （否则听完后重听，列表里的「已听」标记和专辑已听集数都会掉）。
+     只有右键「标记为未听」才清（lib.setProgress(..., false)）。 */
+  function progressDone(id, p, d) {
+    if (d > 0 && p / d > 0.965) return true;
+    const prev = FM.lib.progressOf(id);
+    return !!(prev && prev.done);
+  }
+
   /* 落盘：播放中每 4 秒一次，切集 / 暂停 / 拖动 / 进后台 / 退出时立即写。
      push=false 只写本地、远程仍走 10 秒节流（拖动用）。 */
   function saveProgress(force, push) {
@@ -511,7 +593,7 @@
     if (!force && now - saveAt < 4000) return;
     const d = isFinite(media.duration) ? media.duration : (cur.duration || 0);
     const p = media.currentTime || 0;
-    const done = d > 0 && p / d > 0.965;
+    const done = progressDone(cur.id, p, d);
     /* 同一位置不重复写：next() 先落一次，load() 换集前还会再落一次 */
     const sig = cur.id + '|' + Math.round(p * 10) + '|' + Math.round(d) + '|' + (done ? 1 : 0);
     if (sig === savedSig) return;
@@ -880,6 +962,9 @@
   function onNative(type, data) {
     data = data || {};
     if (type === 'track') {
+      /* 原生在放 = 网页这边就该是「视频交给原生」。回前台自检可能把 nativeVideo 清过，
+         播放页被重新拉起后靠这条恢复，否则网页以为自己在放，底栏状态全是错的 */
+      nativeVideo = true;
       /* 原生列表索引可能和网页队列不同：按 id 对齐 */
       if (data.id) {
         const qi = queue.findIndex(function (t) { return t.id === data.id; });
@@ -894,7 +979,7 @@
       const p = Number(data.cur) || 0;
       const d = Number(data.dur) || 0;
       if (data.id && d > 0) {
-        const done = p / d > 0.965;
+        const done = progressDone(data.id, p, d);
         FM.lib.setProgress(data.id, p, d, done);
         if (FM.fs.canSyncMeta()) {
           const now = Date.now();
@@ -915,7 +1000,7 @@
       const p = Number(data.cur) || 0;
       const d = Number(data.dur) || 0;
       if (data.id && d > 0) {
-        const done = p / d > 0.965;
+        const done = progressDone(data.id, p, d);
         FM.lib.setProgress(data.id, p, d, done);
         if (FM.fs.canSyncMeta()) FM.fs.pushProgress({ id: data.id, p: p, d: d, t: Date.now(), done: done });
       }
@@ -931,7 +1016,7 @@
 
   FM.player = {
     on: ev.on,
-    play, pause, toggle, stop, seek, seekRatio, jumpBy,
+    play, pause, toggle, openNative, stop, seek, seekRatio, jumpBy,
     next, prev, setQueue, playAlbum, playTrack, addToQueue,
     setRate, cycleRate, setVolume, toggleMute, cycleLoop, setSleep, setSleepChapter, setAutoSleep, togglePip,
     setAutoRewind,

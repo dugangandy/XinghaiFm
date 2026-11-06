@@ -55,8 +55,43 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class VideoPlayerActivity : Activity() {
-    private companion object {
-        const val KEY_FS = "videoFullscreen"
+    companion object {
+        private const val KEY_FS = "videoFullscreen"
+
+        /* 当前活着（含退到后台只听声音）的播放页：通知栏「点回来」靠它决定回哪儿。
+           被系统回收后是 null，通知退回网页主页，不会拉起一个空播放器 */
+        @Volatile
+        var current: VideoPlayerActivity? = null
+            private set
+
+        /* 最后一个视频会话（队列 + 第几集 + 位置 + 是否在播 + 标题）：播放页被系统回收后
+           进程还活着，点通知还能照原样把播放器拉回来，而不是落在专辑列表。
+           用户自己关掉（返回 / 划掉通知）或网页改放别的，就清掉 */
+        @Volatile private var sessionList = ""
+        @Volatile private var sessionIndex = 0
+        @Volatile private var sessionStart = 0L
+        @Volatile private var sessionPlaying = false
+        @Volatile private var sessionTitle = ""
+
+        /* 会话里那条视频的标题：网页推来别的标题 = 已经在听别的，会话作废 */
+        fun sessionTrackTitle(): String = sessionTitle
+
+        fun clearSession() {
+            sessionList = ""
+            sessionTitle = ""
+        }
+
+        /* 按上次的会话重新拉起播放器；没有会话（用户已经关掉了）返回 null */
+        fun restoreIntent(ctx: Context): Intent? {
+            val list = sessionList
+            if (list.isEmpty()) return null
+            return Intent(ctx, VideoPlayerActivity::class.java)
+                .putExtra("list", list)
+                .putExtra("index", sessionIndex)
+                .putExtra("start", sessionStart)
+                .putExtra("autoplay", sessionPlaying)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        }
     }
 
 
@@ -113,6 +148,11 @@ class VideoPlayerActivity : Activity() {
     private var videoDetached = false      // 后台时已释放画面，回来要重新挂载
     private var timerMode = 0              // 定时关闭：0 不开启 1 播完当前 2 30分钟 3 60分钟
     private var timerRunnable: Runnable? = null
+    private var notiKey = ""               // 上次推给通知栏的「第几集 + 标题 + 播放态」指纹
+    private var started = true             // 页面可见（onStop 置 false）：只有这时才允许拉起前台服务
+    private var sessionStarted = false     // 这条实例真正接管了播放，才有资格改通知栏/网页状态
+    private var closedEmitted = false      // 已经通知网页「关掉了」，onDestroy 别再补一条
+    private var rawList = ""               // 进来时那条队列的原始 JSON，会话快照要原样存
 
     /* 画面尺寸：满屏（拉伸铺满全屏）／原比例（保持宽高比，留黑边） */
     private val SCALE_NAMES = arrayOf("满屏", "原比例", "4:3", "16:9")
@@ -140,6 +180,7 @@ class VideoPlayerActivity : Activity() {
                 durView.text = fmt(d)
             }
             emitTime()
+            publish()
             ui.postDelayed(this, 1000)
         }
     }
@@ -166,7 +207,16 @@ class VideoPlayerActivity : Activity() {
         if (audioOnly) videoFrame.visibility = View.GONE
         /* 系统重建（改字体/深色模式等）后保持原来的全屏状态，别莫名其妙退回竖屏 */
         if (!audioOnly && savedInstanceState?.getBoolean(KEY_FS) == true) setFullscreen(true)
-        if (tracks.isEmpty()) { toast("没有可播放的视频"); finish(); return }
+        /* 没有队列就没什么可放的。通知栏带着「回到播放页」的意图点进来、而这条播放页
+           已经被系统回收时就是这种情况：安静退回底下的网页主页，别弹错误提示 */
+        if (tracks.isEmpty()) {
+            if (intent?.hasExtra("list") == true) toast("没有可播放的视频")
+            finish()
+            return
+        }
+        /* 只有真正接管播放才登记成「当前播放页」：空启动那条路不能把在用的那条实例踩掉 */
+        current = this
+        sessionStarted = true
         playIndex(index, startFrom(intent), autoplay)
     }
 
@@ -178,6 +228,9 @@ class VideoPlayerActivity : Activity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         if (intent == null) return
+        /* 通知栏点回来（播放页只是被重排到前台）不带队列：接着放当前这集，
+           别当成新播放请求从 0:00 重来 */
+        if (!intent.hasExtra("list")) return
         setIntent(intent)
         parseIntent(intent)
         if (tracks.isNotEmpty()) playIndex(index, startFrom(intent), autoplay)
@@ -205,6 +258,7 @@ class VideoPlayerActivity : Activity() {
         }
         if (list.isEmpty()) return
         tracks = list
+        rawList = raw
         index = i.getIntExtra("index", 0).coerceIn(0, list.size - 1)
         autoplay = i.getBooleanExtra("autoplay", true)
     }
@@ -927,6 +981,7 @@ class VideoPlayerActivity : Activity() {
                 playPauseBtn.setImageResource(if (playing) R.drawable.ic_pause else R.drawable.ic_play)
                 centerBtn.visibility = if (!playing && !locked) View.VISIBLE else View.GONE
                 emit("state", trackJson().put("playing", playing))
+                publish()
                 if (playing) scheduleHide() else showControls()
             }
             override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -960,6 +1015,7 @@ class VideoPlayerActivity : Activity() {
         player = p
         ui.removeCallbacks(ticker)
         ui.post(ticker)
+        publish()
         emit("track", trackJson())
     }
 
@@ -1049,6 +1105,66 @@ class VideoPlayerActivity : Activity() {
         )
     }
 
+    /* ── 通知栏 / 锁屏 ──
+     * 播放页在场时这条通知归它：标题、上一集/下一集、播放态、进度都从 ExoPlayer 来，
+     * 网页那边的同名推送在 MainActivity.Bridge 里让路（两边都写会互相覆盖成「暂停」）。
+     * 每秒跟着 ticker 走一次，内容没变就只更新进度、不重发通知。 */
+    fun publish() {
+        val t = tracks.getOrNull(index) ?: return
+        val p = player ?: return
+        val on = p.playWhenReady && p.playbackState != Player.STATE_ENDED
+        /* 会话快照：播放页被系统回收后，通知栏点回来照原样拉起（位置最多差一拍 1 秒） */
+        if (rawList.isNotEmpty()) {
+            sessionList = rawList
+            sessionIndex = index
+            sessionStart = p.currentPosition
+            sessionPlaying = on
+            sessionTitle = t.title
+        }
+        val svc = PlaybackService.current
+        if (svc == null) {
+            /* 服务被系统收掉过：前台时拉起来，等下一拍（ticker）再喂内容。
+               后台不允许起前台服务（12+ 会抛），等回到前台再说 */
+            if (started) runCatching { PlaybackService.start(this) }
+            notiKey = ""
+            return
+        }
+        val key = index.toString() + "\u0000" + t.title + "\u0000" + t.sub + "\u0000" + on
+        if (key != notiKey) {
+            notiKey = key
+            svc.updateTrack(t.title, t.sub, "")
+            svc.updateNav(index > 0, index + 1 < tracks.size)
+            svc.updatePlaying(on)
+        }
+        val d = p.duration
+        if (d > 0) svc.updateProgress(p.currentPosition, d)
+    }
+
+    /* 通知栏 / 锁屏 / 耳机键的控制：视频在场时由这里执行（PlaybackService.act 转过来），
+       不再丢给网页里那台已经暂停的音频播放器。
+       切上一集/下一集跟着当前播放态走：暂停时切集不该自己响起来
+       （画面上的「下一集」按钮是另一回事，那是用户盯着界面点的） */
+    fun onMediaCommand(cmd: String) {
+        val p = player ?: return
+        when (cmd) {
+            "toggle" -> if (p.playWhenReady) p.pause() else p.play()
+            "play" -> p.play()
+            "pause" -> p.pause()
+            "next" -> if (index + 1 < tracks.size) playIndex(index + 1, 0, p.playWhenReady) else toast("已经是最后一集")
+            "prev" -> if (index > 0) playIndex(index - 1, 0, p.playWhenReady) else toast("已经是第一集")
+            else -> return
+        }
+        publish()   /* 立刻写回新状态，别等下一秒的 tick */
+    }
+
+    /* 通知栏被划掉：视频跟着停（后台只听声音时也一样），进度落盘后退出。
+       否则又会变成「有声音、没入口」 */
+    fun dismissFromNotification() {
+        if (isFinishing) return
+        player?.pause()
+        finishWithClosed()
+    }
+
     /* ── 控件显隐 ── */
     private fun setControls(show: Boolean, animate: Boolean) {
         controlsShown = show
@@ -1128,14 +1244,18 @@ class VideoPlayerActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        started = true
         if (videoDetached) {
             player?.setVideoTextureView(tex)
             videoDetached = false
         }
+        /* 回到前台补一次：后台期间服务可能被系统收掉，通知栏/锁屏状态也可能过期 */
+        publish()
     }
 
     override fun onStop() {
         super.onStop()
+        started = false
         val p = player ?: return
         if (bgAudio && p.playWhenReady && p.playbackState != Player.STATE_ENDED) {
             /* 后台只保留声音：释放视频画面，避免锁屏后继续解码画面 */
@@ -1160,11 +1280,31 @@ class VideoPlayerActivity : Activity() {
             o.put("cur", it.currentPosition / 1000.0)
             o.put("dur", (if (it.duration > 0) it.duration else 0L) / 1000.0)
         }
+        closedEmitted = true
+        /* 用户自己关的：会后快照作废，免得点通知又冒出一个已经关掉的视频 */
+        clearSession()
         emit("closed", o)
         finish()
     }
 
     override fun onDestroy() {
+        if (sessionStarted && current === this) {
+            current = null
+            /* 不是用户自己关的（被系统回收 / 被 MainActivity 清栈）：也得告诉网页一声。
+               不说的话网页一直停在「视频交给原生」，底栏播放键、封面点击全都没反应 */
+            if (!closedEmitted) {
+                val o = trackJson()
+                player?.let {
+                    o.put("cur", it.currentPosition / 1000.0)
+                    o.put("dur", (if (it.duration > 0) it.duration else 0L) / 1000.0)
+                }
+                closedEmitted = true
+                emit("closed", o)
+            }
+            /* 通知栏交还给网页里的音频播放器：让它把当前状态重推一遍。
+               不推的话通知会停在刚关掉的这条视频上（标题、播放态都是死的） */
+            MainActivity.current?.js("window.FM && FM.android && FM.android.syncMedia && FM.android.syncMedia(true)")
+        }
         super.onDestroy()
         ui.removeCallbacks(ticker)
         ui.removeCallbacks(hudRunnable)
