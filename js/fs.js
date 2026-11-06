@@ -876,7 +876,14 @@
         const a = prog[k];
         if (!a || (Number(b.t) || 0) > (Number(a.t) || 0)) { prog[k] = b; ch++; }
       });
-      if (ch) { FM.db.setProgress(prog); FM.store.touch('progress'); touched = true; }
+      if (ch) {
+        FM.db.setProgress(prog);
+        FM.store.touch('progress');
+        touched = true;
+        /* 进度是启动之后才到货的（本地缓存没这份、服务端快照里才有）：底栏首帧
+           已经画成 0:00 了，这里补画一次。只动时间那一块，不碰封面/标题 */
+        try { if (FM.ui && FM.ui.refreshBarTime) FM.ui.refreshBarTime(); } catch (e) {}
+      }
     }
     /* 目录分类黑名单：以前只在本地，别的端删掉的自动分类会在这儿重新长回来。
        取并集（本地刚删的还没推出去时不能被服务端那份盖掉），不触发重绘 */

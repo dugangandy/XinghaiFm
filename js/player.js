@@ -481,8 +481,9 @@
       cur = queue[index];
       setKind(cur.kind === 'video' ? 'video' : 'audio');
       ev.emit('track', cur, { restored: true });
+      /* 没进度就什么都不发：发 0 会把别处刚画好的位置抹成 0:00 */
       const p = FM.lib.progressOf(cur.id);
-      ev.emit('time', (p && !p.done && p.p > 0) ? p.p : 0, cur.duration || (p && p.d) || 0);
+      if (p && p.p > 0) ev.emit('time', p.p, cur.duration || p.d || 0);
       updateSession(cur);
     }
     return true;
@@ -924,9 +925,12 @@
     cur = t;
     ev.emit('track', t, { restored: true });
     /* 底栏直接显示上次听到的位置（不自动播放，也不会自动 seek；
-       用户点播放时 load() 自己会从 progress 接上） */
+       用户点播放时 load() 自己会从 progress 接上）。
+       拿不到进度就不发 time：发 0 会把底栏里已经画好的位置抹回 0:00，
+       而进度的真正到货时间是异步的（服务端快照 / 原生回传），由 store / applyMeta
+       回头喊 refreshBarTime 补画 */
     const p = FM.lib.progressOf(t.id);
-    ev.emit('time', (p && !p.done && p.p > 0) ? p.p : 0, t.duration || (p && p.d) || 0);
+    if (p && p.p > 0) ev.emit('time', p.p, t.duration || p.d || 0);
     updateSession(t);
     return true;
   }

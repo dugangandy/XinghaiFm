@@ -264,6 +264,9 @@
         scheduleMetaWrite(5000, true);       /* 整理结果变了：所有库都刷新 */
       } else if (keys.indexOf('progress') >= 0) {
         scheduleMetaWrite(5000, false);      /* 只是听了会儿：只写当前库 */
+        /* 进度落进本地缓存后立刻补画底栏时间：冷启动时这一份可能是从服务端 / 原生
+           回传补进来的，首帧画的时候还没有，不补就一直停在 0:00 */
+        try { FM.ui.refreshBarTime(); } catch (e) {}
       }
     });
     window.addEventListener('pagehide', function () { writeMetaNow(); stopServerSyncTimer(); });

@@ -50,7 +50,7 @@
     }
     let rec = null;
     try { rec = t ? FM.lib.progressOf(t.id) : null; } catch (e) {}
-    if (rec && !rec.done && rec.p > 0) return { p: rec.p, d: rec.d || (t && t.duration) || 0 };
+    if (rec && rec.p > 0) return { p: rec.p, d: rec.d || (t && t.duration) || 0 };
     return { p: 0, d: (t && t.duration) || 0 };
   }
 

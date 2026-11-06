@@ -4043,10 +4043,7 @@
       /* 底栏已经有这一集了（启动时按本机缓存先恢复的那次）：服务端按用户下发的进度
          可能刚到，这里补画一次。只补「还没挂媒体」的情况，正在放的不动，
          免得把实时位置改回去 */
-      if (!P.loaded) {
-        const p = L.progressOf(P.current.id);
-        if (p && !p.done && p.p > 0) paintTime(p.p, P.current.duration || p.d || 0);
-      }
+      if (!P.loaded) refreshBarTime();
       return false;
     }
     try {
@@ -4093,11 +4090,22 @@
     let pos = 0;
     if (P.loaded && P.current && P.current.id === t.id) {
       pos = (P.media && P.media.currentTime) || 0;
-    } else if (p && !p.done && p.p > 0) {
+    } else if (p && p.p > 0) {
+      /* done 只是「已听完」的统计标记，不代表位置要归零：listen() 恢复播放位置时
+         也不看它（见 player.load），这里跟着显示才对得上，否则点播放从中间续、
+         底栏却写着 0:00 */
       pos = dur > 0 ? Math.min(p.p, dur) : p.p;
     }
     paintTime(pos, dur);
     return dur;
+  }
+
+  /* 只把「进度」这一块重画一次（不碰封面/标题/播放态，不会闪）。
+     进度是异步到货的：本地缓存、服务端快照、原生播放器回传都可能晚于首帧，
+     谁把它们写进 db 谁就喊一嗓子，别让底栏一直停在 0:00 */
+  function refreshBarTime() {
+    if (!P.current) return;
+    paintTrackTime(P.current);
   }
 
   /* 底栏这一集没有时长时补探一次（同一集只试一次，探不到记 __noDur）。
@@ -6725,7 +6733,7 @@
     closeTopLayer,
     autoRescan, runScan, enterLib, switchLib, addLibFlow, needRescan, syncScanIfNewer,
     openLibMenu, openLibDrawer, renderStat, renderWelcome, renderBrokenLib,
-    restorePlayerBar, applyPrefs,
+    restorePlayerBar, refreshBarTime, applyPrefs,
     toast, cacheBroken, clearLocalCache, openSheet, closeSheet,
     checkUpdate, updateProgress,
     get refs() { return refs; }
