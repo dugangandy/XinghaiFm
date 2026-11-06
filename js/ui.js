@@ -4039,7 +4039,16 @@
      以前切回来就再也不恢复，底栏一直是空的，看着像播放器丢了。
      幂等：已有当前曲目（用户正在听 / 刚点了播放）就不覆盖。 */
   function restorePlayerBar() {
-    if (P.current) return false;
+    if (P.current) {
+      /* 底栏已经有这一集了（启动时按本机缓存先恢复的那次）：服务端按用户下发的进度
+         可能刚到，这里补画一次。只补「还没挂媒体」的情况，正在放的不动，
+         免得把实时位置改回去 */
+      if (!P.loaded) {
+        const p = L.progressOf(P.current.id);
+        if (p && !p.done && p.p > 0) paintTime(p.p, P.current.duration || p.d || 0);
+      }
+      return false;
+    }
     try {
       /* 不要再手动 paintTrack：restoreLast 会 emit 'track'，界面自己画；
          多补一次反而把底栏里刚恢复出来的进度（paintTime 0）又抹成 0:00 */
@@ -4049,8 +4058,7 @@
   }
 
   /* 只刷「心」相关的节点：播放条/全屏页的收藏键、专辑的「已收藏」tag、底部专辑卡的心。
-     切收藏绝不能走整个 paintTrack —— 那里会重画封面、把进度条 paintTime(0,…) 归零，
-     看着就像进度条被刷了一遍。 */
+     切收藏绝不能走整个 paintTrack —— 那里会重画封面/标题/进度整块，看着像被刷了一遍。 */
   function paintFavState(t) {
     if (!t) return;
     /* 收藏态以库里那份为准：播放队列可能还攥着重新扫描前的旧对象，只读 t.fav 会点了不刷新 */
@@ -4075,6 +4083,48 @@
     }
   }
 
+  /* 底栏 / 详情页 / 视频页的时间：媒体真挂上了用实时位置（音频、网页视频、壳内视频
+     都由播放内核回答），否则用上次听到的位置。以前进度被无脑刷成 0:00，
+     启动后的任何一次重绘（补封面、换封面、重扫）都会把恢复出来的位置抹掉 */
+  function paintTrackTime(t) {
+    const p = L.progressOf(t.id);
+    if (p && p.d && !t.duration) { t.duration = p.d; }
+    const dur = t.duration || (p && p.d) || 0;
+    let pos = 0;
+    if (P.loaded && P.current && P.current.id === t.id) {
+      pos = (P.media && P.media.currentTime) || 0;
+    } else if (p && !p.done && p.p > 0) {
+      pos = dur > 0 ? Math.min(p.p, dur) : p.p;
+    }
+    paintTime(pos, dur);
+    return dur;
+  }
+
+  /* 底栏这一集没有时长时补探一次（同一集只试一次，探不到记 __noDur）。
+     复用列表那套 readDuration，不新建常驻媒体元素 */
+  let barProbeId = '';
+  async function probeBarDuration(t) {
+    if (!t || t.duration || t.__noDur || barProbeId === t.id || !FM.fs.hasSource) return;
+    barProbeId = t.id;
+    try {
+      let dur = 0;
+      if (FM.media.needsTranscode(t.ext) || FM.media.unsupported(t.ext)) {
+        dur = await FM.fs.duration(t.rel);
+      } else {
+        const s = await FM.fs.src(t.rel);
+        dur = await readDuration(s.url, t.kind === 'video');
+        if (s.revoke) s.revoke();
+      }
+      if (!(dur > 0)) { t.__noDur = true; return; }
+      L.setDuration(t.id, dur);
+      t.duration = dur;
+      /* 期间的进度/位置可能变了：按当前状态重画一次（正在放的不碰） */
+      if (!P.loaded && P.current && P.current.id === t.id) paintTrackTime(t);
+    } catch (e) {
+      t.__noDur = true;
+    }
+  }
+
   function paintTrack(t) {
     if (!t) return;
     const a = L.album(t.albumId);
@@ -4095,9 +4145,10 @@
     paintFavState(t);
     paintAlbumCard(a, t, !!(a && a.fav));
     if (refs.shmDownload) refs.shmDownload.hidden = !canDownload();
-    const p = L.progressOf(t.id);
-    if (p && p.d && !t.duration) { t.duration = p.d; }
-    paintTime(0, t.duration || (p && p.d) || 0);
+    const dur = paintTrackTime(t);
+    /* 这一集从来没有时长（没播过、列表页也没探过）：单独补探一次，
+       否则底栏总时长会一直停在 0:00 */
+    if (!(dur > 0)) probeBarDuration(t);
     applyPlayingState();
     renderNav();
   }

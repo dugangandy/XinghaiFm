@@ -1029,6 +1029,9 @@
     get index() { return index; },
     get kind() { return kind; },
     get playing() { return nativeVideo ? nativePlaying : (!media.paused && !!media.src); },
+    /* 这一集是否已经真的挂在播放器里：刚启动 / 刚换库 / 换集过渡期为 false，
+       界面据此决定「显示媒体实时位置」还是「上次听到的位置」 */
+    get loaded() { return !!(media.src && cur && mediaTrackId === cur.id); },
     get nativeVideo() { return nativeVideo; },
     get rate() { return rate; },
     get volume() { return media.muted ? 0 : media.volume; },

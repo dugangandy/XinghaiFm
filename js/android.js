@@ -40,6 +40,20 @@
     try { return new URL(u, location.href).href; } catch (e) { return u; }
   }
 
+  /* 通知栏/锁屏要显示的位置：媒体真挂上了用实时值，否则用上次听到的进度。
+     以前 push() 不推进度，冷启动后锁屏那条要等第一帧 timeupdate 才有位置 */
+  function progressFor(t) {
+    const p = FM.player;
+    if (p.loaded) {
+      const el = p.media;
+      return { p: (el && el.currentTime) || 0, d: (el && el.duration) || 0 };
+    }
+    let rec = null;
+    try { rec = t ? FM.lib.progressOf(t.id) : null; } catch (e) {}
+    if (rec && !rec.done && rec.p > 0) return { p: rec.p, d: rec.d || (t && t.duration) || 0 };
+    return { p: 0, d: (t && t.duration) || 0 };
+  }
+
   function push() {
     const p = FM.player;
     const t = p.current;
@@ -50,6 +64,8 @@
       NATIVE.setTrack(t ? t.title : '', a ? a.title : '', coverUrl(a));
       NATIVE.setNav(p.index > 0, p.index >= 0 && q.length > 0 && p.index < q.length - 1);
       NATIVE.setPlaying(p.nativeVideo ? false : !!p.playing);
+      const pg = progressFor(t);
+      pushProgress(pg.p, pg.d);
       lastPushKey = key;   /* 桥断了就走不到这里：下次回前台还会补推一次 */
     } catch (e) {
       /* 桥断了不影响播放 */
