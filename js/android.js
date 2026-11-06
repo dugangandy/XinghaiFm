@@ -198,34 +198,12 @@
 
   function $(id) { return document.getElementById(id); }
 
-  /* 返回键：从最上层的浮层往下收，返回 true 表示这次返回被网页消化了 */
+  /* 返回键：从最上层的浮层往下收，返回 true 表示这次返回被网页消化了。
+     各层浮层的关闭方式不一样（遮罩认 mousedown、菜单和封面预览认 click、播放页和侧栏认状态），
+     统一交给 FM.ui.closeTopLayer，壳这边只负责全屏、搜索框和历史栈。 */
   function back() {
     if (document.body.classList.contains('app-fs')) { fullscreen(false); return true; }
-    const modalRoot = $('modalRoot');
-    if (modalRoot && modalRoot.childElementCount) {
-      const mask = modalRoot.querySelector('.modal-mask') || modalRoot.querySelector('.lib-drawer-mask');
-      if (mask) { mask.click(); return true; }
-      modalRoot.innerHTML = '';
-      return true;
-    }
-    const queue = $('queuePanel');
-    if (queue && queue.classList.contains('open')) {
-      const x = $('btnQueueClose');
-      if (x) x.click(); else queue.classList.remove('open');
-      return true;
-    }
-    const sheet = $('sheet');
-    if (sheet && sheet.classList.contains('open')) {
-      const x = $('btnCollapse');
-      if (x) x.click(); else sheet.classList.remove('open');
-      return true;
-    }
-    const sidebar = $('sidebar');
-    if (sidebar && sidebar.classList.contains('open')) {
-      const mask = $('drawerMask');
-      if (mask) mask.click(); else sidebar.classList.remove('open');
-      return true;
-    }
+    if (FM.ui && typeof FM.ui.closeTopLayer === 'function' && FM.ui.closeTopLayer()) return true;
     const input = $('searchInput');
     if (input && input.value) {
       input.value = '';

@@ -16,6 +16,14 @@
   let scrubbing = false;
   let menuEl = null;
   let menuOff = null;
+  /* 浮层登记表：弹窗、抽屉这类挂在 modalRoot 上的层，打开时把自己的 close 压进来，
+     关闭时摘掉。返回键从栈顶收，既不用按 DOM 猜顺序，也不用合成 mousedown。 */
+  const layerStack = [];
+  function pushLayer(close) { layerStack.push(close); }
+  function dropLayer(close) {
+    const i = layerStack.indexOf(close);
+    if (i >= 0) layerStack.splice(i, 1);
+  }
   let gridTail = null;        // 还没画出来的专辑（滚动加载用）
   let trackTail = null;       // 手机端还没画出来的曲目（滚动加载用）
   let searchTail = null;      // 搜索结果按库分组后、还没画出来的条目（滚动加载用）
@@ -481,9 +489,11 @@
     refs.modalRoot.appendChild(mask);
     function close() {
       if (!mask.isConnected) return;
+      dropLayer(close);
       mask.remove();
       if (opt.onClose) opt.onClose();
     }
+    pushLayer(close);
     setTimeout(function () {
       const inp = body.querySelector('input');
       if (inp) { inp.focus(); inp.select && inp.select(); }
@@ -5417,11 +5427,13 @@
     function close() {
       if (closed) return;
       closed = true;
+      dropLayer(close);     /* 节点还要留 380ms 播收起动画，但逻辑上已经关了 */
       document.removeEventListener('keydown', onKey);
       mask.classList.remove('show');
       panel.classList.remove('open');
       setTimeout(function () { mask.remove(); panel.remove(); }, 380);
     }
+    pushLayer(close);
     mask.addEventListener('mousedown', function (e) { if (e.target === mask) close(); });
     document.addEventListener('keydown', onKey);
     requestAnimationFrame(function () {
@@ -5861,11 +5873,13 @@
     function close() {
       if (closed) return;
       closed = true;
+      dropLayer(close);     /* 节点还要留 380ms 播收起动画，但逻辑上已经关了 */
       document.removeEventListener('keydown', onKey);
       mask.classList.remove('show');
       panel.classList.remove('open');
       setTimeout(function () { mask.remove(); panel.remove(); }, 380);
     }
+    pushLayer(close);
     mask.addEventListener('mousedown', function (e) { if (e.target === mask) close(); });
     document.addEventListener('keydown', onKey);
     requestAnimationFrame(function () {
@@ -6640,8 +6654,24 @@
     renderMain();
   }
 
+  /* 返回键 / 手势的统一收口：从最上层浮层往下收，返回 true 表示这一下被界面吃掉了。
+     弹窗和抽屉按打开顺序登记在 layerStack 里，直接调自己的 close()，不靠合成事件猜；
+     菜单、封面预览、播放页这些各只有一处，按层级从高到低单独收。 */
+  function closeTopLayer() {
+    if (!refs.modalRoot) return false;   /* 还没 init 完，壳里按了返回 */
+    if (coverViewerEl) { closeCoverViewer(); return true; }
+    if (menuEl) { closeMenu(); return true; }
+    if (layerStack.length) { layerStack[layerStack.length - 1](); return true; }
+    if (queueOpen) { toggleQueue(); return true; }
+    if (refs.sheet.classList.contains('open')) { closeSheet(); return true; }
+    if (refs.sidebar.classList.contains('open')) { closeDrawer(); return true; }
+    if (refs.searchPop && !refs.searchPop.hidden) { popClose(); return true; }
+    return false;
+  }
+
   FM.ui = {
     init, renderAll, flushBootRender, paintTrack, syncMode, downloadsChanged,
+    closeTopLayer,
     autoRescan, runScan, enterLib, switchLib, addLibFlow, needRescan, syncScanIfNewer,
     openLibMenu, openLibDrawer, renderStat, renderWelcome, renderBrokenLib,
     restorePlayerBar, applyPrefs,
