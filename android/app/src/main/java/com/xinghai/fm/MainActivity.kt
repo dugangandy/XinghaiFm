@@ -2,7 +2,7 @@
  * 只做三件事：连哪台电脑、把网页装进 WebView、把播放状态告诉前台服务。
  * 界面、数据、播放全部由 tools/serve.js + 现有 web 层负责。
  */
-package local.xinghai.fm
+package com.xinghai.fm
 
 import android.app.Activity
 import android.app.AlertDialog
@@ -96,6 +96,9 @@ class MainActivity : Activity() {
     private var loadFailed = false
     private var lastBack = 0L
     private var authRetried = false
+    /* 用户主动退出登录：之后任何一次 /__auth 导航都不许再把 prefs 里的 token 种回 cookie，
+       否则退出去又被「补种」拉回主页（表现为退出登录后自动登录） */
+    private var loggingOut = false
     /* 网页上报的「这次长按允许选字」：只对输入框和 .selectable 纯文字为 true。
        由 JS 线程写、触摸线程读，用 @Volatile 保证看见最新值。
        默认 true：登录页（/__auth 是独立 HTML，不加载 android.js）等没有上报的页面
@@ -293,8 +296,16 @@ class MainActivity : Activity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 if (!loadFailed) hideOffline()
-                /* 兜底：有 token 却被跳到登录页（cookie 竞态），补种 cookie 再刷一次 */
-                if (!authRetried && url.contains("/__auth") &&
+                if (!url.contains("/__auth")) {
+                    /* 主页已经加载成功过：之后再被赶到登录页就是会话真没了（或用户点了退出），
+                       不能再补种 cookie，那等于把刚清掉的登录态又恢复回来 */
+                    authRetried = true
+                    return
+                }
+                /* 兜底：启动后第一次就被跳到登录页（cookie 竞态），补种 cookie 再刷一次。
+                   用户主动退出登录（loggingOut）时这条必须让路：token 已从 prefs 删掉，
+                   但删除和页面跳转之间仍可能有一帧旧页面，别赌这个竞态 */
+                if (!authRetried && !loggingOut &&
                     getSharedPreferences(PREFS, MODE_PRIVATE).getString("token", "").orEmpty().isNotEmpty()
                 ) {
                     authRetried = true
@@ -606,12 +617,25 @@ class MainActivity : Activity() {
        清掉会话后回原生登录页；账号密码按「记住密码」的原有口径保留 */
     private fun logout() {
         runOnUiThread {
-            CookieManager.getInstance().removeAllCookies(null)
-            CookieManager.getInstance().flush()
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("token").apply()
-            startActivity(Intent(this@MainActivity, LoginActivity::class.java))
-            finish()
+            loggingOut = true
+            /* 先删本地会话：登录页只看 prefs 里的 token，删晚了会被它当成「已登录」自动进主页。
+               cookie 的清理是异步的，等它落地再切页，别让登录页和旧 cookie 撞在一起 */
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("token").remove("uid").apply()
+            val cm = CookieManager.getInstance()
+            cm.removeAllCookies {
+                cm.flush()
+                runOnUiThread { toLogin() }
+            }
         }
+    }
+
+    /* 回原生登录页。带上「强制出表单」：万一还有别的地方（比如换服务器的静默重登）
+       在退出过程中写回了 token，也不许跳过登录页直接进主页 */
+    private fun toLogin() {
+        if (isFinishing) return
+        startActivity(Intent(this@MainActivity, LoginActivity::class.java)
+            .putExtra(LoginActivity.EXTRA_FORCE_FORM, true))
+        finish()
     }
 
     /* 换了服务器，用登录页记住的账号密码静默换一张新 token（token 跟服务器绑定，不能复用）。
@@ -678,7 +702,7 @@ class MainActivity : Activity() {
             return
         }
         val uri = runCatching {
-            FileProvider.getUriForFile(this, "local.xinghai.fm.fileprovider", f)
+            FileProvider.getUriForFile(this, "com.xinghai.fm.fileprovider", f)
         }.getOrNull()
         if (uri == null) {
             Updater.failWith("io")

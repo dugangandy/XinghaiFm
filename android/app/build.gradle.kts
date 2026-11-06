@@ -15,11 +15,11 @@ val vp = pkgVersion.split(".").map { it.filter(Char::isDigit).toIntOrNull() ?: 0
 val vCode = vp.getOrElse(0) { 0 } * 10000 + vp.getOrElse(1) { 0 } * 100 + vp.getOrElse(2) { 0 }
 
 android {
-    namespace = "local.xinghai.fm"
+    namespace = "com.xinghai.fm"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "local.xinghai.fm"
+        applicationId = "com.xinghai.fm"
         minSdk = 24
         targetSdk = 34
         versionCode = if (vCode > 0) vCode else 1

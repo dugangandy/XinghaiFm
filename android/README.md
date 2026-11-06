@@ -13,7 +13,7 @@ android/
    ├─ build.gradle.kts                         版本号读根 package.json
    └─ src/main/
       ├─ AndroidManifest.xml
-      ├─ java/local/xinghai/fm/
+      ├─ java/com/xinghai/fm/
       │  ├─ MainActivity.kt                   服务器地址、WebView、返回键、视频全屏
       │  ├─ PlaybackService.kt                 前台服务 + MediaSession + 通知
       │  └─ WebAppBridge.kt → 见 MainActivity 内部类 Bridge

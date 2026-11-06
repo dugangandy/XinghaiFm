@@ -2,7 +2,7 @@
  * 一个页面两件事：管理已下载（播放 / 删除），从资源库挑内容下载（整张或单集）。
  * 只跑在 APK 里，网页不参与；文件与索引都在 Downloads.kt 里。
  */
-package local.xinghai.fm
+package com.xinghai.fm
 
 import android.app.Activity
 import android.app.AlertDialog

@@ -3,7 +3,7 @@
  * 横屏补回 下一集 + 「倍速 / 选集」文字按钮（点击弹出选择）。右侧锁定。
  * 手势：点=显隐，长按=快进，左/右半屏上下滑=亮度/音量。无 PiP，离开即暂停。
  */
-package local.xinghai.fm
+package com.xinghai.fm
 
 import android.app.Activity
 import android.content.Context

@@ -3,7 +3,7 @@
  * 空间检查 → 移动网络确认 → Dl.enqueue → toast。
  * 只负责“问”和“报”，下载本身、去重、续传都在 Downloads.kt 里。
  */
-package local.xinghai.fm
+package com.xinghai.fm
 
 import android.app.Activity
 import android.app.AlertDialog

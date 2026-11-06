@@ -4,7 +4,7 @@
  *   2) MediaSession 把播放状态交给系统（锁屏 / 耳机键 / 蓝牙）
  *   3) 收到控制指令就 evaluateJavascript 交给网页里的播放器
  */
-package local.xinghai.fm
+package com.xinghai.fm
 
 import android.app.Notification
 import android.app.NotificationChannel

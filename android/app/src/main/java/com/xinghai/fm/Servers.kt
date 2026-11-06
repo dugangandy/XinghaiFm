@@ -2,7 +2,7 @@
  * 登录页和「服务器设置」页共用这一份：界面只显示名字，
  * 完整地址默认藏着（鼠标悬浮 / 长按才看得到）。
  */
-package local.xinghai.fm
+package com.xinghai.fm
 
 object Servers {
     val list = listOf(

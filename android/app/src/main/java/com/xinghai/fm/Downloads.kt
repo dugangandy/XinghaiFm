@@ -3,7 +3,7 @@
  * 索引是 downloads/index.json；下载走 OkHttp（带会话 Cookie / Bearer），
  * 播放时由本机 127.0.0.1 的小 HTTP 服务出文件（支持 Range，能拖进度）。
  */
-package local.xinghai.fm
+package com.xinghai.fm
 
 import android.app.Notification
 import android.app.NotificationChannel

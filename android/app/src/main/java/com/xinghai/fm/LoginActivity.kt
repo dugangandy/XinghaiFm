@@ -7,7 +7,7 @@
  * 登录页不再提供服务器选择：地址取本机已保存的值，未配置时默认生产环境。
  * 切换环境只在「服务器设置」里做（该入口仅管理员可见）。
  */
-package local.xinghai.fm
+package com.xinghai.fm
 
 import android.app.Activity
 import android.content.Context
@@ -38,6 +38,11 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class LoginActivity : Activity() {
+
+    companion object {
+        /* 从「退出登录」进来：这次就是要看登录表单，本地残留的 token 一律不作数 */
+        const val EXTRA_FORCE_FORM = "force_form"
+    }
 
     private val BG = 0xFF05070E.toInt()
     private val DIM = 0xFF7A869E.toInt()
@@ -88,9 +93,12 @@ class LoginActivity : Activity() {
         }
         val base = prefs().getString("base", "").orEmpty()
         val token = prefs().getString("token", "").orEmpty()
+        /* 用户刚点了「退出登录」：直接出表单。哪怕 token 还在（删除和跳转之间的竞态、
+           或者换服务器的静默重登又写回了），也不能自动登录回去 */
+        val forceForm = intent?.getBooleanExtra(EXTRA_FORCE_FORM, false) == true
         /* 登录过：一进来就是 slogan 页，别让登录表单闪一下（原来先 buildUi 再校验，
            校验那几十毫秒到几秒里用户看到的是登录框） */
-        if (base.isNotEmpty() && token.isNotEmpty()) {
+        if (!forceForm && base.isNotEmpty() && token.isNotEmpty()) {
             buildSplash()
             autoLogin(base, token)
         } else {

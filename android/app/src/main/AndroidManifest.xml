@@ -63,7 +63,7 @@
         <!-- 在线更新：APK 落在 filesDir/update，只把这一个目录给系统安装器读 -->
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="local.xinghai.fm.fileprovider"
+            android:authorities="com.xinghai.fm.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data

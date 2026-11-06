@@ -7,7 +7,7 @@
  * 断点续传：服务端支持 Range，.part 留着就能接着下；ETag 存 .part.etag，
  * 服务端文件被换过时 If-Range 不匹配会整包重发，不会拼出坏包。
  */
-package local.xinghai.fm
+package com.xinghai.fm
 
 import android.content.Context
 import android.content.pm.PackageInfo

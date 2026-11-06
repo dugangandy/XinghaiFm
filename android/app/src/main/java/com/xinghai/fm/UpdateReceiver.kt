@@ -4,7 +4,7 @@
  *   1) 先发一条「已更新，点击打开」通知（用户点击 = 前台启动，不受 Android 10+ 后台启动限制）；
  *   2) 再直接 startActivity 试着无缝回主页。MIUI 这类会拦后台启动，失败时用户还有通知可点。
  */
-package local.xinghai.fm
+package com.xinghai.fm
 
 import android.app.Notification
 import android.app.NotificationChannel
