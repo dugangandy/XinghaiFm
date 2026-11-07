@@ -168,7 +168,8 @@
       <button class="icon-btn menu-btn" id="btnMenu" aria-label="切换侧栏" aria-controls="sidebar" aria-expanded="true"><svg class="i"><use href="#i-menu"/></svg></button>
       <div class="search" id="searchWrap">
         <svg class="i search-ic"><use href="#i-search"/></svg>
-        <input id="searchInput" type="text" placeholder="搜索专辑、演播者或单集…" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="searchPop">
+        <!-- 手机端没有固定占位文案：由 paintSearchHint 把最近一次搜索词填进 placeholder -->
+        <input id="searchInput" type="text" placeholder="搜索" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="searchPop">
         <button class="search-clear" id="searchClear" hidden><svg class="i"><use href="#i-close"/></svg></button>
         <kbd>/</kbd>
         <!-- 搜索建议浮层：空输入显示最近搜索，输入中显示跨库实时命中 -->

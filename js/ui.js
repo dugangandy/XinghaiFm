@@ -126,6 +126,7 @@
     if (L.albums().length) { route(); } else { renderWelcome(); }
     /* 上面 renderWelcome 那条路不走 renderMain，顶栏态在这里兜一次 */
     paintTopbar();
+    paintSearchHint();
   }
 
   /* ── 远程链路提示：断线挂个条，恢复后自动补刷 ── */
@@ -792,6 +793,16 @@
     }
   }
 
+  /* 搜索框占位：不再写死「搜索专辑、演播者或单集…」，改显最近一次搜索词。
+     手机顶栏右边只剩百来像素，固定长文案会把输入框占满；有历史时点开搜索浮层也是同一份列表。
+     只改 placeholder、不预填输入框，点进去直接打字就覆盖掉；没历史时退回「搜索」 */
+  function paintSearchHint() {
+    if (!refs || !refs.searchInput) return;
+    const list = FM.search && FM.search.history ? FM.search.history.list() : [];
+    const last = list.length ? String(list[0].q || '') : '';
+    refs.searchInput.placeholder = last || '搜索';
+  }
+
   function submitSearch(q) {
     const v = String(q || '').trim();
     popClose();
@@ -799,6 +810,7 @@
     refs.searchInput.value = v;
     refs.searchClear.hidden = false;
     FM.search.history.push(v);
+    paintSearchHint();
     state.q = v;
     state.qMore = false;
     renderMain();
@@ -807,7 +819,7 @@
   function popAct(el) {
     if (!el || popStale) return;      /* 防抖还没重绘：旧条目一律不响应 */
     const kind = el.dataset.sp;
-    if (kind === 'clear') { FM.search.history.clear(); popPaint(); return; }
+    if (kind === 'clear') { FM.search.history.clear(); paintSearchHint(); popPaint(); return; }
     if (kind === 'history') { submitSearch(el.dataset.q); return; }
     if (kind === 'all') { submitSearch(refs.searchInput.value); return; }
     const q = refs.searchInput.value.trim();
@@ -862,6 +874,8 @@
     state.q = '';
     refs.searchInput.value = '';
     refs.searchClear.hidden = true;
+    /* 顺带刷一下占位：从搜索结果点进专辑时会 push 一条历史，回来后提示词要跟着换 */
+    paintSearchHint();
     if (!seg.length) { state.view = 'home'; }
     else if (seg[0] === 'album') { state.view = 'album'; state.albumId = seg[1]; }
     else if (seg[0] === 'cat') { state.view = 'cat'; state.cat = seg[1]; }
@@ -1108,25 +1122,6 @@
     }).join('') + '</div>';
   }
 
-  /* 手机首页的资源库胶囊：手机上侧栏整块不出现，库名 / 切库入口原本全在侧栏里，
-     首页一条都看不到（切库只剩左上角那个像 logo 的品牌按钮，没有任何可点提示）。
-     这里补「我在哪个库 + 点一下切换」，点击复用已有的 openLibSwitch 弹窗（底部带「管理资源库」）。
-     放内容区左上角、宽度随库名收缩：顶栏里塞不下——实测 390 宽下再加一颗 96px 的胶囊，
-     搜索框只剩约 130px（360 宽约 100px、320 宽约 60px），placeholder 都显示不全 */
-  function mobileLibBar() {
-    const lib = FM.fs.active();
-    if (!lib) return '';      /* 一条库都没有时 renderMain 走 renderWelcome，这里只是兜底 */
-    const name = lib.name || '当前资源库';
-    /* lib.missing 是活路径：库目录掉线（NAS 断开 / 目录改名）时缓存里的专辑还在，
-       viewHome 照样会渲染，得把「目录没了」这件事显示出来 */
-    return '<button type="button" class="m-lib' + (lib.missing ? ' missing' : '') +
-      '" data-act="switch-lib" title="' + esc(lib.missing ? name + '：资源库目录不存在' : '切换资源库') + '">' +
-      '<svg class="i m-lib-ico"><use href="#i-library"/></svg>' +
-      '<b>' + esc(name) + '</b>' +
-      '<svg class="i m-lib-caret"><use href="#i-chevron"/></svg>' +
-      '</button>';
-  }
-
   /* 选中的 tab 可能在横向滚动条外：画完把它滚到可视区中间 */
   function centerActiveTab() {
     const box = refs.view.querySelector('.m-tabs-scroll');
@@ -1141,8 +1136,8 @@
     const hiddenN = hiddenAlbumCount();
     const phone = isPhone();
 
-    /* 手机首页不出头部那一行（库名 / 专辑数 / 大小）：库名交给 mobileLibBar 那颗胶囊，
-       专辑数 / 集数 / 占用这些统计挪到「资源库设置」里看，省掉一次 stats() 全遍历 */
+    /* 手机首页不出头部那一行（库名 / 专辑数 / 大小）：这些统计挪到「资源库设置」里看，
+       手机上一进来就是 tab 行 + 内容，省掉一次 stats() 全遍历 */
     let head = '';
     if (!phone) {
       const s = L.stats();
@@ -1192,8 +1187,7 @@
       : '';
 
     wrap.innerHTML = head +
-      /* 资源库胶囊放在 tab 行之前：它随内容滚走，吸顶交给 tab 行 */
-      (phone ? mobileLibBar() + mobileCatTabs('') + mobileQuickRow() : '') +
+      (phone ? mobileCatTabs('') + mobileQuickRow() : '') +
       resume +
       (all.length ? gridHtml(all) : '') + hiddenLink;
     return wrap;
@@ -2872,7 +2866,6 @@
         case 'cover-clear': clearCoverPicks(); break;
         case 'cover-save': saveCoverPicks(); break;
         case 'tab-cat': if (id) go('#/cat/' + id); else go('#/'); break;
-        case 'switch-lib': openLibSwitch(); break;
         case 'nav': if (actEl.dataset.hash) go(actEl.dataset.hash); break;
         case 'open-downloads': if (FM.android) FM.android.openDownloads(); break;
         case 'back': history.back(); break;
