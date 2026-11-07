@@ -1319,7 +1319,10 @@ class VideoPlayerActivity : Activity() {
 
     private fun fmt(ms: Long): String {
         val s = ms / 1000
-        return String.format("%d:%02d", s / 60, s % 60)
+        val h = s / 3600
+        /* 超过 1 小时才带小时位，否则保持 m:ss */
+        return if (h > 0) String.format("%d:%02d:%02d", h, (s % 3600) / 60, s % 60)
+        else String.format("%d:%02d", s / 60, s % 60)
     }
 }
 
