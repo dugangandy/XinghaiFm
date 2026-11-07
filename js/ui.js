@@ -1108,25 +1108,22 @@
     }).join('') + '</div>';
   }
 
-  /* 手机首页的资源库条：手机上侧栏整块不出现，库名 / 规模 / 切库入口原本全在侧栏里，
+  /* 手机首页的资源库胶囊：手机上侧栏整块不出现，库名 / 切库入口原本全在侧栏里，
      首页一条都看不到（切库只剩左上角那个像 logo 的品牌按钮，没有任何可点提示）。
      这里补「我在哪个库 + 点一下切换」，点击复用已有的 openLibSwitch 弹窗（底部带「管理资源库」）。
-     规模只读入参 all 的长度，不再像桌面页头那样跑一次 L.stats() 全遍历 */
-  function mobileLibBar(all) {
+     放内容区左上角、宽度随库名收缩：顶栏里塞不下——实测 390 宽下再加一颗 96px 的胶囊，
+     搜索框只剩约 130px（360 宽约 100px、320 宽约 60px），placeholder 都显示不全 */
+  function mobileLibBar() {
     const lib = FM.fs.active();
     if (!lib) return '';      /* 一条库都没有时 renderMain 走 renderWelcome，这里只是兜底 */
-    const libs = FM.fs.libs();
+    const name = lib.name || '当前资源库';
     /* lib.missing 是活路径：库目录掉线（NAS 断开 / 目录改名）时缓存里的专辑还在，
        viewHome 照样会渲染，得把「目录没了」这件事显示出来 */
-    const sub = lib.missing
-      ? '资源库目录不存在，点这里处理'
-      : ((all.length || 0) + ' 个专辑' +
-        (libs.length > 1 ? ' · ' + libs.length + ' 个资源库' : ''));
     return '<button type="button" class="m-lib' + (lib.missing ? ' missing' : '') +
-      '" data-act="switch-lib" title="切换资源库">' +
-      '<span class="m-lib-badge">' + esc(String(lib.name || '库').slice(0, 1)) + '</span>' +
-      '<span class="m-lib-body"><b>' + esc(lib.name || '当前资源库') + '</b><small>' + esc(sub) + '</small></span>' +
-      '<span class="m-lib-act">切换' + icon('chevron') + '</span>' +
+      '" data-act="switch-lib" title="' + esc(lib.missing ? name + '：资源库目录不存在' : '切换资源库') + '">' +
+      '<svg class="i m-lib-ico"><use href="#i-library"/></svg>' +
+      '<b>' + esc(name) + '</b>' +
+      '<svg class="i m-lib-caret"><use href="#i-chevron"/></svg>' +
       '</button>';
   }
 
@@ -1144,8 +1141,8 @@
     const hiddenN = hiddenAlbumCount();
     const phone = isPhone();
 
-    /* 手机首页不出头部那一行（库名 / 专辑数 / 大小）：库名与专辑数交给 mobileLibBar 那条，
-       集数 / 占用这些统计挪到「资源库设置」里看，省掉一次 stats() 全遍历 */
+    /* 手机首页不出头部那一行（库名 / 专辑数 / 大小）：库名交给 mobileLibBar 那颗胶囊，
+       专辑数 / 集数 / 占用这些统计挪到「资源库设置」里看，省掉一次 stats() 全遍历 */
     let head = '';
     if (!phone) {
       const s = L.stats();
@@ -1195,8 +1192,8 @@
       : '';
 
     wrap.innerHTML = head +
-      /* 资源库条放在 tab 行之前：它随内容滚走，吸顶交给 tab 行 */
-      (phone ? mobileLibBar(all) + mobileCatTabs('') + mobileQuickRow() : '') +
+      /* 资源库胶囊放在 tab 行之前：它随内容滚走，吸顶交给 tab 行 */
+      (phone ? mobileLibBar() + mobileCatTabs('') + mobileQuickRow() : '') +
       resume +
       (all.length ? gridHtml(all) : '') + hiddenLink;
     return wrap;
