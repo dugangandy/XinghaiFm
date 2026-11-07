@@ -39,16 +39,18 @@
 
   function $(id) { return document.getElementById(id); }
 
-  /* 顶部「← 返回」：安卓壳有系统返回手势（左滑 / 返回键），窄屏上不必再占一行，
-     整行都不画；行里的右侧按钮在手机布局里本来就隐藏，一并省掉。
-     桌面版与浏览器保持原样。 */
+  /* 页内「← 返回」那一行：手机断点（≤760px，含安卓壳）不再画——
+     它跟着内容滚走，长列表要滚回顶部才点得到，还白占一行高度。
+     手机改由顶栏左侧那颗常驻的返回箭头承担（见 paintTopbar / goBack）。
+     桌面端与 761px 以上保持原样。用函数而不是加载期常量：横竖屏、分屏改宽度后要跟着变。 */
   const APP = !!(FM.android && FM.android.native);
-  const BACK_BTN = APP ? '' : '<button class="link-btn" data-act="back">← 返回</button>';
-  const BACK_SPARE = APP ? '' : '<span class="dl-page-spare"></span>';
+  function inlineBack() { return !APP && !isPhone(); }
+  function backBtn() { return inlineBack() ? '<button class="link-btn" data-act="back">← 返回</button>' : ''; }
+  function backSpare() { return inlineBack() ? '<span class="dl-page-spare"></span>' : ''; }
 
   function backHead(actions) {
-    if (APP) return '';
-    return '<div class="view-head" style="padding:10px 2px 0">' + BACK_BTN +
+    if (!inlineBack()) return '';
+    return '<div class="view-head" style="padding:10px 2px 0">' + backBtn() +
       (actions ? '<div class="head-actions">' + actions + '</div>' : '') + '</div>';
   }
 
@@ -57,7 +59,7 @@
     refs = {
       view: $('view'), nav: $('nav'), catList: $('catList'), libStat: $('libStat'),
       topbar: $('topbar'), sidebar: $('sidebar'), drawerMask: $('drawerMask'), btnMenu: $('btnMenu'), brand: $('brand'), brandVer: $('brandVer'),
-      tbBrand: $('tbBrand'), btnSettings: $('btnSettings'),
+      tbBrand: $('tbBrand'), tbBack: $('tbBack'), btnSettings: $('btnSettings'),
       libSwitch: $('libSwitch'), libName: $('libName'), libPath: $('libPath'), libBadge: $('libBadge'),
       btnSync: $('btnSync'), btnAddCat: $('btnAddCat'),
       searchInput: $('searchInput'), searchClear: $('searchClear'),
@@ -122,6 +124,8 @@
     renderCats();
     renderStat();
     if (L.albums().length) { route(); } else { renderWelcome(); }
+    /* 上面 renderWelcome 那条路不走 renderMain，顶栏态在这里兜一次 */
+    paintTopbar();
   }
 
   /* ── 远程链路提示：断线挂个条，恢复后自动补刷 ── */
@@ -827,6 +831,28 @@
     else location.hash = hash;
   }
 
+  /* ── 手机顶栏：子页显示返回箭头、首页显示品牌 ──
+     顶栏是 .main 的 flex 项，不随内容滚动，长列表滚到深处照样点得到；
+     手机断点已经把页内「← 返回」那行收掉了（见 inlineBack），这里是唯一的返回入口 */
+  function isSubPage() { return state.view !== 'home' || !!state.q; }
+
+  function paintTopbar() {
+    if (!refs || !refs.tbBack) return;
+    const sub = isPhone() && isSubPage();
+    refs.tbBack.hidden = !sub;
+    if (refs.tbBrand) refs.tbBrand.hidden = sub;
+  }
+
+  /* 顶栏返回：先退出搜索态——搜索结果不换 hash，直接 history.back() 会离开当前页；
+     再退站内历史；最后兜底回首页（WebView 冷启动直接落在深链时 history.length 为 1）。
+     两处判断与 js/android.js 的系统返回键同序，硬件返回和这颗箭头走起来观感一致 */
+  function goBack() {
+    if (navLocked()) { toast(NAV_LOCK_TIP); return; }
+    if (state.q) { route(); return; }
+    if (location.hash && location.hash !== '#/' && history.length > 1) { history.back(); return; }
+    go('#/');
+  }
+
   function route() {
     /* 手势返回 / 前进键切页时收起「更多」这类浮层，别让它盖在新页面上 */
     closeMenu();
@@ -878,6 +904,8 @@
 
   function renderMain(opts) {
     const quiet = !!(opts && opts.quiet);
+    /* 顶栏态跟视图走：这里覆盖所有视图与搜索态（含下面 renderWelcome 的早返回路径） */
+    paintTopbar();
     const v = refs.view;
     /* 统计页有 tick 订阅和 30 秒定时器：必须在清空 DOM 前停掉，
        否则离开后仍会后台查库、写已卸载节点，反复进出还会叠加多个定时器 */
@@ -1080,6 +1108,28 @@
     }).join('') + '</div>';
   }
 
+  /* 手机首页的资源库条：手机上侧栏整块不出现，库名 / 规模 / 切库入口原本全在侧栏里，
+     首页一条都看不到（切库只剩左上角那个像 logo 的品牌按钮，没有任何可点提示）。
+     这里补「我在哪个库 + 点一下切换」，点击复用已有的 openLibSwitch 弹窗（底部带「管理资源库」）。
+     规模只读入参 all 的长度，不再像桌面页头那样跑一次 L.stats() 全遍历 */
+  function mobileLibBar(all) {
+    const lib = FM.fs.active();
+    if (!lib) return '';      /* 一条库都没有时 renderMain 走 renderWelcome，这里只是兜底 */
+    const libs = FM.fs.libs();
+    /* lib.missing 是活路径：库目录掉线（NAS 断开 / 目录改名）时缓存里的专辑还在，
+       viewHome 照样会渲染，得把「目录没了」这件事显示出来 */
+    const sub = lib.missing
+      ? '资源库目录不存在，点这里处理'
+      : ((all.length || 0) + ' 个专辑' +
+        (libs.length > 1 ? ' · ' + libs.length + ' 个资源库' : ''));
+    return '<button type="button" class="m-lib' + (lib.missing ? ' missing' : '') +
+      '" data-act="switch-lib" title="切换资源库">' +
+      '<span class="m-lib-badge">' + esc(String(lib.name || '库').slice(0, 1)) + '</span>' +
+      '<span class="m-lib-body"><b>' + esc(lib.name || '当前资源库') + '</b><small>' + esc(sub) + '</small></span>' +
+      '<span class="m-lib-act">切换' + icon('chevron') + '</span>' +
+      '</button>';
+  }
+
   /* 选中的 tab 可能在横向滚动条外：画完把它滚到可视区中间 */
   function centerActiveTab() {
     const box = refs.view.querySelector('.m-tabs-scroll');
@@ -1094,8 +1144,8 @@
     const hiddenN = hiddenAlbumCount();
     const phone = isPhone();
 
-    /* 手机首页不出头部那一行（库名 / 专辑数 / 大小）：这些统计挪到「资源库设置」里看，
-       手机上一进来就是 tab 行 + 内容，省掉一次 stats() 全遍历 */
+    /* 手机首页不出头部那一行（库名 / 专辑数 / 大小）：库名与专辑数交给 mobileLibBar 那条，
+       集数 / 占用这些统计挪到「资源库设置」里看，省掉一次 stats() 全遍历 */
     let head = '';
     if (!phone) {
       const s = L.stats();
@@ -1145,7 +1195,8 @@
       : '';
 
     wrap.innerHTML = head +
-      (phone ? mobileCatTabs('') + mobileQuickRow() : '') +
+      /* 资源库条放在 tab 行之前：它随内容滚走，吸顶交给 tab 行 */
+      (phone ? mobileLibBar(all) + mobileCatTabs('') + mobileQuickRow() : '') +
       resume +
       (all.length ? gridHtml(all) : '') + hiddenLink;
     return wrap;
@@ -1204,7 +1255,10 @@
     const nowPhone = isPhone();
     if (nowPhone !== phoneWide) {
       phoneWide = nowPhone;
-      if (state.view === 'home' || state.view === 'cat') { renderNav(); renderMain({ quiet: true }); }
+      /* 跨 760px（手机上主要是横竖屏切换）：首页/分类的 tab 与快捷入口、子页的页内返回行
+         都换了一套结构，整页重画一次；顶栏箭头/品牌也跟着切 */
+      renderNav();
+      renderMain({ quiet: true });
     }
   }, 200));
 
@@ -1526,8 +1580,8 @@
 
     const wrap = U.el('div', { class: 'dl-page' });
     wrap.innerHTML =
-      '<div class="dl-page-head">' + BACK_BTN +
-        '<span class="dl-page-title">批量下载</span>' + BACK_SPARE + '</div>' +
+      '<div class="dl-page-head">' + backBtn() +
+        '<span class="dl-page-title">批量下载</span>' + backSpare() + '</div>' +
       (tight ? '<div class="dl-warn">手机空间可能不够，建议少选几集。</div>' : '') +
       (pend.length
         ? filterHtml + '<div class="dl-scroll">' + groupsHtml + '</div>' + barHtml
@@ -1571,8 +1625,8 @@
     const doneOn = doneList.length > 0 && doneList.every(function (t) { return !!sel[t.id]; });
     const wrap = U.el('div', { class: 'dl-page' });
     wrap.innerHTML =
-      '<div class="dl-page-head">' + BACK_BTN +
-        '<span class="dl-page-title">批量删除</span>' + BACK_SPARE + '</div>' +
+      '<div class="dl-page-head">' + backBtn() +
+        '<span class="dl-page-title">批量删除</span>' + backSpare() + '</div>' +
       '<div class="dl-sum"><b>已占用 ' + fmtS(size) + '</b><span>/ 可用 ' + (free > 0 ? fmtS(free) : '未知') + '</span></div>' +
       '<div class="dl-sel-head">' +
         '<button class="dl-ck-item" data-act="dl-sel-all">' + ck(allOn) + '全选</button>' +
@@ -2477,7 +2531,9 @@
     refs.brand.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goHome(); }
     });
-    /* 手机顶栏：左侧品牌看/切资源库（居中弹窗），右侧设置菜单 */
+    /* 手机顶栏：子页左侧是返回箭头，首页左侧是品牌（看/切资源库），右侧设置菜单。
+       箭头是原生 <button>，Enter/Space 自带激活，别再手写 keydown（否则会走两遍） */
+    if (refs.tbBack) refs.tbBack.addEventListener('click', goBack);
     if (refs.tbBrand) {
       refs.tbBrand.addEventListener('click', openLibSwitch);
       refs.tbBrand.addEventListener('keydown', function (e) {
@@ -2819,6 +2875,7 @@
         case 'cover-clear': clearCoverPicks(); break;
         case 'cover-save': saveCoverPicks(); break;
         case 'tab-cat': if (id) go('#/cat/' + id); else go('#/'); break;
+        case 'switch-lib': openLibSwitch(); break;
         case 'nav': if (actEl.dataset.hash) go(actEl.dataset.hash); break;
         case 'open-downloads': if (FM.android) FM.android.openDownloads(); break;
         case 'back': history.back(); break;
@@ -3004,7 +3061,7 @@
       { label: '加入队列', icon: 'list', onClick: () => { P.addToQueue([t]); toast('已加入播放队列'); } },
       { label: t.fav ? '取消收藏这一集' : '收藏这一集', icon: 'heart', onClick: () => toggleTrackFav(id) },
       { sep: true },
-      { label: p && p.done ? '标记为未听' : '标记为已听', icon: 'check', onClick: () => toggleListened(t) }
+      { label: p && p.done ? '标记为未听' : '标记为已听', icon: p && p.done ? 'undo' : 'check-circle', onClick: () => toggleListened(t) }
     ];
     if (canDownload()) items.splice(2, 0, { label: '下载', icon: 'download', onClick: () => downloadTracks([t]) });
     if (window.fmNative && window.fmNative.isDesktop) {
@@ -4682,7 +4739,7 @@
         }
       },
       { sep: true },
-      { label: p && p.done ? '标记为未听' : '标记为已听', icon: 'check', onClick: function () { toggleListened(t); } }
+      { label: p && p.done ? '标记为未听' : '标记为已听', icon: p && p.done ? 'undo' : 'check-circle', onClick: function () { toggleListened(t); } }
     ]);
   }
 

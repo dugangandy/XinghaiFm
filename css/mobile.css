@@ -42,7 +42,16 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
     font-size:13.5px;font-weight:800;letter-spacing:.01em;white-space:nowrap;
     background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
   }
-  .search{flex:1;width:auto;height:36px;padding:0 10px 0 11px;gap:8px}
+  /* 子页返回箭头：占品牌那个位置，两者互斥（见 js/ui.js 的 paintTopbar）。
+     必须显式写 [hidden] 的 display：上面 .tb-brand.sm-only{display:flex} 这类 author 规则
+     会盖掉浏览器默认的 [hidden]{display:none}（和 .fav-tag[hidden] 踩的是同一个坑） */
+  .tb-back.sm-only{display:grid;flex:none;width:34px;height:34px;color:var(--txt-2)}
+  .tb-back.sm-only[hidden]{display:none}
+  .tb-back .i{width:20px;height:20px;transform:rotate(180deg)}
+  .tb-back:active{transform:scale(.9);color:#fff}
+  .tb-brand.sm-only[hidden]{display:none}
+  /* min-width:0：顶栏多出返回箭头后，320px 窄屏上搜索胶囊要能被压窄而不是把顶栏撑破 */
+  .search{flex:1;min-width:0;width:auto;height:36px;padding:0 10px 0 11px;gap:8px}
   .search:focus-within{width:auto}
   .search input{font-size:13px}
   /* 建议浮层：贴住搜索胶囊，限高可滚，行高按触控放大 */
@@ -95,6 +104,42 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .card{content-visibility:auto;contain-intrinsic-size:auto 160px}
   .card-body{padding:6px 3px 0}
   .card-title{font-size:11.8px}
+
+  /* ── 首页资源库条：库名 + 规模 + 切换入口 ──
+     手机上侧栏整块不出现，库名原本只在侧栏里显示，首页补这一条。
+     不用 backdrop-filter：弱 GPU 每帧重算整块模糊，这里给实底渐变就够 */
+  .m-lib{
+    display:flex;align-items:center;gap:10px;width:100%;
+    margin:0 0 12px;padding:9px 12px;border-radius:16px;text-align:left;
+    border:1px solid rgba(255,255,255,.08);
+    background:linear-gradient(180deg,#182136,#101625);
+    box-shadow:0 12px 26px -22px #000,inset 0 1px 0 rgba(255,255,255,.06);
+    transition:transform .18s var(--ease),border-color .2s var(--ease);
+  }
+  .m-lib:active{transform:scale(.99);border-color:rgba(34,211,238,.4)}
+  .m-lib-badge{
+    flex:none;width:32px;height:32px;border-radius:11px;display:grid;place-items:center;
+    font-size:14px;font-weight:700;color:#04070d;background:var(--grad);
+    box-shadow:0 0 14px -4px rgba(34,211,238,.7);
+  }
+  .m-lib-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .m-lib-body b{
+    font-size:13.5px;font-weight:700;color:var(--txt);letter-spacing:.01em;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .m-lib-body small{
+    font-size:10.5px;color:var(--dim);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .m-lib-act{
+    flex:none;display:flex;align-items:center;gap:2px;
+    font-size:11.5px;color:var(--cyan);letter-spacing:.02em;
+  }
+  .m-lib-act .i{width:13px;height:13px}
+  /* 库目录不在了（NAS 掉线 / 目录改名，专辑缓存还在）：徽标转红、副文案提示，
+     和侧栏 libSwitch 的 missing 态一个口径 */
+  .m-lib.missing .m-lib-badge{background:linear-gradient(180deg,#ff8a65,#c2410c);box-shadow:none}
+  .m-lib.missing .m-lib-body small{color:#ff8a65}
 
   /* ── 首页分类 tab：单行横向滑动，选中一条渐变下划线 ── */
   .m-tabs{
