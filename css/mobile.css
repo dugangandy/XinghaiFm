@@ -184,6 +184,9 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   /* 顶部那条霓虹分隔线让位给进度条，避免两层线叠在一起 */
   .playerbar::before{display:none}
 
+  /* 定位当前播放的悬浮键：手机上贴边一点，别压到播放条上的队列键 */
+  .locate-fab{right:12px;bottom:calc(var(--pb-h) + var(--sab) + 12px);width:42px;height:42px}
+
   .pb-left{flex:1 1 auto;min-width:0;max-width:none;gap:10px;padding:4px 0}
   /* 收藏键在手机上收进播放页：components.css 的 .icon-btn{display:grid} 会盖掉
      layout.css 里的 .pb-fav{display:none}，所以这里要再显式关一次 */

@@ -65,7 +65,7 @@
       scanState: $('scanState'), scanStateText: $('scanStateText'),
       linkState: $('linkState'), linkStateText: $('linkStateText'),
       playerbar: $('playerbar'), pbCover: $('pbCover'), pbTitle: $('pbTitle'), pbSub: $('pbSub'), pbTime: $('pbTime'), pbFav: $('pbFav'), pbKind: $('pbKind'),
-      pbQueue: $('pbQueue'),
+      pbQueue: $('pbQueue'), locateFab: $('locateFab'),
       btnPrev: $('btnPrev'), btnPlay: $('btnPlay'), btnNext: $('btnNext'),
       btnBack15: $('btnBack15'), btnFwd15: $('btnFwd15'),
       pbCur: $('pbCur'), pbDur: $('pbDur'), pbScrub: $('pbScrub'), pbTip: $('pbTip'),
@@ -916,6 +916,7 @@
     }
     observeCards(v, quiet);
     applyPlayingState(v);
+    syncLocateFab();
     centerActiveTab();
     if (state.view === 'album' && !state.q && state.albumId) {
       probeDurations(L.albumTracks(state.albumId));
@@ -1990,6 +1991,49 @@
     /* 滚到工具栏（sticky），避免首行被它盖住 */
     const anchor = refs.view.querySelector('.track-toolbar') || document.getElementById('trackList');
     if (anchor && anchor.scrollIntoView) anchor.scrollIntoView({ block: 'start' });
+  }
+
+  /* 专辑详情页的「定位当前播放」键：底栏正在放这张专辑的某一集时才浮出来。
+     暂停也留着 —— 回来接着听时更需要知道听到哪了 */
+  function syncLocateFab() {
+    const btn = refs.locateFab;
+    if (!btn) return;
+    const t = P.current;
+    btn.hidden = !(t && !state.q && state.view === 'album' && state.albumId && t.albumId === state.albumId);
+  }
+
+  /* 定位到当前播放这一集：先在列表里找到它的下标，把还没画出来的那页/那批补上，
+     再滚到那一行（桌面按页、手机按已滚出来的批次；被专辑内搜索筛掉时先清搜索） */
+  function locateCurrent() {
+    const t = P.current;
+    if (!t) return;
+    const a = L.album(t.albumId);
+    if (!a) return;
+    let list = albumTracksFiltered(a);
+    let idx = list.findIndex(function (x) { return x.id === t.id; });
+    let needRender = false;
+    if (idx < 0) {
+      if (!state.detailQ) { toast('当前播放不在这张专辑的节目里'); return; }
+      state.detailQ = '';
+      state.page = 0;
+      state.trackShown = 0;
+      list = albumTracksFiltered(a);
+      idx = list.findIndex(function (x) { return x.id === t.id; });
+      if (idx < 0) { toast('当前播放不在这张专辑的节目里'); return; }
+      needRender = true;
+    }
+    if (isPhone()) {
+      const need = Math.min(list.length, (Math.floor(idx / PAGE) + 1) * PAGE);
+      if (need > (state.trackShown || PAGE)) { state.trackShown = need; needRender = true; }
+    } else {
+      const page = Math.floor(idx / PAGE);
+      if (page !== state.page) { state.page = page; needRender = true; }
+    }
+    if (needRender) renderMain();
+    const rows = U.$$('#trackList .track');
+    const row = rows.filter(function (el) { return el.dataset.id === t.id; })[0];
+    if (!row) return;
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 
   /* 专辑详情的曲目行：两行（标题 / 时长），不放播放按钮 —— 点整行就播（见 onViewClick 的 .track 分支）。
@@ -4316,6 +4360,7 @@
     P.on('track', function (t, opt) {
       paintTrack(t);
       syncAlbumPlayBtn();
+      syncLocateFab();
       /* 用户主动点开视频集才展开播放页；启动恢复上次进度不弹。
          视频直接看画面：不自动弹选集列表，若之前开着（从音频队列过来）则关掉。 */
       if (t.kind === 'video' && !(opt && opt.restored)) {
@@ -4325,7 +4370,7 @@
       }
     });
     P.on('kind', applyKind);
-    P.on('state', function (playing) { paintState(playing); syncAlbumPlayBtn(); });
+    P.on('state', function (playing) { paintState(playing); syncAlbumPlayBtn(); syncLocateFab(); });
     P.on('time', paintTime);
     P.on('rate', paintRate);
     P.on('volume', paintVolume);
@@ -4374,6 +4419,7 @@
       if (refs.sheet.classList.contains('open')) closeSheet();
       setCinema(false);
       setPlayerbarVisible(false);
+      syncLocateFab();
       refs.pbTitle.textContent = '—';
       refs.pbSub.textContent = '选择一集开始收听';
       refs.pbKind.hidden = true;
@@ -4394,6 +4440,7 @@
     refs.shFwd.addEventListener('click', function () { P.jumpBy(15); });
     refs.btnVol.addEventListener('click', function () { P.toggleMute(); });
     refs.btnLoop.addEventListener('click', function () { P.cycleLoop(); toast('播放模式：' + P.loopLabel); });
+    if (refs.locateFab) refs.locateFab.addEventListener('click', locateCurrent);
 
     /* 播放条左侧整块（封面+标题+副标题）点击展开播放详情页；收藏键除外 */
     const pbLeft = refs.playerbar.querySelector('.pb-left');

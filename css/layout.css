@@ -394,6 +394,22 @@ body.is-server #libSwitch .lib-caret{display:none}
   background:linear-gradient(90deg,transparent,rgba(34,211,238,.5),rgba(168,85,247,.5),transparent);
   opacity:.7;
 }
+/* ── 专辑详情页「定位当前播放」悬浮键 ──
+   只在底栏正在放这张专辑的某一集时出现（js 里控制 hidden），
+   bottom 跟着 --pb-h 走，播放条在就浮在它上面，避开底部安全区 */
+.locate-fab{
+  position:fixed;right:22px;bottom:calc(var(--pb-h) + var(--sab,0px) + 16px);z-index:36;
+  width:44px;height:44px;border-radius:99px;display:grid;place-items:center;
+  color:rgba(255,255,255,.92);cursor:pointer;
+  background:linear-gradient(180deg,rgba(20,27,42,.9),rgba(10,14,24,.94));
+  border:1px solid rgba(255,255,255,.14);
+  box-shadow:0 14px 30px -14px rgba(0,0,0,.9),inset 0 1px 0 rgba(255,255,255,.08);
+  -webkit-backdrop-filter:blur(14px) saturate(150%);
+  backdrop-filter:blur(14px) saturate(150%);
+  transition:transform .18s var(--ease),color .18s var(--ease);
+}
+.locate-fab:hover{transform:translateY(-2px);color:#fff}
+.locate-fab:active{transform:scale(.94)}
 .pb-left{display:flex;align-items:center;gap:12px;flex:1;min-width:0}
 .pb-cover{
   position:relative;width:54px;height:54px;flex:none;border-radius:12px;overflow:hidden;
