@@ -2937,6 +2937,20 @@
     if (window.fmNative && window.fmNative.isDesktop && rel) window.fmNative.reveal(rel);
   }
 
+  /* 标记已听 / 未听：本地进度落盘 + 远程上报，列表徽标与专辑已听统计随重绘更新 */
+  function toggleListened(t) {
+    if (!t) return;
+    const p = L.progressOf(t.id);
+    const dur = t.duration || (p && p.d) || 0;
+    const done = !(p && p.done);
+    const rec = { id: t.id, p: done ? dur : 0, d: dur, t: Date.now(), done: done };
+    L.setProgress(rec.id, rec.p, rec.d, rec.done);
+    if (FM.fs.canSyncMeta()) FM.fs.pushProgress(rec);
+    toast(done ? '已标记为已听' : '已标记为未听');
+    renderMain();
+    if (P.current && P.current.id === t.id) paintTrack(P.current);
+  }
+
   function trackMenu(id, anchor) {
     const t = L.track(id);
     if (!t) return;
@@ -2946,14 +2960,7 @@
       { label: '加入队列', icon: 'list', onClick: () => { P.addToQueue([t]); toast('已加入播放队列'); } },
       { label: t.fav ? '取消收藏这一集' : '收藏这一集', icon: 'heart', onClick: () => toggleTrackFav(id) },
       { sep: true },
-      {
-        label: p && p.done ? '标记为未听' : '标记为已听', icon: 'check', onClick: function () {
-          if (p && p.done) { FM.lib.setProgress(id, 0, p.d || t.duration || 0, false); }
-          else { FM.lib.setProgress(id, t.duration || (p && p.d) || 0, t.duration || (p && p.d) || 0, true); }
-          toast('已更新播放状态');
-          renderMain();
-        }
-      }
+      { label: p && p.done ? '标记为未听' : '标记为已听', icon: 'check', onClick: () => toggleListened(t) }
     ];
     if (canDownload()) items.splice(2, 0, { label: '下载', icon: 'download', onClick: () => downloadTracks([t]) });
     if (window.fmNative && window.fmNative.isDesktop) {
@@ -4422,11 +4429,19 @@
         toast('已清空播放队列');
       });
     }
-    /* 手机端播放条上的队列键：队列面板挂在播放页里，先确保播放页打开，
-       打开不了（壳内视频由原生播放器接管）就不动了 */
+    /* 手机端播放条上的队列键：队列面板挂在播放页里，先确保播放页打开。
+       壳内视频没有网页播放页（画面在原生播放器里），改用「只托队列」的那层容器，
+       否则这个键点了毫无反应 */
     refs.pbQueue.addEventListener('click', function () {
+      if (FM.android && P.kind === 'video') { openQueueSolo(); return; }
       if (!refs.sheet.classList.contains('open')) openSheet();
       if (refs.sheet.classList.contains('open') && !queueOpen) toggleQueue();
+    });
+    /* 「只托队列」时点面板外的空白处收起：这时整层就只是块遮罩，不做反应很怪 */
+    refs.sheet.addEventListener('click', function (e) {
+      if (!refs.sheet.classList.contains('queue-solo')) return;
+      if (!queueOpen || e.target.closest('#queuePanel')) return;
+      toggleQueue();
     });
 
     refs.btnRate.addEventListener('click', function (e) { rateMenu(e.currentTarget); });
@@ -4605,9 +4620,11 @@
     openMenu(anchor, items);
   }
 
-  /* 播放页「更多」：播放模式已挪到操作行，这里只留加入队列 */
+  /* 播放页「更多」：播放模式已挪到操作行，这里留加入队列 + 标记已听/未听 */
   function moreMenu(anchor) {
     const t = P.current;
+    if (!t) return;
+    const p = L.progressOf(t.id);
     openMenu(anchor, [
       {
         label: '加入队列', icon: 'list',
@@ -4616,7 +4633,9 @@
           P.addToQueue([t]);
           toast('已加入播放队列');
         }
-      }
+      },
+      { sep: true },
+      { label: p && p.done ? '标记为未听' : '标记为已听', icon: 'check', onClick: function () { toggleListened(t); } }
     ]);
   }
 
@@ -4646,12 +4665,24 @@
     FM.viz.start();
   }
 
+  /* 壳内视频：画面归原生播放器，网页这层没有播放页可展开，
+     但底栏那个「播放列表」还得能用。单独把 sheet 拉起来当容器，
+     只留队列面板（样式见 .sheet.queue-solo），点条目照常切集 */
+  function openQueueSolo() {
+    refs.sheet.classList.add('open', 'queue-solo');
+    refs.sheet.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('sheet-open');
+    if (!queueOpen) toggleQueue();
+  }
+
   function closeSheet() {
     if (FM.android && FM.android.fullscreenOn) FM.android.fullscreen(false);
     /* 收起播放页就放开方向锁，列表页照旧跟随系统重力感应 */
     if (FM.android && FM.android.lockPortrait) FM.android.lockPortrait(false);
     setCinema(false);
     hideUiNow();
+    /* 先摘掉「只托队列」的标记：下面的 toggleQueue 会回头调 closeSheet，不摘会互相递归 */
+    refs.sheet.classList.remove('queue-solo');
     refs.sheet.classList.remove('open');
     refs.sheet.setAttribute('aria-hidden', 'true');
     document.body.classList.remove('sheet-open');
@@ -4669,6 +4700,8 @@
     refs.queuePanel.classList.toggle('open', queueOpen);
     refs.sheet.classList.toggle('queue-open', queueOpen);
     if (queueOpen) renderQueue();
+    /* 面板收起后别再留一层空的播放页：只有「只托队列」那种才需要连容器一起收 */
+    else if (refs.sheet.classList.contains('queue-solo')) closeSheet();
   }
 
   function renderQueue() {
@@ -4693,6 +4726,8 @@
       const i = parseInt(item.dataset.qi, 10);
       if (isNaN(i)) return;
       P.setQueue(P.queue, i, { autoplay: true });
+      /* 「只托队列」那层选完就收：壳内视频接下来由原生播放器接管 */
+      if (refs.sheet.classList.contains('queue-solo')) closeSheet();
     });
   }
 

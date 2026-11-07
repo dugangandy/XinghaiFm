@@ -688,6 +688,15 @@ body.is-server #libSwitch .lib-caret{display:none}
 }
 /* 选集面板占住右侧时，画面让出这块宽度，别被挡住 */
 .sheet.is-video.queue-open .sheet-stage{right:min(380px,92vw)}
+
+/* 壳内视频（画面在原生播放器里，网页没有播放页可展开）：底栏的「播放列表」
+   借 sheet 这一层当容器，把播放页本身的内容全藏掉，只剩队列面板 */
+.sheet.queue-solo .sheet-glow,
+.sheet.queue-solo .sheet-art,
+.sheet.queue-solo .sheet-art-veil,
+.sheet.queue-solo .viz,
+.sheet.queue-solo .sheet-inner{display:none}
+.sheet.is-video.queue-solo{background:rgba(4,6,12,.82)}
 .vstage{
   position:relative;width:min(1180px,100%);aspect-ratio:16/9;max-height:100%;
   display:flex;background:#000;overflow:hidden;border-radius:14px;
