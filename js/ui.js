@@ -707,9 +707,13 @@
     albums.forEach(function (r) {
       const a = r.album;
       const initial = U.initials(a.title, true);
+      /* 和结果页同一份口径：当前库用 a.cover，别的库现查；都没有才用首字 */
+      const cover = a.cover || (r.self || !FM.covers ? null : FM.covers.forAlbum(a, r.libId));
       html += '<div class="sp-item" role="option" aria-selected="false" data-sp="album" data-id="' + esc(a.id) + '"' +
         (r.self ? '' : ' data-lib="' + esc(r.libId) + '"') + '>' +
-        '<span class="sp-art" style="' + U.coverVars(a.seed) + '"><span class="card-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span></span>' +
+        (cover
+          ? '<span class="sp-art" style="' + U.coverVars(a.seed) + '"><img class="cover-img" loading="lazy" decoding="async" src="' + esc(cover) + '" alt=""></span>'
+          : '<span class="sp-art" style="' + U.coverVars(a.seed) + '"><span class="card-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span></span>') +
         '<span class="sp-body"><span class="sp-title">' + esc(a.title) + '</span>' +
         '<span class="sp-sub">' + (r.self ? '' : esc(r.libName) + ' · ') + (a.count || 0) + ' 集</span></span>' +
         (r.self ? '' : '<span class="sp-badge">' + esc(r.libName) + '</span>') +
@@ -974,18 +978,21 @@
   /* 卡片只留封面 + 标题：集数 / 大小 / 进度等信息在专辑详情页展示（hero-meta），
      列表页少一层文字更干净，也省掉每张卡的 albumStat 计算 */
   /* opts.libId / opts.libName：跨库搜索结果。卡片带 data-lib，点击时先切库再进专辑；
-     别的库的封面拿不到（封面映射按当前库），自然退回首字渐变封面 */
+     别的库的封面从各自那份索引里现查（FM.covers.forAlbum），查不到才退回首字渐变 */
   function albumCard(a, opts) {
     const o = opts || {};
     const foreign = !!o.libId && !o.self;
     const initial = initialOf(a);
-    const art = a.cover
-      ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">'
+    /* 别的库的专辑对象来自 index:<libId> 缓存，没有 cover 字段：按 libId 现查一份
+       （covers.js 里按库存了索引，索引还没读到时返回 null，读完会补一次静默重绘） */
+    const cover = a.cover || (foreign && FM.covers ? FM.covers.forAlbum(a, o.libId) : null);
+    const art = cover
+      ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(cover) + '" alt="">'
       : '<div class="rings"><i></i><i></i><i></i></div><span class="card-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span>';
     const libAttr = foreign ? ' data-lib="' + esc(o.libId) + '"' : '';
     return '<article class="card' + (a.fav ? ' fav' : '') + (a.hidden ? ' is-hidden' : '') + '" data-id="' + a.id + '"' + libAttr + ' draggable="' + (foreign ? 'false' : 'true') + '" style="' +
       U.coverVars(a.seed) + '">' +
-      '<div class="card-cover' + (a.cover ? ' has-photo' : '') + '">' +
+      '<div class="card-cover' + (cover ? ' has-photo' : '') + '">' +
         art +
         /* 打开「显示已隐藏」后隐藏专辑是混排在网格里的，靠这个角标区分，否则和普通专辑一模一样 */
         (a.hidden ? '<span class="card-hidden" title="已隐藏">' + icon('eye-off') + '</span>' : '') +
@@ -1723,6 +1730,20 @@
     const scope = state.qScope === 'cur' ? 'cur' : 'all';
     const res = L.searchAll(q, { scope: scope, showHidden: state.showHidden });
     const groups = searchGroups(res);
+    /* 别的库的封面索引按需读：读到之前那几张卡片只有首字渐变，读完后补一次静默重绘。
+       同一个库一个会话只读一次，之后都是同步查表 */
+    const needCovers = groups
+      .filter(function (g) { return !g.self && g.albums.length; })
+      .map(function (g) { return g.libId; });
+    if (needCovers.length && FM.covers) {
+      Promise.all(needCovers.map(function (id) { return FM.covers.ensureLib(id); })).then(function (rs) {
+        if (rs.indexOf(true) < 0) return;       /* 没读到新东西：不重绘，免得打断滚动 */
+        if (state.q !== q) return;              /* 已经换了关键词 / 退出搜索 */
+        renderMain({ quiet: true });
+        /* 建议浮层里也有封面，一起补画（输入中浮层通常正开着） */
+        if (refs.searchPop && !refs.searchPop.hidden) { popInvalidate(); popPaint(); }
+      }).catch(function () {});
+    }
     const quotaA = state.qMore ? quotaFor(groups, 'albums', Infinity) : quotaFor(groups, 'albums', SEARCH_ALBUMS);
     const quotaT = state.qMore ? quotaFor(groups, 'tracks', Infinity) : quotaFor(groups, 'tracks', SEARCH_TRACKS);
     const tailA = [], tailT = [];

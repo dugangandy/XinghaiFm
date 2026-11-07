@@ -174,10 +174,12 @@
   /* <audio>/<img> 带不了请求头：能靠 cookie 的就靠 cookie（浏览器/APK，URL 上不挂票据），
      桌面端（fm://app + Bearer，没有 cookie）才换一张短期票据挂 query */
   let ticketCache = Object.create(null);     // scope -> { t, exp }
-  async function signedUrl(path) {
-    /* 封面/媒体的 <img>/<audio> 带不了请求头：把当前库挂在 query 上，服务端据此定位 */
+  async function signedUrl(path, libId) {
+    /* 封面/媒体的 <img>/<audio> 带不了请求头：把库挂在 query 上，服务端据此定位。
+       libId 不给就用当前库；跨库搜索要按别的库取封面，见 covers.js 的 ensureLib */
     let p = path;
-    if (activeId) p += (p.indexOf('?') >= 0 ? '&' : '?') + 'libId=' + encodeURIComponent(activeId);
+    const lib = libId === undefined ? activeId : libId;
+    if (lib) p += (p.indexOf('?') >= 0 ? '&' : '?') + 'libId=' + encodeURIComponent(lib);
     if (!REMOTE) return p;
     const scope = p.indexOf('/api/cover/') === 0 ? 'cover' : 'media';
     const now = Math.floor(Date.now() / 1000);

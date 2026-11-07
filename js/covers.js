@@ -57,27 +57,33 @@
     return dice(a, b);
   }
 
-  function urlFor(file) {
+  /* libId 不给就落到当前库 */
+  function urlFor(file, libId) {
     /* 桌面端封面地址必须带库：文件名可能两库相同（早期数据的文件名只有目录哈希），
        不带库时主进程按「当前库」解析，切库后同 URL 会直接命中浏览器缓存拿到旧库的图 */
     if (FM.fs.native) {
-      const lib = FM.fs.activeId || '';
+      const lib = libId === undefined ? (FM.fs.activeId || '') : libId;
       return 'fm://app/__cover/' + encodeURIComponent(file) + (lib ? '?lib=' + encodeURIComponent(lib) : '');
     }
     return null;
   }
 
-  async function readIndex() {
+  /* libId 不给就读当前库（沿用原来的行为） */
+  async function readIndex(libId) {
+    const id = libId === undefined ? (FM.fs.activeId || '') : libId;
     if (FM.fs.server) {
       try {
-        const r = await FM.fs.apiFetch('/api/covers', { cache: 'no-store' });
+        const q = libId === undefined ? '' : '?libId=' + encodeURIComponent(id);
+        const r = await FM.fs.apiFetch('/api/covers' + q, { cache: 'no-store' });
         return r.ok ? await r.json() : null;
       } catch (e) { return null; }
     }
     if (FM.fs.native) {
       /* 带上库：主进程的「当前库」可能已经被另一次切库改掉了 */
-      try { return await window.fmNative.covers(FM.fs.activeId || ''); } catch (e) { return null; }
+      try { return await window.fmNative.covers(id); } catch (e) { return null; }
     }
+    /* 纯网页本地目录：目录句柄只对当前库有效，别的库读不到 */
+    if (libId !== undefined) return null;
     try {
       const f = await FM.fs.getFile(DIR + '/covers.json');
       return JSON.parse(await f.text());
@@ -145,30 +151,105 @@
     });
     cache = new Map();
     scheduleRevoke(oldRevs);
+    /* 这个库现在是当前库了：ext 里那份按库存的副本作废，免得日后它又变成「别的库」时用旧的 */
+    ext.delete(wantLib);
+    extFailAt.delete(wantLib);
     return index.length;
   }
 
-  /* 给一个专辑找封面：先精确对目录名，再按相似度找最像的那张 */
-  function of(album) {
-    if (!album || !index.length) return null;
+  /* 在一份封面索引里找：先精确对目录名，再按相似度找最像的那张。
+     索引可以是当前库，也可以是别的库（见下面的 ext），所以三者都当参数传 */
+  function pick(uris, list, hitCache, album) {
+    if (!album || !list.length) return null;
     const key = album.dirName || album.key;
     if (!key) return null;
-    if (cache.has(key)) return cache.get(key);
+    if (hitCache.has(key)) return hitCache.get(key);
 
     let url = null;
-    if (urlOf.has(key)) {
-      url = urlOf.get(key);
+    if (uris.has(key)) {
+      url = uris.get(key);
     } else {
       const target = norm(key);
       let bestUrl = null, bestScore = 0;
-      for (let i = 0; i < index.length; i++) {
-        const s = similar(target, index[i].norm);
-        if (s > bestScore) { bestScore = s; bestUrl = index[i].url; }
+      for (let i = 0; i < list.length; i++) {
+        const s = similar(target, list[i].norm);
+        if (s > bestScore) { bestScore = s; bestUrl = list[i].url; }
       }
       if (bestScore >= THRESHOLD) url = bestUrl;
     }
-    cache.set(key, url);
+    hitCache.set(key, url);
     return url;
+  }
+
+  /* 给一个专辑找封面 */
+  function of(album) { return pick(urlOf, index, cache, album); }
+
+  /* ── 跨库封面 ──
+     搜索结果会把别的资源库的专辑一起列出来，那些对象来自 index:<libId> 缓存，没有 cover 字段。
+     这里按库另存一份索引（第一次搜到该库时读一次），界面用 forAlbum() 现查。
+     读失败（库不可用 / 没权限）记 60 秒，免得每敲一个字都重试一遍。 */
+  const EXT_RETRY = 60000;
+  const ext = new Map();        // libId -> { urlOf, index, cache }
+  const extBusy = new Map();    // libId -> 正在读的 Promise
+  const extFailAt = new Map();  // libId -> 上次失败的时间
+
+  async function loadLib(id) {
+    const got = await readIndex(id);
+    /* 读盘期间切库了也没关系：这份索引按 libId 存，不会盖掉别人的 */
+    if (!got || typeof got !== 'object') return false;
+    const entries = Object.keys(got)
+      .filter(function (k) { return got[k] && got[k].file; })
+      .map(function (k) { return { key: k, file: got[k].file, norm: norm(k) }; });
+    if (!entries.length) return false;
+
+    const uris = new Map();
+    if (FM.fs.native) {
+      entries.forEach(function (e) { uris.set(e.key, urlFor(e.file, id)); });
+    } else if (FM.fs.server) {
+      /* 服务端按 query 里的 libId 定位库，和当前库同一套签名地址 */
+      for (const e of entries) {
+        try { uris.set(e.key, await FM.fs.signedUrl('/api/cover/' + encodeURIComponent(e.file), id)); } catch (err) {}
+      }
+    } else {
+      return false;
+    }
+    const list = entries
+      .filter(function (e) { return uris.get(e.key); })
+      .map(function (e) { return { key: e.key, norm: e.norm, url: uris.get(e.key) }; });
+    if (!list.length) return false;
+    ext.set(id, { urlOf: uris, index: list, cache: new Map() });
+    return true;
+  }
+
+  /* 按需加载某个库的封面索引；true = 这次刚读到（调用方据此补一次静默重绘） */
+  function ensureLib(libId) {
+    const id = String(libId || '');
+    if (!id || id === (FM.fs.activeId || '')) return Promise.resolve(false);
+    if (ext.has(id)) return Promise.resolve(false);
+    const failed = extFailAt.get(id);
+    if (failed && Date.now() - failed < EXT_RETRY) return Promise.resolve(false);
+    let p = extBusy.get(id);
+    if (p) return p.then(function () { return false; });
+    p = loadLib(id).then(function (ok) {
+      extBusy.delete(id);
+      if (ok) extFailAt.delete(id); else extFailAt.set(id, Date.now());
+      return ok;
+    }, function () {
+      extBusy.delete(id);
+      extFailAt.set(id, Date.now());
+      return false;
+    });
+    extBusy.set(id, p);
+    return p;
+  }
+
+  /* 别的库的专辑 → 封面地址。当前库直接返回 null，调用方本来就用 a.cover */
+  function forAlbum(album, libId) {
+    const id = String(libId || '');
+    if (!id || id === (FM.fs.activeId || '')) return null;
+    const st = ext.get(id);
+    if (!st) return null;
+    return pick(st.urlOf, st.index, st.cache, album);
   }
 
   function apply() {
@@ -379,6 +460,8 @@
 
   FM.covers = {
     load, apply, of, search, save, remove, reload, saveOne, saveMany, beginBatch, endBatch,
+    /* 跨库搜索：别的库的专辑封面按需加载（见 ext） */
+    ensureLib, forAlbum,
     get ready() { return loaded; },
     get count() { return index.length; },
     get searchError() { return lastError; },
