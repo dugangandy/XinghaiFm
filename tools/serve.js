@@ -1350,6 +1350,50 @@ const server = http.createServer(async function (req, res) {
     try { return json(res, { ok: true, rows: DB.listenStatsQuery(db, uid, from, to) }); }
     catch (e) { console.warn('[listen] 查询失败：' + e.message); return json(res, { ok: false, rows: [] }); }
   }
+  /* 专辑 Top5 榜：写入与查询。和 /api/listen/add 分开——那边一条秒级数据只带分类，
+     这边要带「哪张专辑 + 哪个库」，且一次 flush 批量提交（最长 20 条一个请求）。 */
+  if (p === '/api/listen/album/add') {
+    if (req.method !== 'POST') return send(res, 405, 'POST only');
+    /* 独立额度：主时长每轮可能发十几条（按 day|hour|cat 分桶），别和它抢同一个计数 */
+    if (!writeAllowed(ip, 30, 'listenAlbum')) return send(res, 429, 'too many writes');
+    let body = '';
+    for await (const chunk of req) { body += chunk; if (body.length > 16384) return send(res, 413, 'too large'); }
+    let rec = null;
+    try { rec = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    if (!rec || !Array.isArray(rec.items)) return send(res, 400, 'bad items');
+    /* libRoot 必须是这个用户名下的库：别把别人的路径顺手记进自己的榜 */
+    const mine = new Set(userLibs(uid).map(function (l) { return DB.libRootKey(l.path); }));
+    const clean = [];
+    rec.items.slice(0, 20).forEach(function (it) {
+      if (!it || typeof it !== 'object') return;
+      const albumId = String(it.albumId || '');
+      /* U.uid('a', key) 的形态：字母 a + base36 哈希 */
+      if (!/^a[0-9a-z]{1,40}$/.test(albumId)) return;
+      const key = DB.libRootKey(it.libRoot);
+      if (!key || !mine.has(key)) return;
+      const delta = Number(it.deltaSecs);
+      if (!isFinite(delta) || delta <= 0 || delta > 3600) return;
+      clean.push({ albumId: albumId, libRoot: key, title: String(it.title || '').slice(0, 80), deltaSecs: delta });
+    });
+    /* 一条都不合法时回 ok:true：客户端据此扣减余额，否则会一直重试同一批脏数据 */
+    if (!clean.length) return json(res, { ok: true, count: 0 });
+    try { return json(res, { ok: true, count: DB.albumListenAdd(db, uid, clean) }); }
+    catch (e) { console.log('[listen] 专辑写入失败：' + e.message); return json(res, { ok: false, count: 0 }); }
+  }
+  if (p === '/api/listen/album/top') {
+    if (req.method !== 'GET') return send(res, 405, 'GET only');
+    const limit = Number(u.searchParams.get('limit')) || 5;
+    /* 带 libId 就只统计那个库；不带 = 全库合并 */
+    const libId = String(u.searchParams.get('libId') || '');
+    let root = '';
+    if (libId) {
+      const lib = userLibs(uid).find(function (l) { return l.id === libId; });
+      if (!lib) return send(res, 403, 'unknown lib');
+      root = lib.path;
+    }
+    try { return json(res, { ok: true, rows: DB.albumListenTop(db, uid, root, limit) }); }
+    catch (e) { console.warn('[listen] 榜查询失败：' + e.message); return json(res, { ok: false, rows: [] }); }
+  }
   if (p === '/api/favs') {
     const own = function (id) { return userLibs(uid).some(function (l) { return l.id === id; }); };
     if (req.method === 'GET') {

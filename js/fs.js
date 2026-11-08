@@ -1258,6 +1258,82 @@
       return { ok: !j || j.ok !== false, rows: (j && j.rows) || [] };
     } catch (e) { return { ok: false, rows: [] }; }
   }
+  /* 专辑 Top5 榜：与 listenAdd 同一套三通道。local 降级写在 state.listenAlbum（键 'libRoot|albumId'），
+     纯本地网页拿不到「库 id → 目录键」的稳定映射，榜单直接按 albumId 合并全部记录。 */
+  function localAlbumStore() {
+    const st = FM.db.state();
+    if (!st.listenAlbum) st.listenAlbum = {};
+    return st.listenAlbum;
+  }
+  async function listenAlbumAdd(items) {
+    if (!Array.isArray(items) || !items.length) return { ok: true, count: 0 };
+    if (metaChannel() === 'local') {
+      if (!FM.db || !FM.db.state) return { ok: false, count: 0 };
+      try {
+        const L = localAlbumStore();
+        let n = 0;
+        items.forEach(function (it) {
+          if (!it || !it.albumId) return;
+          const s = Number(it.deltaSecs);
+          if (!(s > 0)) return;
+          const root = String(it.libRoot || '');
+          const k = root + '|' + it.albumId;
+          const row = L[k] || { libRoot: root, albumId: String(it.albumId), title: '', secs: 0 };
+          row.secs = (Number(row.secs) || 0) + s;
+          if (it.title) row.title = String(it.title).slice(0, 80);
+          L[k] = row;
+          n++;
+        });
+        const st = FM.db.state(); st.listenAlbum = L; FM.db.setState(st); FM.store.touch('state');
+        return { ok: true, count: n, local: true };
+      } catch (e) { return { ok: false, count: 0 }; }
+    }
+    if (DESKTOP_FS) {
+      try { const r = await window.fmNative.listenAlbumAdd(items); return r || { ok: false, count: 0 }; }
+      catch (e) { return { ok: false, count: 0 }; }
+    }
+    try {
+      const r = await apiFetch('/api/listen/album/add', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ items: items })
+      });
+      if (!r.ok) return { ok: false, count: 0 };      /* 429 / 5xx：保留余额等重试 */
+      const j = await r.json();
+      return { ok: !j || j.ok !== false, count: (j && j.count) || 0 };
+    } catch (e) { return { ok: false, count: 0 }; }
+  }
+  async function listenAlbumTop(libId, limit) {
+    const n = Math.max(1, Math.min(20, Math.floor(Number(limit)) || 5));
+    if (metaChannel() === 'local') {
+      if (!FM.db || !FM.db.state) return { ok: false, rows: [] };
+      try {
+        const L = localAlbumStore();
+        const map = {};
+        Object.keys(L).forEach(function (k) {
+          const r = L[k];
+          if (!r || !r.albumId) return;
+          const m = map[r.albumId] || { albumId: r.albumId, libRoot: r.libRoot || '', title: '', secs: 0 };
+          m.secs += Number(r.secs) || 0;
+          if (r.title) m.title = r.title;
+          map[r.albumId] = m;
+        });
+        const rows = Object.keys(map).map(function (k) { return map[k]; })
+          .sort(function (a, b) { return b.secs - a.secs; }).slice(0, n);
+        return { ok: true, rows: rows };
+      } catch (e) { return { ok: false, rows: [] }; }
+    }
+    if (DESKTOP_FS) {
+      try { const r = await window.fmNative.listenAlbumTop(libId || null, n); return r || { ok: false, rows: [] }; }
+      catch (e) { return { ok: false, rows: [] }; }
+    }
+    try {
+      const q = '/api/listen/album/top?limit=' + n + (libId ? '&libId=' + encodeURIComponent(libId) : '');
+      const r = await apiFetch(q, { cache: 'no-store' });
+      if (!r.ok) return { ok: false, rows: [] };
+      const j = await r.json();
+      return { ok: !j || j.ok !== false, rows: (j && j.rows) || [] };
+    } catch (e) { return { ok: false, rows: [] }; }
+  }
   /* ── 收藏：跟用户绑定，存数据库 ──
      桌面端走 IPC（本机 fm.db），服务端/远程走 /api/favs，网页本地库退回 localStorage。 */
   async function loadFavs(libId) {
@@ -1676,7 +1752,7 @@
 
   FM.fs = {
     load, add, activate, remove, rename, relocate, openLib, pullMeta, pushMeta, flushMeta, flushPending, canSyncMeta, pushProgress, refreshLibs,
-    listenAdd, listenQuery,
+    listenAdd, listenQuery, listenAlbumAdd, listenAlbumTop,
     queueCache, prefsCache, applyPrefs, pickPrefs, PREFS_KEYS, clearLastTrack,
     setDirGroup, setDirMode, setWatch, share,
     get watchSupported() { return watchSupported; },

@@ -828,6 +828,22 @@ function bindIpc() {
     try { return { ok: true, rows: DB.listenStatsQuery(getDb(), adminUid(), String(fromDay || ''), String(toDay || '')) }; }
     catch (err) { return { ok: false, rows: [] }; }
   });
+  /* 专辑 Top5 榜：口径与服务端 /api/listen/album/* 一致，libId 缺省用当前库 */
+  ipcMain.handle('fm:listenAlbumAdd', function (e, items) {
+    try { return { ok: true, count: DB.albumListenAdd(getDb(), adminUid(), items) }; }
+    catch (err) { return { ok: false, count: 0, error: String((err && err.message) || err) }; }
+  });
+  ipcMain.handle('fm:listenAlbumTop', function (e, libId, limit) {
+    try {
+      const cfg = getConfig();
+      /* null = 全库（前端「全库」标签显式传 null），只有没传（undefined）才回落到当前库：
+         否则桌面端的「全库」会被当成当前库，和服务端 /api/listen/album/top 口径不一致 */
+      const id = libId === undefined ? cfg.active : libId;
+      const lib = id ? (cfg.libs || []).find(function (l) { return l.id === id; }) : null;
+      /* 传了库就用这个库的目录过滤，没传就是全库合并 */
+      return { ok: true, rows: DB.albumListenTop(getDb(), adminUid(), lib ? lib.path : '', limit) };
+    } catch (err) { return { ok: false, rows: [] }; }
+  });
 
   /* ── 转码：Chromium 认不全的 flv 先重封装成 mp4 再播（ape / wv / wma 前端直接提示不支持） ──
      返回 { url, ext, cached } 或 { error, message }。前端拿到 url 直接当媒体源用；

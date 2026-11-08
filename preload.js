@@ -60,6 +60,9 @@ contextBridge.exposeInMainWorld('fmNative', {
   /* 收听时长统计：增量上报（day/秒数/小时/分类）与区间查询 */
   listenAdd: (day, deltaSecs, hour, catId) => ipcRenderer.invoke('fm:listenAdd', day, deltaSecs, hour, catId),
   listenQuery: (fromDay, toDay) => ipcRenderer.invoke('fm:listenQuery', fromDay, toDay),
+  /* 专辑 Top5 榜：批量增量上报与榜单查询（libId 为空 = 全库） */
+  listenAlbumAdd: (items) => ipcRenderer.invoke('fm:listenAlbumAdd', items),
+  listenAlbumTop: (libId, limit) => ipcRenderer.invoke('fm:listenAlbumTop', libId, limit),
   /* 后台补完封面时通知一次，页面据此重读封面索引 */
   onCovers: (cb) => ipcRenderer.on('fm:covers', (e, info) => { try { cb(info); } catch (err) {} })
 });

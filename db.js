@@ -10,7 +10,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 const ITERATIONS = 600000;
 const ADMIN_ID = 'u_admin';
 
@@ -163,7 +163,18 @@ function ensureSchema(db) {
     "  by_cat  TEXT NOT NULL DEFAULT '{}',",
     '  PRIMARY KEY (user_id, day)',
     ');',
-    'CREATE INDEX IF NOT EXISTS idx_listen_stats_user_day ON listen_stats(user_id, day);'
+    'CREATE INDEX IF NOT EXISTS idx_listen_stats_user_day ON listen_stats(user_id, day);',
+    /* v9：专辑维度的累计收听时长（专辑 Top5 榜）。没有日期维度——榜单口径就是「历史累计」。 */
+    'CREATE TABLE IF NOT EXISTS album_listen (',
+    '  user_id    TEXT NOT NULL,',
+    '  lib_root   TEXT NOT NULL,',
+    '  album_id   TEXT NOT NULL,',
+    "  title      TEXT NOT NULL DEFAULT '',",
+    '  secs       REAL NOT NULL DEFAULT 0,',
+    '  updated_at INTEGER NOT NULL,',
+    '  PRIMARY KEY (user_id, lib_root, album_id)',
+    ');',
+    'CREATE INDEX IF NOT EXISTS idx_album_listen_user ON album_listen(user_id);'
   ].join('\n'));
   /* 旧库补列：token_version（改密码后让该用户旧 token 立即失效） */
   const cols = db.prepare('PRAGMA table_info(users)').all();
@@ -960,7 +971,7 @@ function clearLibMeta(db, root) {
   if (!key) return 0;
   return tx(db, function () {
     let n = 0;
-    ['cats', 'album_meta', 'progress', 'durations', 'user_progress', 'user_queue'].forEach(function (t) {
+    ['cats', 'album_meta', 'progress', 'durations', 'user_progress', 'user_queue', 'album_listen'].forEach(function (t) {
       n += db.prepare('DELETE FROM ' + t + ' WHERE lib_root = ?').run(key).changes || 0;
     });
     db.prepare('DELETE FROM settings WHERE key = ?').run('metaMig:' + key);
@@ -1009,6 +1020,60 @@ function listenStatsQuery(db, uid, fromDay, toDay) {
     .all(uid, fromDay || '0000-01-01', toDay || '9999-12-31');
   return rows.map(function (r) {
     return { day: r.day, secs: Number(r.secs) || 0, byHour: parseByHour(r.by_hour), byCat: parseByCat(r.by_cat) };
+  });
+}
+
+/* ── 专辑维度的累计收听时长（专辑 Top5 榜） ──
+   和 listen_stats 分开存：那张表按天一行、维度是小时/分类，反推不出专辑；
+   这里没有日期维度，天然就是「历史累计」，且带 lib_root 才能按当前库过滤。
+   title 冗余一份快照：全库榜单里其他库的专辑不在前端内存模型中，没有标题就只能显示 id。 */
+function albumListenAdd(db, uid, items) {
+  const u = String(uid || '');
+  if (!u || !Array.isArray(items) || !items.length) return 0;
+  const now = Date.now();
+  return tx(db, function () {
+    const up = db.prepare('INSERT INTO album_listen(user_id, lib_root, album_id, title, secs, updated_at) VALUES(?,?,?,?,?,?) ' +
+      'ON CONFLICT(user_id, lib_root, album_id) DO UPDATE SET ' +
+      '  secs = album_listen.secs + excluded.secs,' +
+      /* 空标题不清掉已有快照（客户端取不到专辑名时不该把榜打回 id） */
+      "  title = CASE WHEN excluded.title <> '' THEN excluded.title ELSE album_listen.title END," +
+      '  updated_at = excluded.updated_at');
+    let n = 0;
+    items.forEach(function (it) {
+      if (!it || typeof it !== 'object') return;
+      const albumId = String(it.albumId || '').slice(0, 64);
+      const key = libRootKey(it.libRoot);
+      const delta = Number(it.deltaSecs);
+      /* albumId 是 U.uid('a', key)：字母 a + base36 哈希。脏数据在这里就拦住，别污染榜单 */
+      if (!/^a[0-9a-z]{1,40}$/.test(albumId) || !key) return;
+      if (!isFinite(delta) || delta <= 0 || delta > 3600) return;
+      up.run(u, key, albumId, String(it.title || '').slice(0, 80), delta, now);
+      n++;
+    });
+    return n;
+  });
+}
+
+/* 榜单查询。libRoot 为空 = 全库（按 album_id 合并各库同名专辑）；否则只统计这一个库。
+   limit 强制落在 1..20，默认 5。 */
+function albumListenTop(db, uid, libRoot, limit) {
+  const u = String(uid || '');
+  if (!u) return [];
+  const n = Math.max(1, Math.min(20, Math.floor(Number(limit)) || 5));
+  const key = libRoot ? libRootKey(libRoot) : '';
+  if (key) {
+    const rows = db.prepare('SELECT album_id, lib_root, title, secs FROM album_listen ' +
+      'WHERE user_id = ? AND lib_root = ? ORDER BY secs DESC, updated_at DESC LIMIT ?')
+      .all(u, key, n);
+    return rows.map(function (r) {
+      return { albumId: r.album_id, libRoot: r.lib_root, title: r.title || '', secs: Number(r.secs) || 0 };
+    });
+  }
+  const rows = db.prepare('SELECT album_id, MAX(title) title, MAX(lib_root) lib_root, SUM(secs) secs, MAX(updated_at) at ' +
+    'FROM album_listen WHERE user_id = ? GROUP BY album_id ORDER BY secs DESC, at DESC LIMIT ?')
+    .all(u, n);
+  return rows.map(function (r) {
+    return { albumId: r.album_id, libRoot: r.lib_root, title: r.title || '', secs: Number(r.secs) || 0 };
   });
 }
 
@@ -1074,6 +1139,7 @@ module.exports = {
   listFavs, setFav, clearFavs,
   listFavTracks, setFavTrack, clearFavTracks,
   listenStatsAdd, listenStatsQuery,
+  albumListenAdd, albumListenTop,
   META_VERSION, META_LIMIT, libRootKey,
   libDirGroup, setLibDirGroup, libDirMode, setLibDirMode, normDirMode, DIR_MODES,
   catsList, catsReplace, catsDelete,

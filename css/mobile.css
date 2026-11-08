@@ -644,12 +644,35 @@ body.app-fs .vstage{
   .stats-hero{padding:20px 18px 18px;border-radius:22px}
   .hero-num .val{font-size:56px}
   .hero-unit{font-size:16px}
-  .hero-bars{height:132px;gap:8px;margin-top:24px}
+  .stats-chart{height:132px;margin-top:20px;gap:7px}
+  .chart-y{width:46px;font-size:10px}
+  .hero-bars{gap:8px}
   .hero-bars.dense{gap:3px}
   .hero-bars.dense .hbar-track{width:4px}
   .hbar-track{width:8px}
   .hbar{max-width:40px}
   .hero-foot{flex-wrap:wrap;gap:6px}
+  .stats-detail{padding:16px 15px 14px;border-radius:20px}
+  .detail-list{max-height:none}
+  .drow{grid-template-columns:minmax(80px,auto) 1fr auto;gap:9px}
+  .drow .d-bar{height:5px}
+  /* 专辑 Top5 榜：卡头允许换行，封面收一档，副信息单行省略，排名与时长始终可见 */
+  .stats-top{padding:16px 15px 8px;border-radius:20px}
+  .stats-top::after{left:18px;right:18px}
+  .top-head{flex-wrap:wrap;gap:10px}
+  .top-title{font-size:18px}
+  .top-sub{font-size:11px}
+  .seg-sm .seg-btn{font-size:11.5px;padding:5px 11px}
+  .top-row{min-height:56px;gap:10px;padding:8px 8px 10px;margin:0 -4px}
+  .top-rank{width:22px;height:22px;font-size:11.5px}
+  .top-cover{width:38px;height:38px;border-radius:10px}
+  .top-char{font-size:14px}
+  .top-char.word{font-size:10px}
+  .top-name{font-size:13.5px}
+  .top-desc{font-size:11px}
+  .top-val{font-size:13px}
+  .top-bar{left:8px;max-width:calc(100% - 16px)}
+  .top-empty{padding:16px 12px;font-size:12px}
 }
 
 /* 专辑管理 · 移动端：主按钮占满一行，行内缩略图缩一档，候选条横向滑动 */

@@ -2386,6 +2386,8 @@
     const wrap = U.el('div'); wrap.className = 'stats-view';
     let mode = 'day';
     let lastData = null;                 /* 最近一次 summary，liveTick 用它替换今日值 */
+    let axisTop = 900;                   /* 纵轴顶端秒数：柱高按它归一，刻度也按它画 */
+    let detailKeys = '';                 /* 明细表的行结构，结构没变就只改数字 */
     let resyncing = false;               /* 今日档跨小时重绘中，避免每秒重复触发 */
     let liveTimer = null, unsub = null, alive = true;
 
@@ -2402,14 +2404,44 @@
         '<div class="hero-top"><div class="hero-label">收听时长 · <b id="scopeLabel">今日</b></div></div>' +
         '<div class="hero-num"><span class="val" id="durBig">0</span><span class="hero-unit" id="durUnit">分钟</span></div>' +
         '<div class="hero-sub" id="durSub">今天还没开始收听</div>' +
-        '<div class="hero-bars" id="durBars" aria-hidden="true"></div>' +
+        '<div class="stats-chart">' +
+          '<div class="chart-y" id="durY" aria-hidden="true"></div>' +
+          '<div class="chart-plot">' +
+            '<div class="chart-grid" id="durGrid" aria-hidden="true"></div>' +
+            '<div class="hero-bars" id="durBars" aria-hidden="true"></div>' +
+          '</div>' +
+        '</div>' +
         '<div class="hero-foot">' +
           '<span id="rangeText">今天 · 0–23 时</span>' +
           '<span>共 <b id="countNum">0</b> <span id="countUnit">小时</span>有记录</span>' +
         '</div>' +
+      '</section>' +
+      '<section class="stats-top">' +
+        '<div class="top-head">' +
+          '<div class="top-heading">' +
+            '<h2 class="top-title">专辑 Top5</h2>' +
+            '<span class="top-sub">按累计收听时长</span>' +
+          '</div>' +
+          '<div class="seg seg-sm" id="topSeg">' +
+            '<button class="seg-btn active" data-scope="all">全库</button>' +
+            '<button class="seg-btn" data-scope="lib">当前库</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="top-list" id="topList"></div>' +
+      '</section>' +
+      '<section class="stats-detail">' +
+        '<div class="detail-head">' +
+          '<h2 class="detail-title">明细数据</h2>' +
+          '<span class="detail-sub" id="detailSub"></span>' +
+        '</div>' +
+        '<div class="detail-list" id="detailList"></div>' +
+        '<div class="detail-cats" id="detailCats"></div>' +
+        '<p class="detail-note">只算真正在播的时间：暂停、缓冲卡住、加载失败都不计。' +
+          '同一账号多台设备同时播放会各自累计，单小时超过 60 分钟一般就是设备重叠。</p>' +
       '</section>';
 
     const $ = function (id) { return wrap.querySelector('#' + id); };
+    function hm(n) { return (n < 10 ? '0' : '') + n; }
 
     /* 标签：今日档 0/6/12/18/23 时与当前小时；7 天每根日期；30 天每 5 天一个 */
     function labelsOf(bars, ti) {
@@ -2426,16 +2458,41 @@
       });
     }
 
-    function renderBars(data) {
-      const bars = data.bars, ti = data.todayIndex;
-      const labs = labelsOf(bars, ti);
-      const max = Math.max.apply(null, bars.map(function (b) { return b.secs; }).concat([1]));
+    /* 纵轴刻度：把峰值往上取到「整」时长，均分 4 格；候选步长都能整除成好看的分钟数 */
+    const STEPS = [60, 120, 180, 300, 600, 900, 1200, 1800, 2700, 3600, 5400, 7200, 10800, 14400, 21600, 28800, 43200, 64800, 86400];
+    function axisFor(maxSec) {
+      const need = Math.max(maxSec, 60) / 4;
+      for (let i = 0; i < STEPS.length; i++) if (STEPS[i] >= need) return STEPS[i] * 4;
+      return STEPS[STEPS.length - 1] * 4;
+    }
+    function tickText(sec) {
+      if (sec <= 0) return '0';
+      if (sec < 3600) return Math.round(sec / 60) + '分';
+      const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+      return m ? h + '小时' + m + '分' : h + '小时';
+    }
+    function drawAxis() {
+      let y = '', g = '';
+      for (let i = 0; i <= 4; i++) {
+        y += '<span class="chart-tick" style="bottom:' + (i * 25) + '%">' + tickText(axisTop * i / 4) + '</span>';
+        g += '<i class="chart-line' + (i === 0 ? ' base' : '') + '" style="bottom:' + (i * 25) + '%"></i>';
+      }
+      $('durY').innerHTML = y;
+      $('durGrid').innerHTML = g;
+    }
+
+    /* 柱高按纵轴顶端归一；0 值不留桩，免得看着像「听过一点」。
+       一条记录都没有时给 1 小时的固定刻度，别显示一条 0–4 分的怪轴 */
+    function drawBars(bars, ti, labs) {
+      const peak = Math.max.apply(null, bars.map(function (b) { return b.secs; }).concat([0]));
+      axisTop = peak > 0 ? axisFor(peak) : 3600;
+      drawAxis();
       const c = $('durBars');
       c.classList.toggle('dense', bars.length > 12);
       c.innerHTML = bars.map(function (b, i) {
-        const h = Math.max(4, (b.secs / max) * 100);
+        const h = b.secs > 0 ? Math.max(1.5, (b.secs / axisTop) * 100) : 0;
         return '<div class="hbar' + (i === ti ? ' on' : '') + '">' +
-          '<div class="hbar-track"><div class="hbar-fill" style="height:' + h + '%">' +
+          '<div class="hbar-track"><div class="hbar-fill' + (b.secs > 0 ? '' : ' z') + '" style="height:' + h + '%">' +
           (i === ti ? '<span class="hbar-dot"></span>' : '') +
           '</div></div>' +
           '<div class="hbar-lab">' + labs[i] + '</div></div>';
@@ -2457,17 +2514,181 @@
       $('durSub').textContent = total > 0 ? scopeName(mode) + '已收听 ' + FM.stats.fmt(total) : empty;
     }
 
+    /* ── 明细数据：今日按时段，7/30 天按天；只列有记录的，新的在前 ── */
+    const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    function peakHour(byHour) {
+      if (!byHour || !byHour.length) return -1;
+      let bi = -1, bv = 0;
+      for (let i = 0; i < 24; i++) {
+        const v = Number(byHour[i]) || 0;
+        if (v > bv) { bv = v; bi = i; }
+      }
+      return bi;
+    }
+    function rowsOf(data) {
+      const out = [];
+      data.bars.forEach(function (b) {
+        if (!(b.secs > 0)) return;
+        if (data.mode === 'day') {
+          /* 单个小时桶最多 60 分钟：超了就是多设备重叠，标出来便于核对 */
+          out.push({
+            key: hm(b.hour) + ':00–' + hm(b.hour + 1) + ':00',
+            secs: b.secs, warn: b.secs > 3600, tip: b.secs > 3600 ? '超 60 分' : ''
+          });
+          return;
+        }
+        const d = new Date(String(b.day).replace(/-/g, '/'));
+        const ph = peakHour(b.byHour);
+        out.push({
+          key: (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + WD[d.getDay()],
+          secs: b.secs, warn: false,
+          tip: ph >= 0 ? '峰值 ' + hm(ph) + ':00' : ''
+        });
+      });
+      return out.reverse();
+    }
+    function catOf(id) {
+      if (id === '__none__') return { name: '未分类', color: '#7c8798' };
+      const list = (FM.lib && FM.lib.cats) ? FM.lib.cats() : [];
+      const hit = list.find(function (c) { return String(c.id) === String(id); });
+      return hit ? { name: hit.name, color: hit.color } : null;
+    }
+    function drawCats(data) {
+      const box = $('detailCats');
+      const byCat = data.byCat || {};
+      let lost = 0;
+      const items = Object.keys(byCat).map(function (id) {
+        const c = catOf(id);
+        if (!c) { lost += Number(byCat[id]) || 0; return null; }   /* 别的库的分类：合并成一项 */
+        return { name: c.name, color: c.color, secs: Number(byCat[id]) || 0 };
+      }).filter(function (x) { return x && x.secs > 0; })
+        .sort(function (a, b) { return b.secs - a.secs; });
+      if (lost > 0) items.push({ name: '其他分类', color: '#7c8798', secs: lost });
+      if (!items.length) { box.innerHTML = ''; return; }
+      box.innerHTML = '<span class="dc-h">分类归属</span>' + items.map(function (x) {
+        return '<span class="dc-pill"><i style="background:' + esc(x.color || '#22d3ee') + '"></i>' +
+          esc(x.name) + '<b>' + FM.stats.fmt(x.secs) + '</b></span>';
+      }).join('');
+    }
+    function renderDetail(data) {
+      const rows = rowsOf(data);
+      detailKeys = rows.map(function (r) { return r.key; }).join('|');
+      $('detailSub').textContent = rows.length
+        ? (data.mode === 'day' ? '今日 · ' + rows.length + ' 个时段' : scopeName(mode) + ' · ' + rows.length + ' 天有记录')
+        : '';
+      const peak = Math.max.apply(null, rows.map(function (r) { return r.secs; }).concat([1]));
+      $('detailList').innerHTML = rows.length ? rows.map(function (r) {
+        return '<div class="drow' + (r.warn ? ' warn' : '') + '">' +
+          '<span class="d-k">' + r.key + (r.tip ? '<em>' + r.tip + '</em>' : '') + '</span>' +
+          '<span class="d-bar"><i style="width:' + Math.max(2, (r.secs / peak) * 100) + '%"></i></span>' +
+          '<b class="d-v">' + FM.stats.fmt(r.secs) + '</b>' +
+          '</div>';
+      }).join('') : '<div class="d-empty">这个区间还没有记录</div>';
+      drawCats(data);
+    }
+    /* 结构没变时只改数字，避免每秒重建 DOM */
+    function patchDetail(data) {
+      const rows = rowsOf(data);
+      const peak = Math.max.apply(null, rows.map(function (r) { return r.secs; }).concat([1]));
+      const nodes = wrap.querySelectorAll('#detailList .drow');
+      for (let i = 0; i < nodes.length && i < rows.length; i++) {
+        const v = nodes[i].querySelector('.d-v');
+        if (v) v.textContent = FM.stats.fmt(rows[i].secs);
+        const bar = nodes[i].querySelector('.d-bar i');
+        if (bar) bar.style.width = Math.max(2, (rows[i].secs / peak) * 100) + '%';
+      }
+      drawCats(data);
+    }
+
     function paint(data) {
       lastData = data;
       $('scopeLabel').textContent = scopeName(mode);
       showDuration(data.total);
-      renderBars(data);
+      drawBars(data.bars, data.todayIndex, labelsOf(data.bars, data.todayIndex));
       $('rangeText').textContent = data.mode === 'day'
         ? '今天 · 0–23 时'
         : dayLabel(data.from) + ' – ' + dayLabel(data.to);
       const filled = data.bars.filter(function (b) { return b.secs > 0; }).length;
       $('countNum').textContent = filled;
       $('countUnit').textContent = data.mode === 'day' ? '小时' : '天';
+      renderDetail(data);
+    }
+
+    /* ── 专辑 Top5 榜 ──
+       口径是历史累计（不受上面的今日 / 7 天 / 30 天影响），所以单独取数：
+       进页与 30 秒定时各查一次，播放中不跟着 tick 重排 DOM。 */
+    let topScope = 'all';
+    let topSeq = 0;
+
+    function hasLib() { return !!(FM.fs && FM.fs.activeId); }
+
+    function topCatName(a) {
+      if (!a || !Array.isArray(a.cats) || !a.cats.length) return '';
+      const list = (FM.lib && FM.lib.cats) ? FM.lib.cats() : [];
+      const hit = list.find(function (c) { return String(c.id) === String(a.cats[0]); });
+      return hit ? hit.name : '';
+    }
+
+    function renderTop(rows) {
+      const box = $('topList');
+      if (!rows.length) {
+        box.innerHTML = '<div class="top-empty">' +
+          (topScope === 'lib'
+            ? (hasLib() ? '当前资源库暂无收听记录' : '请先进入一个资源库')
+            : '还没有专辑收听数据，本功能从当前版本开始累计') +
+          '</div>';
+        return;
+      }
+      const peak = Math.max.apply(null, rows.map(function (r) { return r.secs; }).concat([1]));
+      box.innerHTML = rows.map(function (r, i) {
+        /* 全库维度里其他库的专辑不在当前内存模型中：只有 id 和写入时的标题快照 */
+        const a = FM.lib ? FM.lib.album(r.albumId) : null;
+        const title = (a && a.title) || r.title || '未命名专辑';
+        const initial = initialOf(a || { title: title });
+        const art = (a && a.cover)
+          ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">'
+          : '<span class="top-rings"><i></i><i></i><i></i></span>' +
+            '<span class="top-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span>';
+        const bits = [];
+        const cn = topCatName(a);
+        if (cn) bits.push(cn);
+        if (a && a.count) bits.push(a.count + ' 集');
+        if (!a) bits.push('其他资源库');
+        const open = !!a;
+        /* 跨库专辑没有内存对象：用 id 哈希当种子，保证同一条目每次颜色一致（coverVars 只吃数字） */
+        const seed = (a && Number(a.seed)) || U.hash(r.albumId);
+        const pct = Math.max(2, Math.round((r.secs / peak) * 100));
+        return '<div class="top-row' + (i === 0 ? ' lead' : '') + '"' +
+          ' data-id="' + esc(r.albumId) + '"' + (open ? ' data-open="1"' : '') + '>' +
+          '<span class="top-rank r' + (i + 1) + '">' + (i + 1) + '</span>' +
+          '<span class="top-cover" style="' + U.coverVars(seed) + '">' + art + '</span>' +
+          '<span class="top-meta"><span class="top-name" title="' + esc(title) + '">' + esc(title) + '</span>' +
+            (bits.length ? '<span class="top-desc">' + esc(bits.join(' · ')) + '</span>' : '') + '</span>' +
+          '<b class="top-val">' + esc(FM.stats.fmt(r.secs)) + '</b>' +
+          '<i class="top-bar" style="width:' + pct + '%"></i>' +
+          '</div>';
+      }).join('');
+      /* 换维度时整组淡入上浮：只动列表，不重绘整页 */
+      box.classList.remove('fade-in');
+      void box.offsetWidth;
+      box.classList.add('fade-in');
+    }
+
+    function refreshTop() {
+      const scope = topScope;
+      const libId = scope === 'lib' ? (FM.fs.activeId || null) : null;
+      if (scope === 'lib' && !libId) { renderTop([]); return; }
+      const seq = ++topSeq;
+      Promise.resolve()
+        /* 先把未落库的秒数冲出去，刚听完的专辑才可能出现在榜单里 */
+        .then(function () { return FM.stats.flush(); })
+        .then(function () { return FM.stats.albumTop(libId, 5); })
+        .then(function (res) {
+          /* 切维度期间返回的旧结果直接丢弃 */
+          if (!alive || seq !== topSeq || scope !== topScope) return;
+          renderTop((res && res.rows) || []);
+        })
+        .catch(function () {});
     }
 
     async function refreshDuration(m) {
@@ -2480,7 +2701,9 @@
 
     function setMode(m) {
       mode = m;
-      wrap.querySelectorAll('.seg-btn').forEach(function (x) { x.classList.toggle('active', x.dataset.mode === m); });
+      /* 限定在时间档那组：页面上还有榜单的「全库 / 当前库」分段控件，
+         全量遍历会把它的高亮一起清掉 */
+      wrap.querySelectorAll('#statsSeg .seg-btn').forEach(function (x) { x.classList.toggle('active', x.dataset.mode === m); });
       refreshDuration(m);
     }
 
@@ -2489,6 +2712,7 @@
       try { await FM.stats.refresh(); } catch (e) {}
       if (!alive) return;
       refreshDuration(mode);
+      refreshTop();
     }
 
     /* 实时：只用内存里的今日数据，不触发后端请求。
@@ -2509,18 +2733,53 @@
 
       const ti = lastData.todayIndex;
       const bars = lastData.bars.map(function (b, i) { return i === ti ? tSec : b.secs; });
-      const max = Math.max.apply(null, bars.concat([1]));
-      showDuration(mode === 'day' ? tSec : lastData.total - lastData.todaySec + tSec);
+      const total = bars.reduce(function (a, v) { return a + v; }, 0);
+      lastData.total = total;
+      lastData.todaySec = tSec;
+      showDuration(total);
 
-      const nodes = wrap.querySelectorAll('.hbar');
-      for (let i = 0; i < nodes.length; i++) {
-        const f = nodes[i].querySelector('.hbar-fill');
-        if (f) f.style.height = Math.max(4, Math.min(100, (bars[i] / max) * 100)) + '%';
+      /* 今日值顶破纵轴顶端就整组重画（刻度得跟着变），否则只改柱高 */
+      if (tSec > axisTop) {
+        drawBars(lastData.bars.map(function (b, i) { return Object.assign({}, b, { secs: bars[i] }); }),
+          ti, labelsOf(lastData.bars, ti));
+      } else {
+        const nodes = wrap.querySelectorAll('.hbar');
+        for (let i = 0; i < nodes.length; i++) {
+          const f = nodes[i].querySelector('.hbar-fill');
+          if (!f) continue;
+          f.classList.toggle('z', !(bars[i] > 0));
+          f.style.height = (bars[i] > 0 ? Math.max(1.5, Math.min(100, (bars[i] / axisTop) * 100)) : 0) + '%';
+        }
       }
+
+      /* 明细跟着走：今日档还要带上实时分类桶 */
+      const data = Object.assign({}, lastData, {
+        bars: lastData.bars.map(function (b, i) { return Object.assign({}, b, { secs: bars[i] }); })
+      });
+      if (mode === 'day') data.byCat = FM.stats.today().byCat;
+      if (rowsOf(data).map(function (r) { return r.key; }).join('|') === detailKeys) patchDetail(data);
+      else renderDetail(data);
     }
 
     /* 事件绑定 */
     $('statsSeg').onclick = function (e) { const b = e.target.closest('.seg-btn'); if (b) setMode(b.dataset.mode); };
+    $('topSeg').onclick = function (e) {
+      const b = e.target.closest('.seg-btn');
+      if (!b || b.disabled || b.dataset.scope === topScope) return;
+      /* 不在渲染时禁死按钮：进页那一刻库可能还没加载完，禁用了就再也不会恢复 */
+      if (b.dataset.scope === 'lib' && !hasLib()) { toast('请先进入一个资源库', 'warn'); return; }
+      topScope = b.dataset.scope;
+      wrap.querySelectorAll('#topSeg .seg-btn').forEach(function (x) {
+        x.classList.toggle('active', x.dataset.scope === topScope);
+      });
+      refreshTop();
+    };
+    /* 只有当前库里存在的专辑才能跳详情；跨库条目只展示 */
+    $('topList').onclick = function (e) {
+      const row = e.target.closest('.top-row');
+      if (!row || row.dataset.open !== '1') return;
+      go('#/album/' + row.dataset.id);
+    };
 
     /* 初次填充：等基线刷新完成后统一重绘，避免首屏显示 0 或旧值 */
     refreshAll();
