@@ -26,6 +26,10 @@ test('schema：v9 建出 album_listen 表', () => {
   ['user_id', 'lib_root', 'album_id', 'title', 'secs', 'updated_at'].forEach(function (c) {
     assert.ok(cols.indexOf(c) >= 0, '缺列 ' + c);
   });
+  /* 主键已经覆盖 user_id 前缀，额外的单列索引只会拖慢写入 */
+  const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='album_listen'").all()
+    .map(r => r.name).filter(n => n !== 'sqlite_autoindex_album_listen_1');
+  assert.deepEqual(idx, [], '不应有多余索引：' + idx.join(','));
 });
 
 test('写入：同一专辑多次上报按秒数累加，标题取最新非空值', () => {

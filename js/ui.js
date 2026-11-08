@@ -2619,8 +2619,12 @@
        进页与 30 秒定时各查一次，播放中不跟着 tick 重排 DOM。 */
     let topScope = 'all';
     let topSeq = 0;
+    let topLoadedScope = '';     /* 哪个维度已经成功加载过：失败时据此决定保留旧列表还是给提示 */
 
     function hasLib() { return !!(FM.fs && FM.fs.activeId); }
+    function curRoot() { return (FM.lib && FM.lib.rootKey) || ''; }
+    /* 库根键归一：服务端落库时已经统一过大小写和斜杠，客户端这里只做比较用 */
+    function normRoot(s) { return String(s || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase(); }
 
     function topCatName(a) {
       if (!a || !Array.isArray(a.cats) || !a.cats.length) return '';
@@ -2640,6 +2644,7 @@
         return;
       }
       const peak = Math.max.apply(null, rows.map(function (r) { return r.secs; }).concat([1]));
+      const here = normRoot(curRoot());
       box.innerHTML = rows.map(function (r, i) {
         /* 全库维度里其他库的专辑不在当前内存模型中：只有 id 和写入时的标题快照 */
         const a = FM.lib ? FM.lib.album(r.albumId) : null;
@@ -2649,12 +2654,15 @@
           ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">'
           : '<span class="top-rings"><i></i><i></i><i></i></span>' +
             '<span class="top-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span>';
+        /* albumId 是目录路径哈希：两个库里同名目录会撞成同一个 id，
+           所以跳转前还得确认这条数据本身就属于当前库，否则会跳到另一张同名专辑 */
+        const sameLib = !r.libRoot || !here || normRoot(r.libRoot) === here;
+        const open = !!a && sameLib;
         const bits = [];
         const cn = topCatName(a);
         if (cn) bits.push(cn);
         if (a && a.count) bits.push(a.count + ' 集');
-        if (!a) bits.push('其他资源库');
-        const open = !!a;
+        if (!sameLib) bits.push('其他资源库');
         /* 跨库专辑没有内存对象：用 id 哈希当种子，保证同一条目每次颜色一致（coverVars 只吃数字） */
         const seed = (a && Number(a.seed)) || U.hash(r.albumId);
         const pct = Math.max(2, Math.round((r.secs / peak) * 100));
@@ -2674,11 +2682,20 @@
       box.classList.add('fade-in');
     }
 
+    function renderTopError(msg) {
+      $('topList').innerHTML = '<div class="top-empty top-fail">' + esc(msg) + '</div>';
+    }
+
     function refreshTop() {
       const scope = topScope;
-      const libId = scope === 'lib' ? (FM.fs.activeId || null) : null;
-      if (scope === 'lib' && !libId) { renderTop([]); return; }
+      const libId = scope === 'lib' ? ((FM.fs && FM.fs.activeId) || null) : null;
+      if (scope === 'lib' && !libId) { topLoadedScope = ''; renderTop([]); return; }
       const seq = ++topSeq;
+      /* 失败（断网 / 403 / 限流）不能显示成「还没有数据」：这个维度有过成功结果就保留旧列表 */
+      const fail = function () {
+        if (!alive || seq !== topSeq || scope !== topScope) return;
+        if (topLoadedScope !== scope) renderTopError('榜单暂时加载不出来，稍后会自动重试');
+      };
       Promise.resolve()
         /* 先把未落库的秒数冲出去，刚听完的专辑才可能出现在榜单里 */
         .then(function () { return FM.stats.flush(); })
@@ -2686,9 +2703,11 @@
         .then(function (res) {
           /* 切维度期间返回的旧结果直接丢弃 */
           if (!alive || seq !== topSeq || scope !== topScope) return;
-          renderTop((res && res.rows) || []);
+          if (!res || res.ok === false) { fail(); return; }
+          topLoadedScope = scope;
+          renderTop(res.rows || []);
         })
-        .catch(function () {});
+        .catch(fail);
     }
 
     async function refreshDuration(m) {

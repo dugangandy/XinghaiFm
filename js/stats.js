@@ -44,8 +44,8 @@
      和上面按天 / 小时 / 分类的桶完全独立：榜单口径是「历史累计」，没有日期维度，
      也不受页面时间档影响。分开一套 pending + WAL，避免污染现有余额格式。 */
   const ALBUM_WAL_KEY = 'listenAlbumPending';
-  const albumPending = {};      /* 'libRoot|albumId' -> { libRoot, albumId, title, s } */
-  let albumCtx = null;          /* { albumId, libRoot, title }，按当前曲目惰性刷新 */
+  const albumPending = {};      /* 'libRoot|albumId' -> { libRoot, libId, albumId, title, s } */
+  let albumCtx = null;          /* { albumId, libRoot, libId, title }，按当前曲目惰性刷新 */
 
   const bus = U.emitter();
   function emit(evt) { bus.emit(evt); }
@@ -72,7 +72,8 @@
       /* 专辑榜的余额同一个 key 空间里另存一份，flush 一次落盘 */
       const ab = Object.keys(albumPending).map(function (k) {
         const p = albumPending[k];
-        return { r: p.libRoot, a: p.albumId, t: p.title, s: p.s };
+        /* i 是库 id：落库时服务端按 id 定位库，别只靠路径字符串（库搬过目录就对不上了） */
+        return { r: p.libRoot, i: p.libId, a: p.albumId, t: p.title, s: p.s };
       });
       if (ab.length) FM.store.write(ALBUM_WAL_KEY, { v: 1, tag: walTag(), buckets: ab });
       else FM.store.drop(ALBUM_WAL_KEY);
@@ -112,7 +113,10 @@
         const libRoot = String((b && b.r) || '');
         if (!albumId || !libRoot || !(s > 0)) return;
         const key = libRoot + '|' + albumId;
-        if (!albumPending[key]) albumPending[key] = { libRoot: libRoot, albumId: albumId, title: String(b.t || ''), s: 0 };
+        if (!albumPending[key]) {
+          albumPending[key] = { libRoot: libRoot, libId: String(b.i || ''), albumId: albumId, title: String(b.t || ''), s: 0 };
+        }
+        if (b.i) albumPending[key].libId = String(b.i);
         albumPending[key].s += s;
       });
     } catch (e) {}
@@ -169,9 +173,11 @@
     if (!t || !t.albumId) return null;
     const albumId = String(t.albumId);
     const libRoot = String((FM.lib && FM.lib.rootKey) || '');
-    if (albumCtx && albumCtx.albumId === albumId && albumCtx.libRoot === libRoot) return albumCtx;
+    const libId = String((FM.lib && FM.lib.libId) || '');
+    if (albumCtx && albumCtx.albumId === albumId
+      && albumCtx.libRoot === libRoot && albumCtx.libId === libId) return albumCtx;
     const alb = FM.lib && FM.lib.album(albumId);
-    albumCtx = { albumId: albumId, libRoot: libRoot, title: alb ? String(alb.title || '') : '' };
+    albumCtx = { albumId: albumId, libRoot: libRoot, libId: libId, title: alb ? String(alb.title || '') : '' };
     return albumCtx;
   }
 
@@ -181,7 +187,10 @@
     const ctx = albumCtxNow();
     if (!ctx || !ctx.libRoot) return;         /* 还没进库，归属不了 */
     const key = ctx.libRoot + '|' + ctx.albumId;
-    const row = albumPending[key] || { libRoot: ctx.libRoot, albumId: ctx.albumId, title: ctx.title, s: 0 };
+    const row = albumPending[key] || {
+      libRoot: ctx.libRoot, libId: ctx.libId, albumId: ctx.albumId, title: ctx.title, s: 0
+    };
+    if (ctx.libId) row.libId = ctx.libId;     /* 库 id 后到（索引晚一拍就绪）时补上 */
     if (ctx.title) row.title = ctx.title;     /* 用户改名后以新快照为准 */
     row.s += sec;
     albumPending[key] = row;
@@ -372,7 +381,10 @@
     keys.slice(0, 20).forEach(function (k) {
       const p = albumPending[k];
       if (!p || !(p.s > 0)) return;
-      batch.push({ albumId: p.albumId, libRoot: p.libRoot, title: p.title, deltaSecs: Math.min(p.s, ALBUM_CHUNK) });
+      batch.push({
+        albumId: p.albumId, libRoot: p.libRoot, libId: p.libId || '',
+        title: p.title, deltaSecs: Math.min(p.s, ALBUM_CHUNK)
+      });
     });
     if (!batch.length) return;
     let res = null;

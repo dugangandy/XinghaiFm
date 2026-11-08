@@ -1530,6 +1530,8 @@ select.input option{background:#161d29;color:var(--txt)}
   font-size:12.5px;color:var(--dim);
   border:1px dashed rgba(255,255,255,.10);background:rgba(255,255,255,.018);
 }
+/* 请求失败和「还没听过」要能一眼分开，别把断网显示成空榜 */
+.top-empty.top-fail{color:#fbbf24;border-color:rgba(251,191,36,.28);background:rgba(251,191,36,.05)}
 
 /* 行：排名徽标 / 封面 / 文本 / 数值 + 贴底进度条 */
 .top-row{

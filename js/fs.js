@@ -1278,8 +1278,9 @@
           if (!(s > 0)) return;
           const root = String(it.libRoot || '');
           const k = root + '|' + it.albumId;
-          const row = L[k] || { libRoot: root, albumId: String(it.albumId), title: '', secs: 0 };
+          const row = L[k] || { libRoot: root, libId: '', albumId: String(it.albumId), title: '', secs: 0 };
           row.secs = (Number(row.secs) || 0) + s;
+          if (it.libId) row.libId = String(it.libId);
           if (it.title) row.title = String(it.title).slice(0, 80);
           L[k] = row;
           n++;
@@ -1308,10 +1309,14 @@
       if (!FM.db || !FM.db.state) return { ok: false, rows: [] };
       try {
         const L = localAlbumStore();
+        /* 纯本地网页拿不到「库 id → 绝对路径」的映射，但写入时用的正是 FM.lib.rootKey，
+           所以「当前库」按它过滤；拿不到根键时退化成全库，宁可范围宽也别显示成空榜 */
+        const scopeRoot = (libId && FM.lib) ? String(FM.lib.rootKey || '') : '';
         const map = {};
         Object.keys(L).forEach(function (k) {
           const r = L[k];
           if (!r || !r.albumId) return;
+          if (scopeRoot && String(r.libRoot || '') !== scopeRoot) return;
           const m = map[r.albumId] || { albumId: r.albumId, libRoot: r.libRoot || '', title: '', secs: 0 };
           m.secs += Number(r.secs) || 0;
           if (r.title) m.title = r.title;

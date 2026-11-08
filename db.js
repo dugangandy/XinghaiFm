@@ -172,9 +172,10 @@ function ensureSchema(db) {
     "  title      TEXT NOT NULL DEFAULT '',",
     '  secs       REAL NOT NULL DEFAULT 0,',
     '  updated_at INTEGER NOT NULL,',
+    /* 主键 (user_id, lib_root, album_id) 已经覆盖「按用户」和「按用户 + 库」两种前缀，
+       全库榜的 GROUP BY album_id 也走这条索引，不再另建 user_id 单列索引 */
     '  PRIMARY KEY (user_id, lib_root, album_id)',
-    ');',
-    'CREATE INDEX IF NOT EXISTS idx_album_listen_user ON album_listen(user_id);'
+    ');'
   ].join('\n'));
   /* 旧库补列：token_version（改密码后让该用户旧 token 立即失效） */
   const cols = db.prepare('PRAGMA table_info(users)').all();
@@ -198,6 +199,8 @@ function ensureSchema(db) {
   /* v4：favs 的主键已经覆盖 (user_id, lib_id)，早期的冗余索引清掉 */
   const uv = (db.prepare('PRAGMA user_version').get() || {}).user_version || 0;
   if (uv < 4) { try { db.exec('DROP INDEX IF EXISTS idx_favs_user'); } catch (e) {} }
+  /* v9：album_listen 的 user_id 单列索引和主键前缀重复，早期构建建过的清掉 */
+  if (uv < 9) { try { db.exec('DROP INDEX IF EXISTS idx_album_listen_user'); } catch (e) {} }
   /* v7：共享进度整份归给管理员（只做一次，旧 progress 表留着当回滚依据） */
   if (uv < 7) {
     try {

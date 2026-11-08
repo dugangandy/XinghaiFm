@@ -830,8 +830,18 @@ function bindIpc() {
   });
   /* 专辑 Top5 榜：口径与服务端 /api/listen/album/* 一致，libId 缺省用当前库 */
   ipcMain.handle('fm:listenAlbumAdd', function (e, items) {
-    try { return { ok: true, count: DB.albumListenAdd(getDb(), adminUid(), items) }; }
-    catch (err) { return { ok: false, count: 0, error: String((err && err.message) || err) }; }
+    try {
+      const cfg = getConfig();
+      const byId = {};
+      (cfg.libs || []).forEach(function (l) { byId[l.id] = l.path; });
+      /* 库 id 能反查就换成当前路径：客户端缓存里可能是搬目录之前的旧 root */
+      const fixed = (Array.isArray(items) ? items : []).map(function (it) {
+        if (!it || typeof it !== 'object') return it;
+        const p = byId[String(it.libId || '')];
+        return p ? Object.assign({}, it, { libRoot: p }) : it;
+      });
+      return { ok: true, count: DB.albumListenAdd(getDb(), adminUid(), fixed) };
+    } catch (err) { return { ok: false, count: 0, error: String((err && err.message) || err) }; }
   });
   ipcMain.handle('fm:listenAlbumTop', function (e, libId, limit) {
     try {

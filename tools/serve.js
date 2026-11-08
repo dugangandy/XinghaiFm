@@ -1361,19 +1361,41 @@ const server = http.createServer(async function (req, res) {
     let rec = null;
     try { rec = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
     if (!rec || !Array.isArray(rec.items)) return send(res, 400, 'bad items');
-    /* libRoot 必须是这个用户名下的库：别把别人的路径顺手记进自己的榜 */
-    const mine = new Set(userLibs(uid).map(function (l) { return DB.libRootKey(l.path); }));
+    /* 库归属按三档解析，越靠前越可信：
+         ① libId 反查 —— 客户端传的 libRoot 可能来自本地索引缓存，库搬过目录就对不上了；
+         ② 客户端上报的 libRoot，必须命中该用户名下的库；
+         ③ 都认不出时落到当前活动库 —— 宁可归错库，也别把这段收听时长静默丢掉。 */
+    const libs = userLibs(uid);            /* 顺带把「别人共享给我的库」物化一次 */
+    const byId = {};
+    const mine = new Set();
+    libs.forEach(function (l) {
+      byId[l.id] = l.path;
+      mine.add(DB.libRootKey(l.path));
+    });
+    const activeId = (DB.activeLib(db, uid) || {}).id;
+    const active = libs.find(function (l) { return l.id === activeId; }) || libs[0];
+    const activeKey = active ? DB.libRootKey(active.path) : '';
     const clean = [];
     rec.items.slice(0, 20).forEach(function (it) {
       if (!it || typeof it !== 'object') return;
       const albumId = String(it.albumId || '');
       /* U.uid('a', key) 的形态：字母 a + base36 哈希 */
       if (!/^a[0-9a-z]{1,40}$/.test(albumId)) return;
-      const key = DB.libRootKey(it.libRoot);
-      if (!key || !mine.has(key)) return;
       const delta = Number(it.deltaSecs);
       if (!isFinite(delta) || delta <= 0 || delta > 3600) return;
-      clean.push({ albumId: albumId, libRoot: key, title: String(it.title || '').slice(0, 80), deltaSecs: delta });
+      let root = '';
+      const lid = String(it.libId || '');
+      if (lid && byId[lid]) root = byId[lid];
+      else {
+        const claimed = DB.libRootKey(it.libRoot);
+        if (claimed && mine.has(claimed)) root = claimed;
+      }
+      if (!root) root = activeKey;
+      if (!root) return;
+      clean.push({
+        albumId: albumId, libRoot: DB.libRootKey(root),
+        title: String(it.title || '').slice(0, 80), deltaSecs: delta
+      });
     });
     /* 一条都不合法时回 ok:true：客户端据此扣减余额，否则会一直重试同一批脏数据 */
     if (!clean.length) return json(res, { ok: true, count: 0 });
@@ -1383,8 +1405,8 @@ const server = http.createServer(async function (req, res) {
   if (p === '/api/listen/album/top') {
     if (req.method !== 'GET') return send(res, 405, 'GET only');
     const limit = Number(u.searchParams.get('limit')) || 5;
-    /* 带 libId 就只统计那个库；不带 = 全库合并 */
-    const libId = String(u.searchParams.get('libId') || '');
+    /* 带 libId（query 或 x-fm-lib 头）就只统计那个库；不带 = 全库合并 */
+    const libId = String(u.searchParams.get('libId') || req.headers['x-fm-lib'] || '');
     let root = '';
     if (libId) {
       const lib = userLibs(uid).find(function (l) { return l.id === libId; });
