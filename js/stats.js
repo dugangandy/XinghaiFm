@@ -181,7 +181,7 @@
     return albumCtx;
   }
 
-  /* 一秒只记一次：放在分类循环外面，多分类专辑不会被乘上分类数 */
+  /* 专辑维度也只记一次：与时间统计共用同一份 sec，多分类专辑同样不会被放大 */
   function accrueAlbum(sec) {
     if (!(sec > 0)) return;
     const ctx = albumCtxNow();
@@ -201,12 +201,14 @@
     const d = localDay();
     if (d !== dayStr) rollover(d);
     accrueAlbum(sec);
-    const list = (cats && cats.length) ? cats : ['__none__'];
-    list.forEach(function (c) {
-      const key = d + '|' + h + '|' + c;
-      if (!pending[key]) pending[key] = { day: d, h: h, c: c, s: 0 };
-      pending[key].s += sec;
-    });
+    /* 每一秒只进一个分类桶（主分类 cats[0]）。
+       多分类专辑若按每个分类各记一次，pending 汇总和落库层都会把这一段重复计入
+       总时长：secs / byHour 变成 N 倍，而 byCat 之和看着还自洽，很难看出来。
+       主分类口径与榜单、列表里展示的 cats[0] 一致 */
+    const c = (cats && cats.length) ? String(cats[0]) : '__none__';
+    const key = d + '|' + h + '|' + c;
+    if (!pending[key]) pending[key] = { day: d, h: h, c: c, s: 0 };
+    pending[key].s += sec;
     rebuildToday();
     emit('tick');
   }
@@ -490,8 +492,8 @@
     if (mode === 'day') {
       const bars = [];
       for (let h = 0; h < 24; h++) bars.push({ hour: h, secs: live.byHour[h] || 0 });
-      /* byCat 给明细页做「这些时长花在哪些分类」；同一集属于多个分类时各计一次，
-         所以分类之和可能大于总时长，这是口径而不是重复计时 */
+      /* byCat 给明细页做「这些时长花在哪些分类」，按专辑主分类归集，
+         所以分类之和 = 总时长，不会出现一集被重复计入的情况 */
       return {
         mode: mode, from: todayS, to: todayS, total: live.secs,
         bars: bars, todayIndex: nowHour(), todaySec: live.secs, byCat: live.byCat
