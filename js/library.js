@@ -773,6 +773,35 @@
   const searchMemo = { key: '', res: null };
   function invalidateSearch() { searchMemo.key = ''; searchMemo.res = null; }
 
+  /* 音频 / 视频各留一份配额：共用一个上限时，视频多的库（课程、影视）会把音频全挤掉，
+     结果页的「音频」标签就永远是空的。列表已按相关度排好，这里按 kind 分别计数截断 */
+  function sliceByKind(hits, cap) {
+    let na = 0, nv = 0;
+    const out = [];
+    for (let i = 0; i < hits.length; i++) {
+      const x = hits[i];
+      if (x.t.kind === 'video') {
+        if (nv >= cap) continue;
+        nv++;
+      } else {
+        if (na >= cap) continue;
+        na++;
+      }
+      out.push(x);
+    }
+    return out;
+  }
+
+  /* 当前库的显示名：优先资源库列表里的名字（界面上重命名过就是新名字），
+     退回扫描时记下的目录名，最后才是通用文案。
+     rootName 存的是扫描时的目录 basename，重命名不会回写索引，所以不能直接拿它当库名展示。
+     例：库目录叫 output、改名叫「迅雷下载」，搜索结果的当前库小节要显示「迅雷下载」。
+     老调用方（单测桩）可能没有 fs.active()，取不到就当没设置 */
+  function selfLibName() {
+    const lib = (FM.fs && typeof FM.fs.active === 'function') ? FM.fs.active() : null;
+    return (lib && lib.name) || rootName || '当前资源库';
+  }
+
   function search(q, opt) {
     const o = opt || {};
     const key = FM.search.normalize(q);
@@ -806,7 +835,7 @@
 
     return {
       albums: hitAlbums.map(function (x) { return x.a; }),
-      tracks: hitTracks.slice(0, SEARCH_TRACK_CAP).map(function (x) { return x.t; })
+      tracks: sliceByKind(hitTracks, SEARCH_TRACK_CAP).map(function (x) { return x.t; })
     };
   }
 
@@ -884,7 +913,7 @@
   function computeAll(key, showHidden) {
     const out = {
       albums: [], tracks: [], pendingLibs: [],
-      self: { id: libId, name: rootName || '当前资源库' },
+      self: { id: libId, name: selfLibName() },
       total: 0
     };
     const cur = search(key, { showHidden: showHidden });
@@ -946,7 +975,7 @@
       hitsT.sort(function (x, y) {
         return (y.s - x.s) || U.naturalCompare(x.t.name, y.t.name);
       });
-      hitsT.slice(0, LIB_TRACK_CAP).forEach(function (h) {
+      sliceByKind(hitsT, LIB_TRACK_CAP).forEach(function (h) {
         out.tracks.push({ track: h.t, libId: lib.id, libName: libName, self: false, albumTitle: h.albumTitle });
       });
     });
@@ -959,11 +988,14 @@
     const o = opt || {};
     const key = FM.search.normalize(q);
     const showHidden = !!o.showHidden;
+    const selfName = selfLibName();
     if (!key) {
       return { albums: [], tracks: [], pendingLibs: [],
-        self: { id: libId, name: rootName || '当前资源库' }, total: 0 };
+        self: { id: libId, name: selfName }, total: 0 };
     }
-    const ck = libId + '|' + key + '|' + (showHidden ? '1' : '0') + '|' + libsSignature();
+    /* 缓存键带上显示名：重命名只改 fs.libs()，既不进 libsSignature() 也不会触发
+       invalidateSearch()，不拼进来的话搜索结果会一直用改名前的库名 */
+    const ck = libId + '|' + key + '|' + (showHidden ? '1' : '0') + '|' + selfName + '|' + libsSignature();
     let res = (searchMemo.res && searchMemo.key === ck) ? searchMemo.res : null;
     if (!res) {
       res = computeAll(key, showHidden);

@@ -276,8 +276,44 @@ body.is-server #libSwitch .lib-caret{display:none}
 .sp-empty{padding:14px 12px;font-size:11.5px;color:var(--dim-2);line-height:1.7}
 .sp-empty b{color:var(--txt-2);font-weight:600}
 
-/* 搜索结果页：范围切换 / 跨库标记 */
-.search-scope{display:flex;align-items:center;gap:8px;margin:14px 2px 8px}
+/* ── 搜索结果页：标签条（专辑 / 音频 / 视频）+ 资源库筛选 ──
+   标签是文字式的：选中加粗 + 中心展开的渐变短下划线（和首页 m-tab 同一套语言），
+   筛选胶囊沿用 .chip，宽屏跟标签同一行、窄屏由 flex-wrap 折到下一行 */
+.search-bar{display:flex;align-items:flex-end;justify-content:space-between;gap:12px 18px;flex-wrap:wrap;margin:16px 2px 6px}
+.search-tabs{
+  display:flex;align-items:center;gap:18px;min-width:0;
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;
+  touch-action:pan-x;
+}
+.search-tabs::-webkit-scrollbar{display:none}
+.search-tab{
+  position:relative;flex:none;padding:0 1px 10px;
+  font-size:14px;font-weight:600;letter-spacing:.04em;line-height:20px;
+  color:var(--dim);white-space:nowrap;transition:color .2s var(--ease);
+}
+.search-tab b{margin-left:5px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--dim-2);transition:color .2s var(--ease)}
+.search-tab::after{
+  content:"";position:absolute;left:50%;bottom:0;width:0;height:2px;border-radius:99px;
+  background:var(--grad);box-shadow:0 0 12px rgba(34,211,238,.8);
+  transform:translateX(-50%);transition:width .24s var(--ease);
+}
+.search-tab:hover{color:var(--txt)}
+.search-tab:hover b{color:var(--dim)}
+.search-tab.on{color:#fff}
+.search-tab.on b{color:var(--cyan)}
+.search-tab.on::after{width:20px}
+/* 零命中的标签：更暗但仍可点，切过去会给出该标签自己的空态 */
+.search-tab.is-empty{color:var(--dim-2)}
+.search-tab.is-empty.on{color:var(--dim)}
+.search-tab.is-empty.on b{color:var(--dim-2)}
+.search-scope{display:flex;align-items:center;gap:8px;flex:none;padding-bottom:2px}
+/* 每个资源库一节：节与节之间留足呼吸，第一节贴住标签条 */
+.search-sec{margin-top:22px}
+.search-sec:first-child{margin-top:4px}
+/* 本库命中数：跟在库名后面，颜色比标题暗一档 */
+.section-n{font-size:11px;font-weight:500;color:var(--dim-2);font-variant-numeric:tabular-nums;letter-spacing:0}
+.search-more{margin-top:22px;text-align:center}
+.search-others{margin-top:8px;color:var(--dim-2)}
 .section-lib{
   margin-left:8px;padding:2px 8px;border-radius:99px;font-size:10.5px;font-weight:600;
   letter-spacing:0;color:var(--cyan);background:rgba(34,211,238,.1);

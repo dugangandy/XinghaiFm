@@ -4,10 +4,10 @@
   const U = FM.util, L = FM.lib, P = FM.player;
   const esc = U.escape, icon = U.icon, fmtT = U.fmtTime, fmtS = U.fmtSize, fmtD = U.fmtDur;
 
-  const state = { view: 'home', cat: null, albumId: null, q: '', qScope: 'all', detailQ: '', sortDesc: false, showHidden: false, page: 0, trackShown: 0, qMore: false, gridShown: 0 };
+  const state = { view: 'home', cat: null, albumId: null, q: '', qScope: 'all', qTab: 'album', detailQ: '', sortDesc: false, showHidden: false, page: 0, trackShown: 0, qMore: false, gridShown: 0 };
   const PAGE = 30;            // 专辑声音列表每页集数（手机端滚动加载也拿它当批大小）
   const SEARCH_ALBUMS = 24;   // 搜索结果首屏最多画多少张卡片（点「显示更多」才展开）
-  const SEARCH_TRACKS = 40;   // 搜索结果首屏最多画多少行单集
+  const SEARCH_TRACKS = 40;   // 搜索结果首屏最多画多少行单集（音频 / 视频各自算）
   const GRID_BATCH = 60;      // 专辑网格每批画多少张卡（一次画几百张要几百毫秒）
   const TRACK_END = '已经到底啦~';   // 手机端滚动加载到底时的收尾文案
   let refs = {};
@@ -26,7 +26,9 @@
   }
   let gridTail = null;        // 还没画出来的专辑（滚动加载用）
   let trackTail = null;       // 手机端还没画出来的曲目（滚动加载用）
-  let searchTail = null;      // 搜索结果按库分组后、还没画出来的条目（滚动加载用）
+  let searchTail = null;      // 搜索结果当前标签下、还没画出来的条目（滚动加载用）
+  let searchTotal = 0;        // 当前标签的命中总数（副标题「当前显示 x / y」用）
+  let searchCountOn = false;  // 命中超过首屏预算时才显示上面那个计数
   let statsViewTeardown = null;   // 统计页的实时订阅与定时器，换页时必须显式清掉
   let albumViewTeardown = null;   // 专辑管理页的批量抓取任务，换页 / 换库时必须停掉
   /* 批量补封面的任务状态：只在本次会话内有效，不落盘。
@@ -699,10 +701,12 @@
     refs.searchInput.removeAttribute('aria-activedescendant');
   }
 
+  /* 快速搜索只出专辑：单集（音频 / 视频）留到结果页的标签里看，
+     浮层保持「一眼扫完」的密度。末尾固定一条「查看全部结果」入口 */
   function popSuggestHtml(q) {
     const res = L.searchAll(q, { scope: 'all', showHidden: state.showHidden });
-    const albums = res.albums.slice(0, 5);
-    const tracks = res.tracks.slice(0, 3);
+    const albums = res.albums.slice(0, 6);
+    const n = searchCounts(res);
     let html = '';
     albums.forEach(function (r) {
       const a = r.album;
@@ -719,23 +723,13 @@
         (r.self ? '' : '<span class="sp-badge">' + esc(r.libName) + '</span>') +
         '</div>';
     });
-    tracks.forEach(function (r) {
-      const a = r.self ? L.album(r.track.albumId) : null;
-      const albumTitle = r.albumTitle || (a ? a.title : '');
-      html += '<div class="sp-item" role="option" aria-selected="false" data-sp="track" data-id="' + esc(r.track.id) + '"' +
-        (r.self ? '' : ' data-lib="' + esc(r.libId) + '"') + '>' +
-        '<span class="sp-art sp-art-ic">' + icon('headphones') + '</span>' +
-        '<span class="sp-body"><span class="sp-title">' + esc(r.track.title) + '</span>' +
-        '<span class="sp-sub">' + esc(albumTitle) + (r.self ? '' : ' · ' + esc(r.libName)) + '</span></span>' +
-        (r.self ? '' : '<span class="sp-badge">' + esc(r.libName) + '</span>') +
-        '</div>';
-    });
-    if (!albums.length && !tracks.length) {
-      html += '<div class="sp-empty">没有直接匹配，按 ↵ 查看完整结果</div>';
+    if (!albums.length) {
+      html += '<div class="sp-empty">没有匹配的专辑，按 ↵ 查看全部结果</div>';
       return html;
     }
     html += '<div class="sp-item sp-all" role="option" aria-selected="false" data-sp="all"><span class="sp-body">' +
-      '<span class="sp-title">查看全部结果</span><span class="sp-sub">共 ' + res.total + ' 条命中</span></span>' +
+      '<span class="sp-title">查看全部结果</span><span class="sp-sub">专辑 ' + n.album +
+      ' · 音频 ' + n.audio + ' · 视频 ' + n.video + '</span></span>' +
       '<span class="sp-hint">↵</span></div>';
     return html;
   }
@@ -817,6 +811,10 @@
     paintSearchHint();
     state.q = v;
     state.qMore = false;
+    /* 默认落在「专辑」：下拉框里点的那张专辑就是用户的第一意图；
+       专辑零命中时才自动落到第一个有命中的标签 */
+    state.qTab = 'album';
+    resolveSearchTab(v, state.qScope === 'cur' ? 'cur' : 'all');
     renderMain();
   }
 
@@ -826,17 +824,11 @@
     if (kind === 'clear') { FM.search.history.clear(); paintSearchHint(); popPaint(); return; }
     if (kind === 'history') { submitSearch(el.dataset.q); return; }
     if (kind === 'all') { submitSearch(refs.searchInput.value); return; }
-    const q = refs.searchInput.value.trim();
     if (kind === 'album') {
+      const q = refs.searchInput.value.trim();
       if (q) FM.search.history.push(q);
       popClose();
       openAlbumIn(el.dataset.lib, el.dataset.id);
-      return;
-    }
-    if (kind === 'track') {
-      if (q) FM.search.history.push(q);
-      popClose();
-      playTrackIn(el.dataset.lib, el.dataset.id, true);
     }
   }
 
@@ -876,6 +868,7 @@
     const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
     const seg = h.split('/').filter(Boolean);
     state.q = '';
+    state.qTab = 'album';
     refs.searchInput.value = '';
     refs.searchClear.hidden = true;
     /* 顺带刷一下占位：从搜索结果点进专辑时会 push 一条历史，回来后提示词要跟着换 */
@@ -1055,7 +1048,7 @@
   let moreTick = 0;
   function maybeLoadMore() {
     if (moreTick) return;
-    function searchHas() { return !!(searchTail && (searchTail.albums.length || searchTail.tracks.length)); }
+    function searchHas() { return !!(searchTail && searchTail.items.length); }
     if (!gridTail && !trackTail && !searchHas()) return;
     const v = refs.view;
     if (v.scrollTop + v.clientHeight < v.scrollHeight - 900) return;
@@ -1682,22 +1675,57 @@
     return wrap;
   }
 
-  /* 搜索结果按资源库分组：当前库排最前，其它库跟上。所有匹配都是跨库的，
-     点其它库的条目会先切库再打开（见 openAlbumIn / playTrackIn） */
+  /* ── 搜索结果：标签页 + 按资源库分组 ──
+     三种类型各占一个标签（专辑 / 音频 / 视频），三个标签内部都按资源库分组：
+     当前库排最前，其它库跟上。所有匹配都是跨库的，点其它库的条目会先切库再打开
+     （见 openAlbumIn / playTrackIn）。 */
+  const SEARCH_TABS = [
+    { key: 'album', field: 'albums', label: '专辑', unit: '个专辑' },
+    { key: 'audio', field: 'audio', label: '音频', unit: '条音频' },
+    { key: 'video', field: 'video', label: '视频', unit: '个视频' }
+  ];
+  const TAB_EMPTY = {
+    album: ['没有找到相关专辑', '换个关键词，或试试拼音 / 首字母：santi、st 也能找到《三体》。'],
+    audio: ['没有找到相关音频', '这个关键词只命中了专辑或视频，切到上方其它标签看看。'],
+    video: ['没有找到相关视频', '这个关键词只命中了专辑或音频，切到上方其它标签看看。']
+  };
+
+  /* 单集按扩展名分音频 / 视频：kind 由 library.js 的 rowTrack 统一补齐，缺失时按音频算 */
+  function tabOfTrack(t) { return t && t.kind === 'video' ? 'video' : 'audio'; }
+  function tabField(tab) { return tab === 'audio' ? 'audio' : (tab === 'video' ? 'video' : 'albums'); }
+
+  function searchCounts(res) {
+    const c = { album: res.albums.length, audio: 0, video: 0 };
+    res.tracks.forEach(function (r) { c[tabOfTrack(r.track)]++; });
+    return c;
+  }
+
+  /* 换关键词 / 换资源库范围后：当前标签还有命中就留着（用户正顺着这一栏看），
+     没了才落到第一个有命中的标签 */
+  function resolveSearchTab(q, scope) {
+    const res = L.searchAll(q, { scope: scope === 'cur' ? 'cur' : 'all', showHidden: state.showHidden });
+    const c = searchCounts(res);
+    if (c[state.qTab]) return;
+    state.qTab = c.album ? 'album' : (c.audio ? 'audio' : (c.video ? 'video' : 'album'));
+  }
+
+  /* 按资源库分桶：专辑 / 音频 / 视频各一栏，标签切换时只取自己那栏 */
   function searchGroups(res) {
     const map = new Map();
     const list = [];
     function bucket(libId, libName, self) {
       let g = map.get(libId);
       if (!g) {
-        g = { libId: libId, libName: libName, self: !!self, albums: [], tracks: [] };
+        g = { libId: libId, libName: libName, self: !!self, albums: [], audio: [], video: [] };
         map.set(libId, g);
         list.push(g);
       }
       return g;
     }
     res.albums.forEach(function (r) { bucket(r.libId, r.libName, r.self).albums.push(r); });
-    res.tracks.forEach(function (r) { bucket(r.libId, r.libName, r.self).tracks.push(r); });
+    res.tracks.forEach(function (r) {
+      bucket(r.libId, r.libName, r.self)[tabOfTrack(r.track)].push(r);
+    });
     return list;
   }
 
@@ -1726,9 +1754,57 @@
     return q;
   }
 
+  /* 标签条 + 资源库筛选：宽屏同一行，窄屏由 CSS 折行 */
+  function searchBarHtml(counts, tab, scope) {
+    const tabs = SEARCH_TABS.map(function (t) {
+      const n = counts[t.key];
+      return '<button class="search-tab' + (t.key === tab ? ' on' : '') + (n ? '' : ' is-empty') +
+        '" role="tab" aria-selected="' + (t.key === tab ? 'true' : 'false') + '"' +
+        ' data-act="q-tab" data-tab="' + t.key + '">' + t.label + '<b>' + n + '</b></button>';
+    }).join('');
+    return '<div class="search-bar">' +
+      '<div class="search-tabs" role="tablist">' + tabs + '</div>' +
+      '<div class="search-scope">' +
+        '<button class="chip' + (scope === 'all' ? ' on' : '') + '" data-act="q-scope" data-scope="all">全部资源库</button>' +
+        '<button class="chip' + (scope === 'cur' ? ' on' : '') + '" data-act="q-scope" data-scope="cur">当前资源库</button>' +
+      '</div></div>';
+  }
+
+  /* 一个资源库一节：库名 +「当前」徽标 + 本库命中数 */
+  function searchSectionHead(libName, self, total) {
+    return '<div class="section-head"><div class="section-title">' + esc(libName || '资源库') +
+      (self ? '<span class="section-lib">当前</span>' : '') +
+      '<span class="section-n">' + total + '</span></div></div>';
+  }
+
+  function searchRowHtml(r, kind, g) {
+    if (kind === 'album') {
+      return albumCard(r.album, { libId: g.libId, libName: g.libName, self: g.self });
+    }
+    /* 组标题已经写了库名，行里不再重复（libName 传空）；foreign 仍按 !self 传：
+       跨库行的进度 / 下载标记 / 更多菜单要屏蔽掉 */
+    return flatTrack(r.track, {
+      foreign: !r.self, libId: r.self ? '' : g.libId, self: r.self, albumTitle: r.albumTitle
+    });
+  }
+
+  function searchSectionHtml(g, kind, items) {
+    if (!items.length) return '';
+    const cls = kind === 'album' ? 'grid' : 'track-list';
+    return '<div class="search-sec">' + searchSectionHead(g.libName, g.self, g[tabField(kind)].length) +
+      '<div class="' + cls + '" data-lib="' + esc(g.libId) + '">' +
+      items.map(function (r) { return searchRowHtml(r, kind, g); }).join('') + '</div></div>';
+  }
+
   function viewSearch(q) {
     const scope = state.qScope === 'cur' ? 'cur' : 'all';
     const res = L.searchAll(q, { scope: scope, showHidden: state.showHidden });
+    const counts = searchCounts(res);
+    /* 空标签是允许停留的（用户自己点进去的，给该标签自己的空态）；
+       只有取值非法时才兜回专辑，别把用户的点击静默改掉 */
+    const kind = state.qTab === 'audio' || state.qTab === 'video' ? state.qTab : 'album';
+    state.qTab = kind;
+    const field = tabField(kind);
     const groups = searchGroups(res);
     /* 别的库的封面索引按需读：读到之前那几张卡片只有首字渐变，读完后补一次静默重绘。
        同一个库一个会话只读一次，之后都是同步查表 */
@@ -1744,48 +1820,28 @@
         if (refs.searchPop && !refs.searchPop.hidden) { popInvalidate(); popPaint(); }
       }).catch(function () {});
     }
-    const quotaA = state.qMore ? quotaFor(groups, 'albums', Infinity) : quotaFor(groups, 'albums', SEARCH_ALBUMS);
-    const quotaT = state.qMore ? quotaFor(groups, 'tracks', Infinity) : quotaFor(groups, 'tracks', SEARCH_TRACKS);
-    const tailA = [], tailT = [];
-    let shownA = 0, shownT = 0;
+    const budget = state.qMore ? Infinity : (kind === 'album' ? SEARCH_ALBUMS : SEARCH_TRACKS);
+    const quota = quotaFor(groups, field, budget);
+    const tail = [];
+    let shown = 0;
     const body = groups.map(function (g) {
-      let html = '';
-      const al = g.albums.slice(0, quotaA.get(g.libId) || 0);
-      shownA += al.length;
-      g.albums.slice(al.length).forEach(function (r) {
-        tailA.push({ r: r, libId: g.libId, libName: g.libName, self: g.self });
+      const items = g[field].slice(0, quota.get(g.libId) || 0);
+      shown += items.length;
+      g[field].slice(items.length).forEach(function (r) {
+        tail.push({ r: r, libId: g.libId, libName: g.libName, self: g.self, n: g[field].length });
       });
-      if (al.length) {
-        html += '<div class="section-head"><div class="section-title">专辑' +
-          (g.self ? '' : '<span class="section-lib">' + esc(g.libName) + '</span>') + '</div></div>' +
-          '<div class="grid" data-lib="' + esc(g.libId) + '">' + al.map(function (r) {
-            return albumCard(r.album, { libId: g.libId, libName: g.libName, self: g.self });
-          }).join('') + '</div>';
-      }
-      const tk = g.tracks.slice(0, quotaT.get(g.libId) || 0);
-      shownT += tk.length;
-      g.tracks.slice(tk.length).forEach(function (r) {
-        tailT.push({ r: r, libId: g.libId, libName: g.libName, self: g.self });
-      });
-      if (tk.length) {
-        html += '<div class="section-head"' + (al.length ? ' style="margin-top:26px"' : '') + '><div class="section-title">单集' +
-          (g.self ? '' : '<span class="section-lib">' + esc(g.libName) + '</span>') + '</div></div>' +
-          '<div class="track-list" data-lib="' + esc(g.libId) + '">' + tk.map(function (r) {
-            return flatTrack(r.track, {
-              foreign: !r.self, libId: g.libId, libName: g.libName, albumTitle: r.albumTitle
-            });
-          }).join('') + '</div>';
-      }
-      return html;
+      return searchSectionHtml(g, kind, items);
     }).join('');
 
-    searchTail = (tailA.length || tailT.length)
-      ? { albums: tailA, tracks: tailT, totalA: res.albums.length, totalT: res.tracks.length }
-      : null;
-    const restA = tailA.length, restT = tailT.length;
+    const hit = counts[kind];
+    searchTail = tail.length ? { kind: kind, items: tail } : null;
+    /* 副标题里的「当前显示 x / y 条」：命中超过首屏预算才显示，
+       展开到底之后继续显示满额，别让数字在半路消失 */
+    searchTotal = hit;
+    searchCountOn = hit > (kind === 'album' ? SEARCH_ALBUMS : SEARCH_TRACKS);
     const more = searchTail
-      ? '<div id="searchMore" style="margin-top:20px;text-align:center"><button class="btn" data-act="search-more">显示更多' +
-        (restA > 0 ? ' · 还有 ' + restA + ' 个专辑' : '') + (restT > 0 ? ' · 还有 ' + restT + ' 集' : '') + '</button></div>'
+      ? '<div id="searchMore" class="search-more"><button class="btn" data-act="search-more">显示更多 · 还有 ' +
+        tail.length + ' 条</button></div>'
       : '';
     const pending = (scope === 'cur' || !res.pendingLibs.length) ? '' :
       '<div class="search-pending">' + res.pendingLibs.map(function (l) {
@@ -1793,20 +1849,24 @@
           (l.missing ? '目录不可用，请先重新定位' : '未建立索引，切过去一次即可搜索') + '</span></div>';
       }).join('') + '</div>';
     const libTotal = (FM.fs.libs() || []).length;
-    const chips = '<div class="search-scope">' +
-      '<button class="chip' + (scope === 'all' ? ' on' : '') + '" data-act="q-scope" data-scope="all">全部资源库</button>' +
-      '<button class="chip' + (scope === 'cur' ? ' on' : '') + '" data-act="q-scope" data-scope="cur">当前资源库</button>' +
-      '</div>';
+    const others = SEARCH_TABS
+      .filter(function (t) { return t.key !== kind && counts[t.key]; })
+      .map(function (t) { return t.label + ' ' + counts[t.key]; }).join(' · ');
+    const emptyText = TAB_EMPTY[kind];
+    const empty = hit ? '' :
+      '<div class="empty"><div class="empty-art">' + icon(kind === 'album' ? 'search' : 'headphones') + '</div>' +
+      '<h3>' + emptyText[0] + '</h3><p>' + emptyText[1] + '</p>' +
+      (others ? '<p class="search-others">其它标签里还有命中：' + others + '</p>' : '') + '</div>';
 
     const wrap = U.el('div');
     wrap.innerHTML = '<div class="view-head"><div><div class="page-title">搜索 “' + esc(q) + '”</div>' +
-      '<div class="page-sub">命中 ' + res.albums.length + ' 个专辑 · ' + res.tracks.length + ' 集' +
+      '<div class="page-sub">' + SEARCH_TABS.map(function (t) { return counts[t.key] + ' ' + t.unit; }).join(' · ') +
       (scope === 'all' && libTotal > 1 ? ' · 搜索 ' + libTotal + ' 个资源库' : '') +
-      '<span id="searchCount">' + (searchTail ? '（当前显示 ' + shownA + ' 个专辑 · ' + shownT + ' 集）' : '') + '</span>' +
+      '<span id="searchCount">' + (searchCountOn ? '（当前显示 ' + shown + ' / ' + hit + ' 条）' : '') + '</span>' +
       '</div></div></div>' +
-      chips + body + more + pending +
-      (!res.albums.length && !res.tracks.length ? '<div class="empty"><div class="empty-art">' + icon('search') + '</div>' +
-        '<h3>没有找到相关内容</h3><p>换个关键词，或试试拼音 / 首字母：santi、st 也能找到《三体》。</p></div>' : '');
+      searchBarHtml(counts, kind, scope) +
+      '<div class="search-results">' + body + more + empty + '</div>' +
+      pending;
     return wrap;
   }
 
@@ -1816,41 +1876,54 @@
     return U.$$('.' + cls, refs.view).find(function (el) { return el.dataset.lib === libId; });
   }
 
+  /* 首屏预算按库均分时，库多的情况下排在后面的库可能一条都没画出来：
+     追加时补建这一组的标题与容器，别让条目静默消失 */
+  function ensureSearchHost(x, kind) {
+    const cls = kind === 'album' ? 'grid' : 'track-list';
+    const found = findSearchHost(cls, x.libId);
+    if (found) return found;
+    const host = refs.view.querySelector('.search-results');
+    if (!host) return null;
+    const sec = document.createElement('div');
+    sec.className = 'search-sec';
+    sec.innerHTML = searchSectionHead(x.libName, x.self, x.n || 0) +
+      '<div class="' + cls + '" data-lib="' + esc(x.libId) + '"></div>';
+    const more = host.querySelector('#searchMore');
+    if (more) host.insertBefore(sec, more); else host.appendChild(sec);
+    return sec.querySelector('.' + cls);
+  }
+
   function paintSearchMore() {
-    const rest = searchTail ? searchTail.albums.length + searchTail.tracks.length : 0;
+    const rest = searchTail ? searchTail.items.length : 0;
     const box = refs.view.querySelector('#searchMore');
     if (!rest && box) box.remove();
     const btn = box && box.querySelector('button');
     if (btn && rest) btn.textContent = '显示更多 · 还有 ' + rest + ' 条';
     const cnt = refs.view.querySelector('#searchCount');
-    if (cnt && searchTail) {
-      cnt.textContent = '（当前显示 ' + (searchTail.totalA - searchTail.albums.length) +
-        ' 个专辑 · ' + (searchTail.totalT - searchTail.tracks.length) + ' 集）';
-    } else if (cnt) cnt.textContent = '';
+    if (!cnt) return;
+    if (!searchCountOn || !searchTotal) { cnt.textContent = ''; return; }
+    cnt.textContent = '（当前显示 ' + (searchTotal - rest) + ' / ' + searchTotal + ' 条）';
   }
 
   function appendSearchBatch() {
-    if (!searchTail) return;
-    const batchA = searchTail.albums.splice(0, SEARCH_ALBUMS);
-    const batchT = searchTail.tracks.splice(0, SEARCH_TRACKS);
-    batchA.forEach(function (x) {
-      const host = findSearchHost('grid', x.libId);
+    if (!searchTail || !searchTail.items.length) return;
+    const kind = searchTail.kind;
+    const batch = searchTail.items.splice(0, kind === 'album' ? SEARCH_ALBUMS : SEARCH_TRACKS);
+    const byLib = new Map();
+    batch.forEach(function (x) {
+      if (!byLib.has(x.libId)) byLib.set(x.libId, []);
+      byLib.get(x.libId).push(x);
+    });
+    byLib.forEach(function (list) {
+      const host = ensureSearchHost(list[0], kind);
       if (!host) return;
-      host.insertAdjacentHTML('beforeend', albumCard(x.r.album, {
-        libId: x.libId, libName: x.libName, self: x.self
-      }));
-      observeCards(host, true);
+      host.insertAdjacentHTML('beforeend', list.map(function (x) {
+        return searchRowHtml(x.r, kind, x);
+      }).join(''));
+      if (kind === 'album') observeCards(host, true);
       applyPlayingState(host);
     });
-    batchT.forEach(function (x) {
-      const host = findSearchHost('track-list', x.libId);
-      if (!host) return;
-      host.insertAdjacentHTML('beforeend', flatTrack(x.r.track, {
-        foreign: !x.self, libId: x.libId, libName: x.libName, albumTitle: x.r.albumTitle
-      }));
-      applyPlayingState(host);
-    });
-    if (!searchTail.albums.length && !searchTail.tracks.length) searchTail = null;
+    if (!searchTail.items.length) searchTail = null;
     paintSearchMore();
   }
 
@@ -2622,7 +2695,12 @@
       refs.searchClear.hidden = !q;
       state.q = q;
       state.qMore = false;      /* 换了关键词就回到「只显示首屏」，别把上次的展开状态带过来 */
-      if (q) { renderMain(); popPaint(); }
+      /* 当前标签没命中了就自动换到有命中的那一栏，别让用户对着空列表继续打字 */
+      if (q) {
+        resolveSearchTab(q, state.qScope === 'cur' ? 'cur' : 'all');
+        renderMain();
+        popPaint();
+      }
       else { route(); popPaint(); }   /* route 会关浮层，清空后重新给最近搜索 */
     }, 160));
 
@@ -2921,9 +2999,21 @@
           break;
         }
         case 'search-more': state.qMore = true; renderMain(); break;
+        case 'q-tab': {
+          const tab = actEl.dataset.tab;
+          if (tab !== 'album' && tab !== 'audio' && tab !== 'video') break;
+          if (tab === state.qTab) break;
+          state.qTab = tab;
+          state.qMore = false;       /* 换标签回到「只显示首屏」，免得一进来就是几百条 */
+          renderMain();
+          refs.view.scrollTop = 0;
+          break;
+        }
         case 'q-scope': {
           state.qScope = actEl.dataset.scope === 'cur' ? 'cur' : 'all';
           state.qMore = false;
+          /* 只看当前库时这一栏可能一条命中都没有：自动落到有命中的标签 */
+          if (state.q) resolveSearchTab(state.q, state.qScope);
           renderMain();
           break;
         }

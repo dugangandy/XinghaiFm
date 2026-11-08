@@ -32,7 +32,8 @@ FM.db = {
   index(id) { return indexes[id] || null; },
   touch() {}
 };
-FM.media = { kindOf: () => 'audio' };
+/* 结果页按 音频 / 视频 分标签，限量也得按 kind 分开算：桩要能区分扩展名 */
+FM.media = { kindOf: ext => (ext === 'mp4' || ext === 'mov' || ext === 'mkv' ? 'video' : 'audio') };
 const libs = [
   { id: 'la', name: '库A' },
   { id: 'lb', name: '库B' },
@@ -172,4 +173,73 @@ test('脏索引行不抛错，也不会污染结果', () => {
   L.invalidateSearch();
   assert.doesNotThrow(() => L.searchAll('01'));
   indexes.lb.tracks.pop();
+});
+
+test('跨库单集限量按音频 / 视频分别算，视频多的库不会把音频挤空', () => {
+  /* 老实现是音频 + 视频共用一个 60 条配额：视频排在前面时，音频标签永远是空的 */
+  const tracks = [];
+  for (let i = 1; i <= 80; i++) {
+    const n = String(i).padStart(2, '0');
+    tracks.push(['zv' + n, 'az', '合集/合集 视频' + n + '.mp4', '合集 视频' + n + '.mp4', 'mp4', 1, 1000, i, 3]);
+    tracks.push(['za' + n, 'az', '合集/合集 音频' + n + '.mp3', '合集 音频' + n + '.mp3', 'mp3', 1, 1000, i + 100, 3]);
+  }
+  indexes.lz = {
+    root: 'R:LZ', rootName: '库Z', scannedAt: 1, dirMode: 'flat',
+    albums: [{
+      id: 'az', key: '合集', path: '合集', dirCat: '', dirName: '合集',
+      title: '合集专辑', origTitle: '合集专辑', tags: [], seed: 1,
+      count: tracks.length, size: 1, duration: 3, addedAt: 1
+    }],
+    tracks
+  };
+  libs.push({ id: 'lz', name: '库Z' });
+  L.invalidateSearch();
+
+  const mine = L.searchAll('合集').tracks.filter(r => r.libId === 'lz');
+  assert.equal(mine.filter(r => r.track.kind === 'video').length, 60, '视频各留 60 条');
+  assert.equal(mine.filter(r => r.track.kind === 'audio').length, 60, '音频也各留 60 条');
+
+  libs.pop();
+  delete indexes.lz;
+  L.invalidateSearch();
+});
+
+test('当前库搜索同样按 kind 分别限量：音频 / 视频都不被对方挤掉', () => {
+  const files = [];
+  for (let i = 1; i <= 320; i++) {
+    const n = String(i).padStart(3, '0');
+    files.push({ rel: '混排/vol 视频' + n + '.mp4', name: 'vol 视频' + n + '.mp4', ext: 'mp4', size: 1, mtime: 1, depth: 1 });
+    files.push({ rel: '混排/vol 音频' + n + '.mp3', name: 'vol 音频' + n + '.mp3', ext: 'mp3', size: 1, mtime: 1, depth: 1 });
+  }
+  L.build({ libId: 'lz2', root: '/libZ2', rootName: 'libZ2', scannedAt: 1, dirMode: 'flat', files });
+  L.invalidateSearch();
+
+  const res = L.search('vol');
+  assert.equal(res.tracks.filter(t => t.kind === 'video').length, 300, '视频上限 300');
+  assert.equal(res.tracks.filter(t => t.kind === 'audio').length, 300, '音频上限 300');
+
+  L.build(scanA);          /* 把当前库还回去，别影响后续用例 */
+  L.invalidateSearch();
+});
+
+test('当前库的库名用资源库的重命名，而不是扫描目录名', () => {
+  /* 真实 fs 有 active()；这里临时补上，模拟「库目录叫 /libA、界面上改名成迅雷下载」。
+     只认 rootName 的老实现会让结果页一直显示目录名，改名后也不刷新 */
+  L.build(scanA);
+  L.invalidateSearch();
+  FM.fs.active = () => ({ id: 'la', name: '迅雷下载' });
+
+  const res = L.searchAll('santi');
+  assert.equal(res.self.name, '迅雷下载');
+  assert.equal(res.albums.find(r => r.self).libName, '迅雷下载', '专辑条目的 libName 也要跟着用显示名');
+  assert.equal(L.searchAll('01').tracks.find(r => r.self).libName, '迅雷下载');
+  assert.equal(L.searchAll('').self.name, '迅雷下载', '空查询的兜底结构同一口径');
+
+  /* 再改一次名：缓存键带了显示名，不 invalidate 也要立刻反映 */
+  FM.fs.active = () => ({ id: 'la', name: '迅雷下载 2' });
+  assert.equal(L.searchAll('santi').self.name, '迅雷下载 2');
+
+  /* 没有 active() 的老调用方（别的入口 / 单测桩）：退回索引里的目录名，不抛错 */
+  delete FM.fs.active;
+  assert.equal(L.searchAll('santi').self.name, '/libA');
 });

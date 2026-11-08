@@ -59,7 +59,18 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .sp-item{padding:10px 8px;min-height:44px}
   .sp-hint{display:none}
   .sp-badge{max-width:76px}
-  .search-scope{margin:10px 0 6px}
+  /* 搜索结果页：标签条占满一行可横滑（触控高度 36px），资源库筛选折到下一行左侧 */
+  .search-bar{margin:12px 0 4px;gap:8px}
+  .search-tabs{gap:16px;width:100%}
+  .search-tab{
+    display:inline-flex;align-items:center;min-height:36px;
+    padding:0 1px 8px;font-size:13.5px;letter-spacing:.02em;
+  }
+  .search-tab.on::after{width:18px}
+  .search-sec{margin-top:18px}
+  .search-more{margin-top:18px}
+  /* 折到第二行的筛选靠右，和标签行的视觉重心错开 */
+  .search-scope{margin:0 0 6px auto;padding-bottom:0}
   .menu-btn{width:34px;height:34px}
   /* 手机上右侧只留状态圆点：文字收进 title/aria-label，设置按钮接手退出登录 */
   .top-right{gap:4px}
