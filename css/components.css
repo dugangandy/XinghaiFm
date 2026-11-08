@@ -1491,13 +1491,6 @@ select.input option{background:#161d29;color:var(--txt)}
 .drow.warn .d-v{color:#ffb86b}
 .drow.warn .d-bar i{background:linear-gradient(90deg,#f59e0b,#f97316)}
 .d-empty{padding:16px 2px;font-size:12px;color:var(--dim)}
-.detail-cats{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}
-.detail-cats:empty{display:none}
-.dc-h{font-size:11px;letter-spacing:.04em;color:var(--dim)}
-.dc-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:99px;font-size:11.5px;color:var(--txt-2);background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.06)}
-.dc-pill i{width:6px;height:6px;border-radius:50%;flex:none}
-.dc-pill b{font-weight:700;color:var(--txt);font-variant-numeric:tabular-nums}
-.detail-note{margin:14px 0 0;font-size:11px;line-height:1.7;color:var(--dim-2)}
 
 /* ── 专辑 Top5 榜 ──
    和主视觉卡同一套语言但更收敛：光晕沿用静态渐变，不叠 backdrop-filter（目标机 GPU 弱）。

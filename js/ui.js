@@ -2435,9 +2435,6 @@
           '<span class="detail-sub" id="detailSub"></span>' +
         '</div>' +
         '<div class="detail-list" id="detailList"></div>' +
-        '<div class="detail-cats" id="detailCats"></div>' +
-        '<p class="detail-note">只算真正在播的时间：暂停、缓冲卡住、加载失败都不计。' +
-          '同一账号多台设备同时播放会各自累计，单小时超过 60 分钟一般就是设备重叠。</p>' +
       '</section>';
 
     const $ = function (id) { return wrap.querySelector('#' + id); };
@@ -2547,29 +2544,6 @@
       });
       return out.reverse();
     }
-    function catOf(id) {
-      if (id === '__none__') return { name: '未分类', color: '#7c8798' };
-      const list = (FM.lib && FM.lib.cats) ? FM.lib.cats() : [];
-      const hit = list.find(function (c) { return String(c.id) === String(id); });
-      return hit ? { name: hit.name, color: hit.color } : null;
-    }
-    function drawCats(data) {
-      const box = $('detailCats');
-      const byCat = data.byCat || {};
-      let lost = 0;
-      const items = Object.keys(byCat).map(function (id) {
-        const c = catOf(id);
-        if (!c) { lost += Number(byCat[id]) || 0; return null; }   /* 别的库的分类：合并成一项 */
-        return { name: c.name, color: c.color, secs: Number(byCat[id]) || 0 };
-      }).filter(function (x) { return x && x.secs > 0; })
-        .sort(function (a, b) { return b.secs - a.secs; });
-      if (lost > 0) items.push({ name: '其他分类', color: '#7c8798', secs: lost });
-      if (!items.length) { box.innerHTML = ''; return; }
-      box.innerHTML = '<span class="dc-h">分类归属</span>' + items.map(function (x) {
-        return '<span class="dc-pill"><i style="background:' + esc(x.color || '#22d3ee') + '"></i>' +
-          esc(x.name) + '<b>' + FM.stats.fmt(x.secs) + '</b></span>';
-      }).join('');
-    }
     function renderDetail(data) {
       const rows = rowsOf(data);
       detailKeys = rows.map(function (r) { return r.key; }).join('|');
@@ -2584,7 +2558,6 @@
           '<b class="d-v">' + FM.stats.fmt(r.secs) + '</b>' +
           '</div>';
       }).join('') : '<div class="d-empty">这个区间还没有记录</div>';
-      drawCats(data);
     }
     /* 结构没变时只改数字，避免每秒重建 DOM */
     function patchDetail(data) {
@@ -2597,7 +2570,6 @@
         const bar = nodes[i].querySelector('.d-bar i');
         if (bar) bar.style.width = Math.max(2, (rows[i].secs / peak) * 100) + '%';
       }
-      drawCats(data);
     }
 
     function paint(data) {
@@ -2773,11 +2745,10 @@
         }
       }
 
-      /* 明细跟着走：今日档还要带上实时分类桶 */
+      /* 明细跟着走：把今日那根换成实时值 */
       const data = Object.assign({}, lastData, {
         bars: lastData.bars.map(function (b, i) { return Object.assign({}, b, { secs: bars[i] }); })
       });
-      if (mode === 'day') data.byCat = live.byCat;
       if (rowsOf(data).map(function (r) { return r.key; }).join('|') === detailKeys) patchDetail(data);
       else renderDetail(data);
     }
