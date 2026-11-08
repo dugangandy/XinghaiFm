@@ -2735,14 +2735,15 @@
     }
 
     /* 实时：只用内存里的今日数据，不触发后端请求。
-       今日档替换「当前小时」那根，7/30 天档替换最后一根；
-       柱子按实时最大值重新归一，避免今日值反超后其他柱比例失真。 */
+       今日档的一根柱是「这一个小时」，7/30 天档最后一根才是「今天全天」——
+       两者别混用，否则播放中当前小时会显示成全天总量（时长看着严重偏高）。 */
     function liveTick() {
       if (!alive || !lastData) return;
-      const tSec = FM.stats.today().secs;
+      const live = FM.stats.today();
+      const nowH = new Date().getHours();
 
       /* 今日档跨小时：高亮该挪到新的一格，整组重绘一次 */
-      if (mode === 'day' && lastData.todayIndex !== new Date().getHours()) {
+      if (mode === 'day' && lastData.todayIndex !== nowH) {
         if (!resyncing) {
           resyncing = true;
           refreshDuration('day').then(function () { resyncing = false; });
@@ -2750,11 +2751,12 @@
         return;
       }
 
+      const tSec = mode === 'day' ? (live.byHour[nowH] || 0) : live.secs;
       const ti = lastData.todayIndex;
       const bars = lastData.bars.map(function (b, i) { return i === ti ? tSec : b.secs; });
       const total = bars.reduce(function (a, v) { return a + v; }, 0);
       lastData.total = total;
-      lastData.todaySec = tSec;
+      lastData.todaySec = live.secs;
       showDuration(total);
 
       /* 今日值顶破纵轴顶端就整组重画（刻度得跟着变），否则只改柱高 */
@@ -2775,7 +2777,7 @@
       const data = Object.assign({}, lastData, {
         bars: lastData.bars.map(function (b, i) { return Object.assign({}, b, { secs: bars[i] }); })
       });
-      if (mode === 'day') data.byCat = FM.stats.today().byCat;
+      if (mode === 'day') data.byCat = live.byCat;
       if (rowsOf(data).map(function (r) { return r.key; }).join('|') === detailKeys) patchDetail(data);
       else renderDetail(data);
     }
