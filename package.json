@@ -12,6 +12,7 @@
     "test": "node --test",
     "gen:pinyin": "node tools/gen-pinyin.js",
     "init-db": "node tools/init-db.js",
+    "recalc:album-top": "node tools/recalc-album-top.js",
     "bump": "node tools/bump-version.js",
     "dist": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
