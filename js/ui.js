@@ -1248,6 +1248,10 @@
   function canManageUsers() {
     return !FM.fs.desktop && FM.fs.serverReached && !FM.fs.noAuth && !!FM.fs.isAdmin;
   }
+  /* /api/alist/config 是 admin-only 且 --no-auth 下关闭；桌面本地库不接网盘 */
+  function canConfigAlist() {
+    return !!(FM.fs.serverReached && FM.fs.isAdmin && !FM.fs.noAuth);
+  }
 
   /* 收藏页布局随宽度切换：跨过断点时重画一次（窗口拉宽回桌面卡片） */
   let favNarrow = isNarrow();
@@ -5897,6 +5901,8 @@
   /* 资源库行的两段副文案：路径（远程库不暴露真实路径）与规模（专辑/集/占用）。
      选择弹窗和资源库设置抽屉共用，口径才不会漂 */
   function libPathText(l) {
+    /* 网盘库没有本地路径：显示网盘内的根目录，便于「分别建库」时区分两条库 */
+    if (l.type === 'alist') return '网盘目录 ' + (l.basePath || '/');
     return (l.fixed || FM.fs.remote) ? '远程资源库' : String(l.path || '').replace(/\\/g, '/');
   }
 
@@ -5924,7 +5930,8 @@
     return '<span class="lib-ico">' + icon(l.missing ? 'moon' : ((l.fixed || FM.fs.remote) ? 'library' : 'folder')) + '</span>' +
       '<div class="lib-info"><b>' + esc(l.name) + '</b><small class="selectable">' + esc(libPathText(l)) + '</small>' +
       (scale ? '<span class="lib-stats">' + esc(scale) + '</span>' : '') +
-      (l.missing ? '<em>资源库目录不存在，需要重新定位</em>' : '') + '</div>' +
+      (l.missing ? '<em>' + (l.type === 'alist' ? '网盘连接未配置，请先配置连接' : '资源库目录不存在，需要重新定位') + '</em>' : '') + '</div>' +
+      (l.type === 'alist' ? '<span class="lib-share">网盘</span>' : '') +
       (l.shared ? '<span class="lib-share">共享</span>' : '') +
       (cur ? '<span class="lib-cur">当前</span>' : '');
   }
@@ -6009,6 +6016,12 @@
       add.onclick = function () { close(); addLibFlow(); };
       foot.appendChild(add);
     }
+    /* 网盘库走 /api/alist/config（只改 fm.db，不挂主机目录），不受 --allow-lib-edit 限制 */
+    if (canConfigAlist()) {
+      const addNet = U.el('button', { class: 'btn btn-ghost', html: icon('plus') + '<span>添加网盘库</span>' });
+      addNet.onclick = function () { openAlistConfigDialog(null, draw); };
+      foot.appendChild(addNet);
+    }
     /* 远端设置入口在资源库菜单里（「远程服务器设置…」），抽屉底部不再重复放一个 */
     /* 壳里只读展示当前服务器地址：换服务器走顶栏设置 →「服务器设置…」，这里不再绑跳转 */
     if (FM.android) {
@@ -6079,8 +6092,12 @@
             ? '<button class="lib-mode lib-watch' + (l.watch ? ' on' : '') + '" type="button" title="' + esc(watchTitle) + '">' +
               (l.watch ? '监听中' : '监听关') + '</button>'
             : '') +
+          /* fixed 库没有「更多」菜单，网盘配置按钮始终放在行上，否则没开 --allow-lib-edit 就进不去 */
+          (l.type === 'alist' && canConfigAlist() && !l.shared
+            ? '<button class="lib-mode lib-cfg" type="button" title="配置网盘连接">连接</button>'
+            : '') +
           (l.fixed ? '' : '<button class="icon-btn lib-more" title="更多">' + icon('more') + '</button>');
-        const mode = row.querySelector('.lib-mode:not(.lib-watch)');
+        const mode = row.querySelector('.lib-mode:not(.lib-watch):not(.lib-cfg)');
         if (mode) mode.addEventListener('click', function (e) {
           e.stopPropagation();
           openMenu(e.currentTarget, dirModeItems(l, draw));
@@ -6090,11 +6107,19 @@
           e.stopPropagation();
           toggleWatchFlow(l, draw);
         });
+        const cfg = row.querySelector('.lib-cfg');
+        if (cfg) cfg.addEventListener('click', function (e) {
+          e.stopPropagation();
+          openAlistConfigDialog(l, draw);
+        });
         const more = row.querySelector('.lib-more');
         if (more) more.addEventListener('click', function (e) { e.stopPropagation(); libRowMenu(e.currentTarget, l, draw, handle); });
         row.addEventListener('click', function (e) {
           if (e.target.closest('.lib-more') || e.target.closest('.lib-mode') || cur) return;
-          if (l.missing) { toast('资源库目录不存在，请先重新定位', 'warn'); return; }
+          if (l.missing) {
+            toast(l.type === 'alist' ? '网盘连接未配置，请先点「连接」配置' : '资源库目录不存在，请先重新定位', 'warn');
+            return;
+          }
           close();
           switchLib(l.id);
         });
@@ -6115,6 +6140,9 @@
       });
     }
     items.push({ label: '重命名', icon: 'edit', onClick: function () { renameLibFlow(l, redraw); } });
+    if (l.type === 'alist' && canConfigAlist() && !l.shared) {
+      items.push({ label: '网盘连接…', icon: 'refresh', onClick: function () { openAlistConfigDialog(l, redraw); } });
+    }
     if (FM.fs.native) {
       items.push({ label: '重新定位…', icon: 'folder', onClick: function () { relocateFlow(l, redraw); } });
       items.push({ label: '在文件夹中打开', icon: 'folder', onClick: function () { FM.fs.openLib(l.id); } });
@@ -6145,6 +6173,140 @@
       items.splice.apply(items, [at + 1, 0].concat(modeItems));
     }
     openMenu(anchor, items);
+  }
+
+  /* ── Alist/OpenList 网盘库配置 ──
+     凭据只提交给服务端加密落库，界面永不回填密码 / Token；编辑时留空即「不修改」。
+     连接测试走只读的 /api/alist/test，保存走 PUT /api/alist/config。 */
+  function openAlistConfigDialog(lib, redraw) {
+    if (!canConfigAlist()) { toast('只有服务端管理员可以配置网盘库', 'warn'); return; }
+    const id = lib ? lib.id : '';
+    const editing = !!id;
+    const name = U.el('input', { class: 'input', value: lib ? lib.name : '', placeholder: '例如：夸克网盘TV' });
+    const host = U.el('input', { class: 'input', placeholder: 'http://服务器地址:5244', spellcheck: false });
+    const base = U.el('input', { class: 'input', value: (lib && lib.basePath) || '/', placeholder: '/音乐/有声书', spellcheck: false });
+    const username = U.el('input', { class: 'input', placeholder: 'OpenList 用户名', autocomplete: 'off', spellcheck: false });
+    const keep = editing ? '留空表示不修改' : '';
+    const pw = U.el('input', { class: 'input', type: 'password', placeholder: keep || '密码（与 Token 二选一）', autocomplete: 'new-password' });
+    const token = U.el('input', { class: 'input', type: 'password', placeholder: keep || '长期 Token（可选，优先于密码）', autocomplete: 'off' });
+    const dirPw = U.el('input', { class: 'input', type: 'password', placeholder: keep || '加密目录密码（可选）', autocomplete: 'off' });
+    const cdn = U.el('input', { class: 'input', value: '*.drive.quark.cn', placeholder: '直链域名白名单，逗号分隔', spellcheck: false });
+    const err = U.el('small', { class: 'drawer-sub', style: { color: '#ff8a65' } });
+    const field = function (label, input) {
+      return U.el('div', { class: 'field' }, [U.el('label', { text: label }), input]);
+    };
+    const body = U.el('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } }, [
+      field('资源库名称', name), field('OpenList 地址', host), field('网盘根目录', base),
+      field('用户名', username), field('密码', pw), field('Token', token),
+      field('目录密码', dirPw), field('CDN 白名单', cdn),
+      U.el('small', { class: 'drawer-sub', text: '直链由服务端换取后 302 给播放器，媒体字节不经过 fm；改动会立即清掉旧扫描缓存。' }),
+      err
+    ]);
+    const say = function (text, ok) {
+      err.textContent = text;
+      err.style.color = ok ? 'var(--dim)' : '#ff8a65';
+    };
+    function form() {
+      return {
+        libId: id, name: name.value.trim(),
+        host: host.value.trim().replace(/\/+$/, ''),
+        username: username.value.trim(),
+        password: pw.value, token: token.value, dirPassword: dirPw.value,
+        base: base.value.trim() || '/',
+        cdn: cdn.value.split(/[,，\s]+/).map(function (s) { return s.trim(); }).filter(Boolean)
+      };
+    }
+    async function errText(r) {
+      let t = '';
+      try { t = await r.text(); } catch (e) {}
+      try {
+        const j = JSON.parse(t);
+        return (j.error && (j.error.message || j.error.code)) || j.reason || t;
+      } catch (e) { return t; }
+    }
+    const post = function (url, method, payload) {
+      return FM.fs.apiFetch(url, {
+        method: method, headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    };
+
+    const actions = [{ label: '取消', cls: 'btn-ghost' }];
+    if (editing) actions.push({
+      label: '清除凭据', cls: 'btn-ghost',
+      onClick: function () {
+        confirmModal({ title: '清除网盘凭据', message: '清除后该库将无法扫描和播放，确定继续？', danger: true })
+          .then(function (ok) { if (ok) clear(); });
+        return false;
+      }
+    });
+    actions.push({ label: '测试连接', cls: 'btn-ghost', onClick: function () { testConn(); return false; } });
+    actions.push({ label: '保存', cls: 'btn-primary', onClick: function () { save(); return false; } });
+    const m = openModal({ title: editing ? '网盘连接 · ' + lib.name : '添加网盘库', body: body, actions: actions });
+
+    if (editing) {
+      (async function () {
+        try {
+          const r = await FM.fs.apiFetch('/api/alist/config?libId=' + encodeURIComponent(id), { cache: 'no-store' });
+          if (!r.ok) {
+            say(r.status === 404 ? '服务端版本过低，请升级后重试' : '读取配置失败（' + r.status + '）');
+            return;
+          }
+          const c = await r.json();
+          name.value = c.name || name.value;
+          host.value = c.host || '';
+          username.value = c.username || '';
+          base.value = c.base || '/';
+          cdn.value = (c.cdnHosts || []).join(', ');
+          say(c.hasCredential ? '' : '该库没有可用凭据，请重新输入密码或 Token', !!c.hasCredential);
+        } catch (e) { say(U.NET_FAIL); }
+      })();
+    }
+
+    async function testConn() {
+      const f = form();
+      if (!f.host) { say('先填 OpenList 地址'); return; }
+      if (!f.password && !f.token) { say('测试连接需要重新输入密码或 Token（保存时可留空）'); return; }
+      say('正在测试连接…');
+      try {
+        const r = await post('/api/alist/test', 'POST', f);
+        const j = await r.json().catch(function () { return {}; });
+        if (!r.ok) { say((j.error && (j.error.message || j.error.code)) || ('连接失败（' + r.status + '）')); return; }
+        const bits = [j.serverTitle || 'OpenList'];
+        (j.storages || []).forEach(function (s) { bits.push(s.mount + '（' + s.driver + '）'); });
+        if (j.rangeOk === false) bits.push('上游不支持 Range');
+        if (j.corsOk === false) bits.push('上游无 CORS 头（播放器已按无 CORS 处理）');
+        if (!cdn.value.trim() && j.cdnSuggest && j.cdnSuggest.length) cdn.value = j.cdnSuggest.join(', ');
+        say('连接正常：' + bits.join(' · '), true);
+      } catch (e) { say(U.NET_FAIL); }
+    }
+
+    async function save() {
+      const f = form();
+      if (!f.host) { say('先填 OpenList 地址'); return; }
+      if (!editing && !f.password && !f.token) { say('请填密码或 Token'); return; }
+      say('正在保存…');
+      try {
+        const r = await post('/api/alist/config', 'PUT', f);
+        if (!r.ok) { say((await errText(r)) || ('保存失败（' + r.status + '）')); return; }
+        const j = await r.json().catch(function () { return {}; });
+        await FM.fs.refreshLibs();
+        if (redraw) redraw();
+        m.close();
+        toast(editing ? '网盘连接已更新' : '已添加网盘库「' + ((j.view && j.view.name) || f.name) + '」，请重新扫描');
+      } catch (e) { say(U.NET_FAIL); }
+    }
+
+    async function clear() {
+      try {
+        const r = await FM.fs.apiFetch('/api/alist/config?libId=' + encodeURIComponent(id), { method: 'DELETE' });
+        if (!r.ok) { say((await errText(r)) || ('清除失败（' + r.status + '）')); return; }
+        await FM.fs.refreshLibs();
+        if (redraw) redraw();
+        m.close();
+        toast('已清除网盘凭据');
+      } catch (e) { say(U.NET_FAIL); }
+    }
   }
 
   /* ── 共享资源库：把当前库指派给「所有人」或「指定用户」 ──
@@ -6849,7 +7011,9 @@
     const lib = FM.fs.libs().find(l => l.id === id);
     if (!lib) return;
     if (lib.missing) {
-      toast('「' + lib.name + '」资源库目录不存在，请先重新定位', 'warn');
+      toast(lib.type === 'alist'
+        ? '「' + lib.name + '」网盘连接未配置，请先点「连接」配置'
+        : '「' + lib.name + '」资源库目录不存在，请先重新定位', 'warn');
       openLibDrawer();
       return;
     }

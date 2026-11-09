@@ -174,21 +174,33 @@
   /* <audio>/<img> 带不了请求头：能靠 cookie 的就靠 cookie（浏览器/APK，URL 上不挂票据），
      桌面端（fm://app + Bearer，没有 cookie）才换一张短期票据挂 query */
   let ticketCache = Object.create(null);     // scope -> { t, exp }
-  async function signedUrl(path, libId) {
+  async function signedUrl(path, libId, opts) {
     /* 封面/媒体的 <img>/<audio> 带不了请求头：把库挂在 query 上，服务端据此定位。
        libId 不给就用当前库；跨库搜索要按别的库取封面，见 covers.js 的 ensureLib */
     let p = path;
+    const o = opts || {};
     const lib = libId === undefined ? activeId : libId;
     if (lib) p += (p.indexOf('?') >= 0 ? '&' : '?') + 'libId=' + encodeURIComponent(lib);
     if (!REMOTE) return p;
-    const scope = p.indexOf('/api/cover/') === 0 ? 'cover' : 'media';
+    const scope = o.scope || (p.indexOf('/api/cover/') === 0 ? 'cover' : 'media');
+    /* Alist 票据绑定 libId + rel：每集一张，不能按 scope 共用缓存 */
+    const cacheKey = scope === 'alist'
+      ? 'alist|' + encodeURIComponent(lib || '') + '|' + encodeURIComponent(o.rel || '')
+      : scope;
     const now = Math.floor(Date.now() / 1000);
-    let c = ticketCache[scope];
+    let c = ticketCache[cacheKey];
     /* 票据按用途分开取：封面 10 分钟一轮，媒体要顶住单集时长，不能共用一份 */
     if (!c || (c.t && c.exp - now < 60)) {
-      const r = await apiFetch('/api/ticket?scope=' + scope, { cache: 'no-store' });
+      let q = '/api/ticket?scope=' + scope;
+      if (scope === 'alist') {
+        q += '&libId=' + encodeURIComponent(lib || '') + '&rel=' + encodeURIComponent(o.rel || '');
+      }
+      const r = await apiFetch(q, { cache: 'no-store' });
       if (!r.ok) throw new Error(r.status === 401 ? '登录已过期，请重新登录' : U.NET_FAIL);
-      c = ticketCache[scope] = await r.json();
+      c = ticketCache[cacheKey] = await r.json();
+      /* 每集一张 alist 票据，长播会一直堆；超上限按插入顺序丢最旧的 */
+      const keys = Object.keys(ticketCache);
+      if (keys.length > 64) delete ticketCache[keys[0]];
     }
     if (!c.t) return API_BASE + p;      // cookie 模式：同源请求自带会话 cookie
     return API_BASE + p + (p.indexOf('?') >= 0 ? '&' : '?') + 't=' + encodeURIComponent(c.t);
@@ -1717,9 +1729,10 @@
   }
 
   async function src(rel, opts) {
+    const isAlist = mode === 'server' && !!(activeLib && activeLib.type === 'alist');
     /* 需要转码的格式只在显式要求时才转：ui.js 的时长探测也会调 src()，
-       默认转码会让「打开一张 wma 专辑」并发转几十集。 */
-    if (opts && opts.prepare) {
+       默认转码会让「打开一张 wma 专辑」并发转几十集。网盘库没有本地文件可转，直接拦掉。 */
+    if (!isAlist && opts && opts.prepare) {
       const tc = await prepare(rel, { signal: opts.signal });
       if (tc && tc.url) return { url: tc.url, revoke: null, transcoded: true };
     }
@@ -1727,6 +1740,18 @@
     if (APP && FM.android && FM.android.downloaded && FM.android.downloaded(rel)) {
       const local = FM.android.localUrl ? FM.android.localUrl(rel) : '';
       if (local) return { url: local, revoke: null };
+    }
+    if (isAlist) {
+      const ext = extOf(rel);
+      /* flv 等需转码 / wma 等浏览器不认的格式：点播前给结论，别发起直链 */
+      if (FM.media && (FM.media.needsTranscode(ext) || FM.media.unsupported(ext))) {
+        const err = new Error('该格式暂不支持网盘播放');
+        err.code = 'alist-unsupported';
+        err.ext = ext;
+        throw err;
+      }
+      const q = '/api/alist/raw?rel=' + encodeURIComponent(rel);
+      return { url: await signedUrl(q, activeId, { scope: 'alist', rel: rel }), revoke: null, alist: true };
     }
     if (mode === 'server') return { url: await signedUrl('/api/media/' + rel.split('/').map(encodeURIComponent).join('/')), revoke: null };
     if (mode === 'desktop') return { url: mediaUrl(rel), revoke: null };

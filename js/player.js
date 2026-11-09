@@ -108,9 +108,22 @@
 
   function once(el, name) {
     return new Promise(function (res, rej) {
-      const on = () => { el.removeEventListener(name, on); res(); };
+      let done = false, timer = 0;
+      function cleanup() {
+        el.removeEventListener(name, on);
+        el.removeEventListener('error', onErr);
+        clearTimeout(timer);
+      }
+      function on() { if (done) return; done = true; cleanup(); res(); }
+      /* 直链过期 / 403 时立刻报错，别让用户干等 8 秒超时 */
+      function onErr() {
+        if (done) return;
+        done = true; cleanup();
+        rej(new Error('媒体加载失败，请重试或重新扫描'));
+      }
       el.addEventListener(name, on);
-      setTimeout(() => { el.removeEventListener(name, on); res(); }, 8000);
+      el.addEventListener('error', onErr);
+      timer = setTimeout(function () { if (done) return; done = true; cleanup(); res(); }, 8000);
     });
   }
 
@@ -275,8 +288,11 @@
       if (objectRevoke) { objectRevoke(); objectRevoke = null; }
       objectUrl = s.url;
       objectRevoke = s.revoke;
-      /* 远程库的媒体是跨源的：不声明 CORS，WebAudio 的 MediaElementSource 会把采样全输出 0（进度条走、没声音） */
-      el.crossOrigin = FM.fs.remote ? 'anonymous' : null;
+      /* 远程库的媒体是跨源的：不声明 CORS，WebAudio 的 MediaElementSource 会把采样全输出 0（进度条走、没声音）。
+         Alist 直链上游实测没有 ACAO 头，设 anonymous 会直接加载失败，这里强制 null。 */
+      /* removeAttribute 比赋 null 明确：赋 null 会被反射成字符串 "null" */
+      if (s && s.alist) el.removeAttribute('crossorigin');
+      else el.crossOrigin = FM.fs.remote ? 'anonymous' : '';
       el.src = objectUrl;
       el.playbackRate = rate;
       el.volume = volume;

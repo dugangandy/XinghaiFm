@@ -564,7 +564,9 @@ async function writeMap(coverDir, map) {
 
 /* 手动保存一张封面：opt 里给 dataUrl（上传）或 url（自动获取到的候选），其余字段原样记进 covers.json */
 async function saveCoverForDir(root, dirName, opt) {
-  const coverDir = path.join(path.resolve(root), COVER_DIR);
+  /* Alist 库不写网盘：调用方传 coverDir 指到服务端本地数据目录。
+     本地库 / CLI 批量流程不传，行为不变。 */
+  const coverDir = opt && opt.coverDir ? path.resolve(opt.coverDir) : path.join(path.resolve(root), COVER_DIR);
   try { await fsp.mkdir(coverDir, { recursive: true }); }
   catch (e) { throw new Error(fsErrorText(e, coverDir)); }
   /* 先探一次写权限：等写到图片才失败的话，用户只能看到一句 EACCES，不知道是目录权限问题 */
@@ -622,9 +624,12 @@ async function saveCoverForDir(root, dirName, opt) {
   return map[dirName];
 }
 
-/* 删掉某专辑封面：covers.json 条目 + 图片文件一起清 */
-async function removeCover(root, dirName) {
-  const coverDir = path.join(path.resolve(root), COVER_DIR);
+/* 删掉某专辑封面：covers.json 条目 + 图片文件一起清。
+   Alist 库传 opt.coverDir 指到服务端本地数据目录，别去碰虚拟网盘路径。 */
+async function removeCover(root, dirName, opt) {
+  const coverDir = (opt && opt.coverDir)
+    ? path.resolve(opt.coverDir)
+    : path.join(path.resolve(root), COVER_DIR);
   let map = {};
   try { map = JSON.parse(await fsp.readFile(path.join(coverDir, 'covers.json'), 'utf8')) || {}; } catch (e) {}
   const entry = map[dirName];
