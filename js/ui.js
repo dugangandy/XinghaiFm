@@ -2432,7 +2432,7 @@
         '<div class="top-head">' +
           '<div class="top-heading">' +
             '<h2 class="top-title">专辑 Top5</h2>' +
-            '<span class="top-sub">按累计收听时长</span>' +
+            '<span class="top-sub">历史累计</span>' +
           '</div>' +
           '<div class="seg seg-sm" id="topSeg">' +
             '<button class="seg-btn active" data-scope="all">全库</button>' +
@@ -2440,6 +2440,7 @@
           '</div>' +
         '</div>' +
         '<div class="top-list" id="topList"></div>' +
+        '<div class="top-foot">只统计历史累计收听时长，不随上方时间档变化</div>' +
       '</section>';
 
     const $ = function (id) { return wrap.querySelector('#' + id); };

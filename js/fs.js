@@ -1333,7 +1333,9 @@
     }
     try {
       const q = '/api/listen/album/top?limit=' + n + (libId ? '&libId=' + encodeURIComponent(libId) : '');
-      const r = await apiFetch(q, { cache: 'no-store' });
+      /* 全库查询必须显式把 x-fm-lib 置空：apiFetch 会自动补上当前库 id，
+         服务端又把请求头当 libId 用，于是「全库」Tab 实际只统计当前库 */
+      const r = await apiFetch(q, { cache: 'no-store', headers: { 'x-fm-lib': '' } });
       if (!r.ok) return { ok: false, rows: [] };
       const j = await r.json();
       return { ok: !j || j.ok !== false, rows: (j && j.rows) || [] };

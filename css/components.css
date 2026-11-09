@@ -1532,6 +1532,8 @@ select.input option{background:#161d29;color:var(--txt)}
 .seg-btn:disabled:hover{color:var(--txt-2)}
 
 .top-list{margin-top:4px}
+/* 榜单口径说明：它和上面的今日 / 7 天 / 30 天不是一套数据，得写清楚 */
+.top-foot{margin-top:10px;font-size:11.5px;line-height:1.5;color:var(--dim)}
 .top-empty{
   margin:10px 0 10px;padding:20px 14px;border-radius:16px;text-align:center;
   font-size:12.5px;color:var(--dim);
