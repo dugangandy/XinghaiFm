@@ -2388,6 +2388,7 @@
     let lastData = null;                 /* 最近一次 summary，liveTick 用它替换今日值 */
     let axisTop = 900;                   /* 纵轴顶端秒数：柱高按它归一，刻度也按它画 */
     let detailKeys = '';                 /* 明细表的行结构，结构没变就只改数字 */
+    let detailOpen = false;              /* 明细默认折叠，展开后才生成表格 */
     let resyncing = false;               /* 今日档跨小时重绘中，避免每秒重复触发 */
     let liveTimer = null, unsub = null, alive = true;
 
@@ -2396,6 +2397,7 @@
         '<h1 class="stats-title">收听统计</h1>' +
         '<div class="seg" id="statsSeg">' +
           '<button class="seg-btn active" data-mode="day">今日</button>' +
+          '<button class="seg-btn" data-mode="yday">昨天</button>' +
           '<button class="seg-btn" data-mode="d7">7 天</button>' +
           '<button class="seg-btn" data-mode="d30">30 天</button>' +
         '</div>' +
@@ -2416,6 +2418,16 @@
           '<span>共 <b id="countNum">0</b> <span id="countUnit">小时</span>有记录</span>' +
         '</div>' +
       '</section>' +
+      '<section class="stats-detail" id="detailCard">' +
+        '<button class="detail-head" id="detailToggle" type="button" aria-expanded="false" aria-controls="detailBody">' +
+          '<span class="detail-title">明细数据</span>' +
+          '<span class="detail-sub" id="detailSub"></span>' +
+          '<span class="detail-caret" aria-hidden="true"></span>' +
+        '</button>' +
+        '<div class="detail-body" id="detailBody" hidden>' +
+          '<div class="detail-list" id="detailList"></div>' +
+        '</div>' +
+      '</section>' +
       '<section class="stats-top">' +
         '<div class="top-head">' +
           '<div class="top-heading">' +
@@ -2428,23 +2440,31 @@
           '</div>' +
         '</div>' +
         '<div class="top-list" id="topList"></div>' +
-      '</section>' +
-      '<section class="stats-detail">' +
-        '<div class="detail-head">' +
-          '<h2 class="detail-title">明细数据</h2>' +
-          '<span class="detail-sub" id="detailSub"></span>' +
-        '</div>' +
-        '<div class="detail-list" id="detailList"></div>' +
       '</section>';
 
     const $ = function (id) { return wrap.querySelector('#' + id); };
     function hm(n) { return (n < 10 ? '0' : '') + n; }
 
-    /* 标签：今日档 0/6/12/18/23 时与当前小时；7 天每根日期；30 天每 5 天一个 */
+    /* 明细折叠：默认收起，点开时先用手上的 summary 秒开，再取一次最新数据覆盖 */
+    $('detailToggle').onclick = function () {
+      detailOpen = !detailOpen;
+      $('detailCard').classList.toggle('open', detailOpen);
+      $('detailToggle').setAttribute('aria-expanded', detailOpen ? 'true' : 'false');
+      $('detailBody').hidden = !detailOpen;
+      if (!detailOpen) { detailKeys = ''; return; }
+      if (lastData) renderDetail(lastData);
+      const m = mode;
+      FM.stats.summary(m).then(function (d) {
+        if (!alive || !detailOpen || m !== mode || !d) return;
+        renderDetail(d);
+      }).catch(function () { });
+    };
+
+    /* 标签：今日/昨天档 0/6/12/18/23 时（今日额外标当前小时）；7 天每根日期；30 天每 5 天一个 */
     function labelsOf(bars, ti) {
       return bars.map(function (b, i) {
-        if (mode === 'day') {
-          if (i === ti) return '现在';
+        if (mode === 'day' || mode === 'yday') {
+          if (mode === 'day' && i === ti) return '现在';
           if (i % 6 === 0 || i === 23) return i + '时';
           return '';
         }
@@ -2496,7 +2516,11 @@
       }).join('');
     }
 
-    function scopeName(m) { return m === 'day' ? '今日' : (m === 'd7' ? '近 7 天' : '近 30 天'); }
+    function scopeName(m) {
+      if (m === 'day') return '今日';
+      if (m === 'yday') return '昨天';
+      return m === 'd7' ? '近 7 天' : '近 30 天';
+    }
     function dayLabel(s) {
       const d = new Date(String(s).replace(/-/g, '/'));
       return (d.getMonth() + 1) + '月' + d.getDate() + '日';
@@ -2507,7 +2531,8 @@
       if (total >= 3600) { big.textContent = (total / 3600).toFixed(1); $('durUnit').textContent = '小时'; }
       else { big.textContent = String(Math.floor(total / 60)); $('durUnit').textContent = '分钟'; }
       const empty = mode === 'day' ? '今天还没开始收听'
-        : (mode === 'd7' ? '最近 7 天还没开始收听' : '最近 30 天还没开始收听');
+        : (mode === 'yday' ? '昨天没有收听记录'
+          : (mode === 'd7' ? '最近 7 天还没开始收听' : '最近 30 天还没开始收听'));
       $('durSub').textContent = total > 0 ? scopeName(mode) + '已收听 ' + FM.stats.fmt(total) : empty;
     }
 
@@ -2524,9 +2549,10 @@
     }
     function rowsOf(data) {
       const out = [];
+      const hourly = data.mode === 'day' || data.mode === 'yday';
       data.bars.forEach(function (b) {
         if (!(b.secs > 0)) return;
-        if (data.mode === 'day') {
+        if (hourly) {
           /* 单个小时桶最多 60 分钟：超了就是多设备重叠，标出来便于核对 */
           out.push({
             key: hm(b.hour) + ':00–' + hm(b.hour + 1) + ':00',
@@ -2544,12 +2570,17 @@
       });
       return out.reverse();
     }
+    /* 折叠头右侧那行小字：收起时也要显示（不然看不出有没有数据） */
+    function detailSummary(data) {
+      const n = data.bars.filter(function (b) { return b.secs > 0; }).length;
+      if (!n) return '';
+      const hourly = data.mode === 'day' || data.mode === 'yday';
+      return scopeName(data.mode) + ' · ' + n + (hourly ? ' 个时段' : ' 天有记录');
+    }
     function renderDetail(data) {
       const rows = rowsOf(data);
       detailKeys = rows.map(function (r) { return r.key; }).join('|');
-      $('detailSub').textContent = rows.length
-        ? (data.mode === 'day' ? '今日 · ' + rows.length + ' 个时段' : scopeName(mode) + ' · ' + rows.length + ' 天有记录')
-        : '';
+      $('detailSub').textContent = detailSummary(data);
       const peak = Math.max.apply(null, rows.map(function (r) { return r.secs; }).concat([1]));
       $('detailList').innerHTML = rows.length ? rows.map(function (r) {
         return '<div class="drow' + (r.warn ? ' warn' : '') + '">' +
@@ -2574,16 +2605,19 @@
 
     function paint(data) {
       lastData = data;
+      const hourly = data.mode === 'day' || data.mode === 'yday';
       $('scopeLabel').textContent = scopeName(mode);
       showDuration(data.total);
       drawBars(data.bars, data.todayIndex, labelsOf(data.bars, data.todayIndex));
-      $('rangeText').textContent = data.mode === 'day'
-        ? '今天 · 0–23 时'
+      $('rangeText').textContent = hourly
+        ? (data.mode === 'day' ? '今天 · 0–23 时' : '昨天 · 0–23 时')
         : dayLabel(data.from) + ' – ' + dayLabel(data.to);
-      const filled = data.bars.filter(function (b) { return b.secs > 0; }).length;
-      $('countNum').textContent = filled;
-      $('countUnit').textContent = data.mode === 'day' ? '小时' : '天';
-      renderDetail(data);
+      $('countNum').textContent = data.bars.filter(function (b) { return b.secs > 0; }).length;
+      $('countUnit').textContent = hourly ? '小时' : '天';
+      /* 明细默认收起：收起时只更新头部那行小字，不建表；展开时才生成/刷新 */
+      $('detailSub').textContent = detailSummary(data);
+      if (detailOpen) renderDetail(data);
+      else detailKeys = '';
     }
 
     /* ── 专辑 Top5 榜 ──
@@ -2711,6 +2745,7 @@
        两者别混用，否则播放中当前小时会显示成全天总量（时长看着严重偏高）。 */
     function liveTick() {
       if (!alive || !lastData) return;
+      if (mode === 'yday') return;          /* 昨天的数据已经定死，没有实时值 */
       const live = FM.stats.today();
       const nowH = new Date().getHours();
 
@@ -2745,10 +2780,12 @@
         }
       }
 
-      /* 明细跟着走：把今日那根换成实时值 */
+      /* 明细跟着走：把今日那根换成实时值。收起时只刷新头部那行小字，不建表 */
       const data = Object.assign({}, lastData, {
         bars: lastData.bars.map(function (b, i) { return Object.assign({}, b, { secs: bars[i] }); })
       });
+      $('detailSub').textContent = detailSummary(data);
+      if (!detailOpen) return;
       if (rowsOf(data).map(function (r) { return r.key; }).join('|') === detailKeys) patchDetail(data);
       else renderDetail(data);
     }

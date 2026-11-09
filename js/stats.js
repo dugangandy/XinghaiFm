@@ -480,8 +480,9 @@
     catch (e) { return { ok: false, rows: [] }; }
   }
 
-  /* 三档口径：day 看当天 0–23 时，d7 / d30 是含今天的滚动窗口。
-     今日档直接取内存里的 byHour（base + 未落库余额），不再多查一次库。 */
+  /* 四档口径：day 看当天 0–23 时，yday 看昨天 0–23 时，d7 / d30 是含今天的滚动窗口。
+     今日档直接取内存里的 byHour（base + 未落库余额），不再多查一次库；
+     昨天没有余额概念，直接读库里那一行。 */
   async function summary(mode) {
     if (mode === 'week') mode = 'd7';
     else if (mode === 'month') mode = 'd30';
@@ -497,6 +498,19 @@
       return {
         mode: mode, from: todayS, to: todayS, total: live.secs,
         bars: bars, todayIndex: nowHour(), todaySec: live.secs, byCat: live.byCat
+      };
+    }
+
+    /* 昨天：数据已经固定在库里，没有未落库余额，也没有「现在」那一格 */
+    if (mode === 'yday') {
+      const y = addDays(todayS, -1);
+      const rows = await range(y, y);
+      const r = rows[0];
+      const bars = [];
+      for (let h = 0; h < 24; h++) bars.push({ hour: h, secs: r ? (r.byHour[h] || 0) : 0 });
+      return {
+        mode: mode, from: y, to: y, total: r ? r.secs : 0,
+        bars: bars, todayIndex: -1, todaySec: 0, byCat: r ? r.byCat : {}
       };
     }
 

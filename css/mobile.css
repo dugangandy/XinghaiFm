@@ -652,7 +652,7 @@ body.app-fs .vstage{
   .hbar-track{width:8px}
   .hbar{max-width:40px}
   .hero-foot{flex-wrap:wrap;gap:6px}
-  .stats-detail{padding:16px 15px 14px;border-radius:20px}
+  .stats-detail{padding:15px;border-radius:20px}
   .detail-list{max-height:none}
   .drow{grid-template-columns:minmax(80px,auto) 1fr auto;gap:9px}
   .drow .d-bar{height:5px}
