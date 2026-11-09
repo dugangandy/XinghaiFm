@@ -27,6 +27,7 @@ import android.view.TextureView
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.CookieManager
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -982,6 +983,7 @@ class VideoPlayerActivity : Activity() {
                 centerBtn.visibility = if (!playing && !locked) View.VISIBLE else View.GONE
                 emit("state", trackJson().put("playing", playing))
                 publish()
+                syncKeepScreenOn()
                 if (playing) scheduleHide() else showControls()
             }
             override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -994,6 +996,8 @@ class VideoPlayerActivity : Activity() {
             }
             override fun onPlaybackStateChanged(state: Int) {
                 loading.visibility = if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
+                /* 缓冲时 isPlaying 还是 false，这里补一次，别让缓冲阶段熄屏 */
+                syncKeepScreenOn()
                 if (state == Player.STATE_ENDED) ui.post { onEnded() }
             }
             override fun onPlayerError(error: PlaybackException) {
@@ -1006,6 +1010,8 @@ class VideoPlayerActivity : Activity() {
         })
         p.setWakeMode(if (bgAudio) C.WAKE_MODE_NETWORK else C.WAKE_MODE_NONE)
         p.setVideoTextureView(tex)
+        /* 后台自动下一集时窗口不可见，surface 挂不上：留标记，回前台由 reattachVideo 补挂 */
+        if (!tex.isAvailable) videoDetached = true
         p.setMediaItem(MediaItem.fromUri(url), startMs.coerceAtLeast(0))
         p.setPlaybackSpeed(rate)
         p.prepare()
@@ -1013,6 +1019,7 @@ class VideoPlayerActivity : Activity() {
         p.playWhenReady = auto
         if (auto) p.play() else p.pause()
         player = p
+        syncKeepScreenOn()
         ui.removeCallbacks(ticker)
         ui.post(ticker)
         publish()
@@ -1239,16 +1246,18 @@ class VideoPlayerActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && !audioOnly && isFullscreen) goImmersive()
+        if (!hasFocus) return
+        if (!audioOnly && isFullscreen) goImmersive()
+        /* 窗口拿到焦点时 TextureView 的 surface 一定重建完了：后台释放过画面就在这儿补挂 */
+        reattachVideo()
     }
 
     override fun onStart() {
         super.onStart()
         started = true
-        if (videoDetached) {
-            player?.setVideoTextureView(tex)
-            videoDetached = false
-        }
+        /* 等这一帧窗口恢复再挂：onStart 时 surface 可能还没重建，直接挂会挂在空处 */
+        if (videoDetached) tex.postDelayed({ reattachVideo() }, 60)
+        syncKeepScreenOn()
         /* 回到前台补一次：后台期间服务可能被系统收掉，通知栏/锁屏状态也可能过期 */
         publish()
     }
@@ -1256,14 +1265,46 @@ class VideoPlayerActivity : Activity() {
     override fun onStop() {
         super.onStop()
         started = false
-        val p = player ?: return
-        if (bgAudio && p.playWhenReady && p.playbackState != Player.STATE_ENDED) {
+        val p = player
+        if (p != null && bgAudio && p.playWhenReady && p.playbackState != Player.STATE_ENDED) {
             /* 后台只保留声音：释放视频画面，避免锁屏后继续解码画面 */
             p.clearVideoSurface()
             videoDetached = true
         } else {
-            p.pause()
+            p?.pause()
         }
+        syncKeepScreenOn()
+    }
+
+    /* 视频播放/缓冲期间保持屏幕常亮。没有这个 flag，系统休眠时间一到就熄屏，
+       接着 onStop 走「后台只听声音」分支：声音还在、画面没了。
+       纯音频页不申请，锁屏听音频要正常熄屏。 */
+    private fun syncKeepScreenOn() {
+        if (audioOnly) return
+        val p = player
+        val on = started && p != null && (p.isPlaying || p.playbackState == Player.STATE_BUFFERING)
+        if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    /* 后台释放过画面后重挂：只有 TextureView 真正可用时才挂，挂上才清标记。
+       挂在尚未就绪的 surface 上不会报错，但画面不会回来（声音照常在），
+       所以这里挂不上就保留标记，等窗口焦点回调再补一次。 */
+    private fun reattachVideo(tries: Int = 0) {
+        if (!videoDetached || isFinishing || isDestroyed) return
+        val p = player
+        if (p == null) {
+            videoDetached = false
+            return
+        }
+        if (!tex.isAvailable) {
+            /* 窗口刚回来时 surface 要几十毫秒才重建：短轮询几次，别把这次机会浪费掉 */
+            if (tries < 20) tex.postDelayed({ reattachVideo(tries + 1) }, 50)
+            return
+        }
+        p.setVideoTextureView(tex)
+        videoDetached = false
+        syncKeepScreenOn()
     }
 
     @Deprecated("Deprecated in Java")
