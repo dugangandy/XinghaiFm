@@ -273,7 +273,9 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .bg-grid{display:none}
   .bg-aurora.a2,.bg-aurora.a3{display:none}
   .bg-aurora{opacity:.34;filter:blur(58px)}
-  .lib-loading,.queue-panel{backdrop-filter:none}
+  .lib-loading,.scan-mask,.queue-panel{backdrop-filter:none}
+  /* 扫描遮罩在手机上不给毛玻璃就得更实一点，否则亮封面会透上来 */
+  .scan-mask{background:radial-gradient(120% 95% at 50% 38%,rgba(6,10,19,.94),rgba(4,7,13,.97))}
   /* 卡片徽标和专辑页工具条都常驻 backdrop-filter：滚动时每帧都要重新取背景重绘，
      手机上换成同色系的纯色底，观感差别很小、开销低一个数量级 */
   .card-badge,.card-fav,.track-toolbar{backdrop-filter:none}

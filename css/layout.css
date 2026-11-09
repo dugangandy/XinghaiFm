@@ -396,6 +396,30 @@ body.is-server #libSwitch .lib-caret{display:none}
   max-width:60vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .lib-loading-hint{font-size:11.5px;color:var(--dim);letter-spacing:.14em}
+
+/* ── 整库扫描遮罩 ──
+   扫描要递归 readdir + stat，大库要几十秒。这期间切库 / 重复点扫描会把结果互相覆盖，
+   所以用 fixed 铺满视口（连侧栏一起盖住）拦掉所有点击，视觉沿用切库过渡层那套 orbit。 */
+.scan-mask{
+  position:fixed;inset:0;z-index:66;
+  display:grid;place-items:center;padding:0 24px;
+  background:radial-gradient(120% 95% at 50% 38%,rgba(9,14,26,.82),rgba(4,7,13,.94));
+  backdrop-filter:blur(14px) saturate(130%);
+  opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity .28s var(--ease),visibility 0s .28s;
+}
+.scan-mask.show{opacity:1;visibility:visible;pointer-events:auto;transition:opacity .28s var(--ease),visibility 0s}
+@supports not (backdrop-filter:blur(1px)){
+  .scan-mask{background:radial-gradient(120% 95% at 50% 38%,rgba(9,14,26,.96),rgba(4,7,13,.99))}
+}
+.scan-mask-box{
+  display:flex;flex-direction:column;align-items:center;gap:18px;
+  transform:translateY(10px) scale(.97);opacity:0;
+  transition:transform .46s var(--ease),opacity .4s var(--ease);
+}
+.scan-mask.show .scan-mask-box{transform:none;opacity:1}
+.scan-mask .lib-loading-name{max-width:70vw}
+.scan-mask .lib-loading-hint{text-align:center;line-height:1.7}
 /* 转码过渡层：挂在 main 外面，用 fixed 铺满视口并压过播放页(60) —— 首次播 flv 时
    播放页已经展开了，提示要是被它盖住，用户只看到一块黑屏加转圈 */
 #tcLoading{position:fixed;inset:0;z-index:70}
@@ -872,8 +896,6 @@ body.is-server #libSwitch .lib-caret{display:none}
 }
 .side-lib-btn.remote.link-warn .lib-badge::after{background:#fbbf24}
 .side-lib-btn.remote .lib-txt small{color:rgba(94,234,212,.72)}
-.lib-remote-btn{max-width:52%;min-width:0}
-.lib-remote-btn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lib-txt b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lib-txt small{font-size:10.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lib-caret{width:14px;height:14px;flex:none;color:var(--dim)}

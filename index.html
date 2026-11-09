@@ -439,6 +439,15 @@
   </div>
 </div>
 
+<!-- 整库扫描遮罩：盖住整屏（含侧栏），扫描期间不让切库、重复点扫描（见 js/ui.js 的 showScanMask） -->
+<div class="scan-mask" id="scanMask" hidden aria-hidden="true">
+  <div class="scan-mask-box">
+    <div class="lib-loading-orbit"><i></i><i></i><i></i><div class="core"><svg class="i"><use href="#i-library"/></svg></div></div>
+    <div class="lib-loading-name" id="scanMaskName">资源库</div>
+    <div class="lib-loading-hint" id="scanMaskHint">正在扫描资源库…</div>
+  </div>
+</div>
+
 <div class="modal-root" id="modalRoot"></div>
 <div class="toast-root" id="toastRoot"></div>
 <input type="file" id="dirInput" webkitdirectory directory multiple hidden>

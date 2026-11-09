@@ -96,6 +96,7 @@
       btnQueueClose: $('btnQueueClose'), btnQueueClear: $('btnQueueClear'), queueCount: $('queueCount'),
       modalRoot: $('modalRoot'), toastRoot: $('toastRoot'),
       main: $('main'), libLoading: $('libLoading'), libLoadingName: $('libLoadingName'), libLoadingHint: $('libLoadingHint'),
+      scanMask: $('scanMask'), scanMaskName: $('scanMaskName'), scanMaskHint: $('scanMaskHint'),
       tcLoading: $('tcLoading'), tcName: $('tcName'), tcHint: $('tcHint')
     };
     state.sortDesc = !!FM.db.state().sortDesc;
@@ -656,6 +657,38 @@
     if (refs.libLoadingHint && refs.libLoading && refs.libLoading.classList.contains('show')) {
       refs.libLoadingHint.textContent = text;
     }
+    /* 扫描遮罩同样盖住了顶栏 */
+    if (refs.scanMaskHint && refs.scanMask && refs.scanMask.classList.contains('show')) {
+      refs.scanMaskHint.textContent = text;
+    }
+  }
+
+  /* ── 扫描遮罩 ──
+     整库扫描要递归 readdir + stat，NAS / 机械盘上几十秒都正常。这期间切库、重复点扫描
+     都会把结果互相覆盖，所以在整屏铺一层遮罩把点击全拦掉（含左侧资源库按钮）。
+     只有「会锁导航」的扫描才上遮罩，后台静默同步（runScan 的 background）不打扰用户。 */
+  let scanMaskTimer = 0;
+  function showScanMask() {
+    const mask = refs.scanMask;
+    if (!mask) return;
+    clearTimeout(scanMaskTimer);
+    const lib = FM.fs.active();
+    if (refs.scanMaskName) refs.scanMaskName.textContent = lib ? lib.name : '资源库';
+    if (refs.scanMaskHint) refs.scanMaskHint.textContent = '正在扫描资源库…';
+    mask.hidden = false;
+    /* 先上屏再挂 show，淡入过渡才有起点 */
+    if (!mask.classList.contains('show')) {
+      requestAnimationFrame(function () { if (!mask.hidden) mask.classList.add('show'); });
+    }
+  }
+  function hideScanMask() {
+    const mask = refs.scanMask;
+    if (!mask) return;
+    clearTimeout(scanMaskTimer);
+    mask.classList.remove('show');
+    scanMaskTimer = setTimeout(function () {
+      if (!mask.classList.contains('show')) mask.hidden = true;
+    }, 300);
   }
 
   /* ── 导航锁：整库扫描 / 切库加载期间不让切专辑、分类 ──
@@ -1230,13 +1263,17 @@
     try { return window.matchMedia('(max-width:760px)').matches; } catch (e) { return false; }
   }
 
+  /* 移动端 = 安卓壳或手机浏览器。按「设备」判断而不是窗口宽度——
+     桌面浏览器窗口拉窄了也照样算桌面端 */
+  function isMobileDevice() {
+    if (FM.android) return true;
+    if (FM.fs.desktop) return false;
+    return /Android|iPhone|iPod|iPad|Mobile/i.test(navigator.userAgent || '');
+  }
   /* 「按专辑 / 按分类」这种改整库结构的操作只在桌面端给：
-     手机上一来一行小按钮容易误触，二来改完整库重扫较重，等回桌面端再改更稳。
-     按「设备」判断而不是窗口宽度——桌面浏览器窗口拉窄了照样要能改 */
+     手机上一来一行小按钮容易误触，二来改完整库重扫较重，等回桌面端再改更稳 */
   function canEditGroup() {
-    if (FM.android) return false;
-    if (FM.fs.desktop) return true;
-    return !/Android|iPhone|iPod|iPad|Mobile/i.test(navigator.userAgent || '');
+    return !isMobileDevice();
   }
   /* 网页端（连服务端、多用户）下只有管理员能管理资源库；普通用户禁用「资源库设置」页面。
      以「连到了服务端」（serverReached）判定网页端，而不是 server（有资源库）——没有资源库的服务端用户同样算网页端。
@@ -6011,7 +6048,8 @@
         text: '无法修改远程资源库。如需修改本地资源库，请先断开远程连接。'
       }));
     }
-    if (canAdd) {
+    /* 移动端不给「添加资源库」：要选主机目录，手机上误触成本高，等回桌面端再加 */
+    if (canAdd && !isMobileDevice()) {
       const add = U.el('button', { class: 'btn', html: icon('plus') + '<span>添加资源库</span>' });
       add.onclick = function () { close(); addLibFlow(); };
       foot.appendChild(add);
@@ -6023,12 +6061,6 @@
       foot.appendChild(addNet);
     }
     /* 远端设置入口在资源库菜单里（「远程服务器设置…」），抽屉底部不再重复放一个 */
-    /* 壳里只读展示当前服务器地址：换服务器走顶栏设置 →「服务器设置…」，这里不再绑跳转 */
-    if (FM.android) {
-      const appInfo = U.el('div', { class: 'btn btn-ghost lib-remote-btn is-ro', title: '当前服务器地址（只读）' });
-      appInfo.innerHTML = '<span class="remote-txt"><b>服务器地址</b><small>' + esc(FM.android.base() || '未设置') + '</small></span>';
-      foot.appendChild(appInfo);
-    }
     const done = U.el('button', { class: 'btn btn-primary', text: '完成' });
     done.onclick = function () { close(); };
     foot.appendChild(done);
@@ -7008,6 +7040,9 @@
 
   async function switchLib(id) {
     if (!id || id === FM.fs.activeId) return;
+    /* 扫描期间不切库：这份扫描结果会被作废，界面上还会再叠一层加载。遮罩已经挡住点击，
+       这里兜住键盘 / 代码路径（跨库跳转、搜索命中另一库等） */
+    if (navLocked()) { toast(NAV_LOCK_TIP); return; }
     const lib = FM.fs.libs().find(l => l.id === id);
     if (!lib) return;
     if (lib.missing) {
@@ -7282,13 +7317,16 @@
     const wantLock = !o.background;
     let locked = false;
     try {
-      if (wantLock) { lockNav(); locked = true; }
+      if (wantLock) { lockNav(); locked = true; showScanMask(); }
       if (showBusy) setScanBusy(true, '正在扫描资源库…');
       /* 只有手动「重新扫描」才让服务端/主进程真的走盘；静默补扫一律读它们的扫描缓存 */
       const scan = await FM.fs.scan(function (p) {
-        if (!showBusy) return;
-        if (p.phase === 'list') setScanBusy(true, '发现 ' + p.count + ' 个音频…');
-        else setScanBusy(true, '读取文件信息 ' + p.done + ' / ' + p.total);
+        const tip = p.phase === 'list'
+          ? '发现 ' + p.count + ' 个音频…'
+          : '读取文件信息 ' + p.done + ' / ' + p.total;
+        if (showBusy) setScanBusy(true, tip);
+        /* 静默扫描不弹顶栏提示，但遮罩在自己显示，进度照样要动 */
+        else if (wantLock && refs.scanMaskHint) refs.scanMaskHint.textContent = tip;
       }, { refresh: !o.silent });
       /* 扫描期间切了库：这份结果属于上一个库，直接丢掉，别把界面串了 */
       if (libId !== FM.fs.activeId) return false;
@@ -7322,6 +7360,7 @@
       /* 只有最新那次扫描能收起进度，旧扫描收尾不许关掉新扫描的提示；
          quiet 的那次本来就没弹，别去关别人正在显示的进度 */
       if (showBusy && my === scanSeq) setScanBusy(false);
+      if (wantLock) hideScanMask();
     }
   }
 

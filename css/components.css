@@ -1140,31 +1140,7 @@ select.input option{background:#161d29;color:var(--txt)}
 .lib-drawer-foot{
   display:flex;gap:9px;padding:14px 16px 16px;border-top:1px solid var(--line);
 }
-.lib-remote-btn{
-  height:auto;min-height:44px;min-width:0;justify-content:flex-start;gap:10px;padding:7px 14px 7px 12px;
-  text-align:left;white-space:nowrap;
-}
-.lib-remote-btn .link-dot{
-  flex:none;width:7px;height:7px;border-radius:99px;background:#34d399;
-  box-shadow:0 0 0 3px rgba(52,211,153,.14);
-}
-.lib-remote-btn.warn .link-dot{background:#fbbf24;box-shadow:0 0 0 3px rgba(251,191,36,.14)}
-.lib-remote-btn .remote-txt{min-width:0;display:flex;flex-direction:column;gap:3px;line-height:1.1}
-.lib-remote-btn .remote-txt b{font-size:12.5px;font-weight:600;color:var(--txt-2)}
-.lib-remote-btn .remote-txt small{
-  font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;
-  font-variant-numeric:tabular-nums;letter-spacing:.01em;
-}
-.lib-remote-btn:hover .remote-txt b{color:var(--txt)}
-/* 只读态：资源库抽屉里的服务器地址仅作展示，不响应点击、不做 hover 位移 */
-.lib-remote-btn.is-ro{cursor:default}
-.lib-remote-btn.is-ro:hover{background:rgba(255,255,255,.02);border-color:var(--line);transform:none}
-.lib-remote-btn.is-ro:hover .remote-txt b{color:var(--txt-2)}
 .lib-drawer-foot .btn{flex:1}
-/* 服务器按钮内容多，给它多一点宽度，完成按钮收窄固定 */
-/* 两个按钮等宽等高：flex 的 basis 0 会被 padding 撑出差异，直接按 50% 分 */
-.lib-drawer-foot .lib-remote-btn,
-.lib-drawer-foot .lib-remote-btn + .btn{flex:1 1 calc(50% - 5px);height:44px}
 @media (max-width:979.98px){
   .lib-drawer-foot{padding-bottom:calc(16px + var(--pb-h))}
 }
