@@ -294,22 +294,27 @@
          上面 emit('track') 之后界面可能自动展开播放页、把 audioOnly 改回来，所以这里再确认。 */
       const asAudio = audioOnly && track.kind === 'video';
       let want = (track.kind === 'video' && !asAudio) ? videoEl : audioEl;
-      /* 音频元素一旦被 viz 接进 WebAudio 就退不出来，播无 CORS 的网盘直链只会静音：
+      /* 无 CORS 头、又是跨源的源：网盘直链，以及本机 127.0.0.1 的已下载文件（APK）。
+         这两种源播放时声明 crossorigin 会被浏览器按 CORS 校验拦掉（Chrome 报
+         MEDIA_ERR_SRC_NOT_SUPPORTED），表现就是转圈几秒后「播放失败」。 */
+      const noCors = !!s && (s.alist || s.local);
+      /* 音频元素一旦被 viz 接进 WebAudio 就退不出来，播这类源只会静音：
          这种情况改用 <video> 播同一个文件，保留原生输出（频谱这部分降级）。 */
-      if (s && s.alist && want === audioEl && FM.viz && FM.viz.taken && FM.viz.taken(audioEl)) want = videoEl;
+      if (noCors && want === audioEl && FM.viz && FM.viz.taken && FM.viz.taken(audioEl)) want = videoEl;
       if (want !== el) { stopEl(el); media = el = want; }
       if (objectRevoke) { objectRevoke(); objectRevoke = null; }
       objectUrl = s.url;
       objectRevoke = s.revoke;
       /* 远程库的媒体是跨源的：不声明 CORS，WebAudio 的 MediaElementSource 会把采样全输出 0（进度条走、没声音）。
-         Alist 直链上游实测没有 ACAO 头，设 anonymous 会直接加载失败，这里强制不声明；
+         noCors 的源（网盘直链、本机已下载文件）上游/小服务都没有 ACAO 头，声明 anonymous
+         会直接加载失败，这里强制不声明（null 是「移除属性」；空串反而是 anonymous）；
          同时打标记，viz 接手前会跳过这个元素。 */
-      if (s && s.alist) {
+      if (noCors) {
         el.removeAttribute('crossorigin');
-        el.dataset.fmAlist = '1';
+        el.dataset.fmNoCors = '1';
       } else {
         el.crossOrigin = FM.fs.remote ? 'anonymous' : '';
-        delete el.dataset.fmAlist;
+        delete el.dataset.fmNoCors;
       }
       el.src = objectUrl;
       el.playbackRate = rate;

@@ -45,8 +45,9 @@
     if (!ensureCtx()) return false;
     const node = el || document.getElementById('mediaAudio');
     if (!node) return true;
-    /* 先判网盘源：已经接进 WebAudio 的元素同样会静音，返回值要如实反映「这次没接管」 */
-    if ((node.dataset && node.dataset.fmAlist === '1') || alistLibActive()) return false;
+    /* 先判无 CORS 的源（网盘直链、本机已下载文件）：已经接进 WebAudio 的元素同样会静音，
+       返回值要如实反映「这次没接管」 */
+    if ((node.dataset && node.dataset.fmNoCors === '1') || alistLibActive()) return false;
     if (wired.has(node)) return true;
     try {
       ctx.createMediaElementSource(node).connect(analyser);

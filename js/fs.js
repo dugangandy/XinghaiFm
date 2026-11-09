@@ -1751,10 +1751,12 @@
       const tc = await prepare(rel, { signal: opts.signal });
       if (tc && tc.url) return { url: tc.url, revoke: null, transcoded: true };
     }
-    /* 安卓壳：已下载的曲目优先播本机 127.0.0.1 文件，不直连服务器、不耗流量 */
+    /* 安卓壳：已下载的曲目优先播本机 127.0.0.1 文件，不直连服务器、不耗流量。
+       local 标记给播放器用：这个地址相对页面是跨源的，且小服务不返回 ACAO，
+       播放时不能声明 crossorigin，否则浏览器按 CORS 校验直接拒掉。 */
     if (APP && FM.android && FM.android.downloaded && FM.android.downloaded(rel)) {
       const local = FM.android.localUrl ? FM.android.localUrl(rel) : '';
-      if (local) return { url: local, revoke: null };
+      if (local) return { url: local, revoke: null, local: true };
     }
     if (isAlist) {
       const ext = extOf(rel);
