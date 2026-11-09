@@ -160,6 +160,8 @@
       <!-- 手机端子页返回：顶栏是 main 的 flex 项、不随内容滚动，长列表滚到深处也点得到。
            子页时和左侧品牌互斥显示（见 js/ui.js 的 paintTopbar） -->
       <button class="icon-btn tb-back sm-only" id="tbBack" aria-label="返回" title="返回" hidden><svg class="i"><use href="#i-chevron"/></svg></button>
+      <!-- 手机端子页标题：个别子页（收听统计）把搜索和设置让出来后，用标题占住顶栏 -->
+      <div class="tb-title sm-only" id="tbTitle" hidden></div>
       <!-- 手机端顶栏左侧品牌：桌面由侧栏承担，这里只在小屏显示 -->
       <div class="tb-brand sm-only" id="tbBrand" role="button" tabindex="0" title="切换资源库" aria-label="切换资源库">
         <div class="brand-mark eq-mark"><span></span><span></span><span></span><span></span><span></span></div>

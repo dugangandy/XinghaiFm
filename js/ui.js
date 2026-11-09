@@ -61,7 +61,7 @@
     refs = {
       view: $('view'), nav: $('nav'), catList: $('catList'), libStat: $('libStat'),
       topbar: $('topbar'), sidebar: $('sidebar'), drawerMask: $('drawerMask'), btnMenu: $('btnMenu'), brand: $('brand'), brandVer: $('brandVer'),
-      tbBrand: $('tbBrand'), tbBack: $('tbBack'), btnSettings: $('btnSettings'),
+      tbBrand: $('tbBrand'), tbBack: $('tbBack'), tbTitle: $('tbTitle'), btnSettings: $('btnSettings'),
       libSwitch: $('libSwitch'), libName: $('libName'), libPath: $('libPath'), libBadge: $('libBadge'),
       btnSync: $('btnSync'), btnAddCat: $('btnAddCat'),
       searchInput: $('searchInput'), searchClear: $('searchClear'),
@@ -844,11 +844,28 @@
      手机断点已经把页内「← 返回」那行收掉了（见 inlineBack），这里是唯一的返回入口 */
   function isSubPage() { return state.view !== 'home' || !!state.q; }
 
+  /* 手机端个别子页把顶栏腾出来：只留返回箭头 + 页面标题。
+     统计页用不到站内搜索，设置也是低频入口，让位后标题和触控区都宽松；
+     以后要加类似页面，往这张表里补一行即可 */
+  const PHONE_TOPBAR = {
+    stats: { title: '收听统计', search: false, settings: false }
+  };
+
   function paintTopbar() {
     if (!refs || !refs.tbBack) return;
     const sub = isPhone() && isSubPage();
     refs.tbBack.hidden = !sub;
     if (refs.tbBrand) refs.tbBrand.hidden = sub;
+    /* 搜索态下一律按常规顶栏走：搜索框必须还在 */
+    const cfg = (isPhone() && !state.q) ? PHONE_TOPBAR[state.view] : null;
+    if (refs.topbar) {
+      refs.topbar.classList.toggle('tb-no-search', !!(cfg && cfg.search === false));
+      refs.topbar.classList.toggle('tb-no-settings', !!(cfg && cfg.settings === false));
+    }
+    if (refs.tbTitle) {
+      refs.tbTitle.hidden = !cfg;
+      refs.tbTitle.textContent = cfg ? cfg.title : '';
+    }
   }
 
   /* 顶栏返回：先退出搜索态——搜索结果不换 hash，直接 history.back() 会离开当前页；

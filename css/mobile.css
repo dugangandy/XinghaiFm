@@ -50,6 +50,17 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
   .tb-back .i{width:20px;height:20px;transform:rotate(180deg)}
   .tb-back:active{transform:scale(.9);color:#fff}
   .tb-brand.sm-only[hidden]{display:none}
+  /* 子页标题：只在 paintTopbar 配了 title 的页面显示（目前是收听统计），
+     和返回箭头搭一条，顶栏就不留空档 */
+  .tb-title.sm-only{
+    display:block;flex:1;min-width:0;
+    font-size:15px;font-weight:600;color:var(--txt);letter-spacing:.01em;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .tb-title.sm-only[hidden]{display:none}
+  /* 腾出顶栏的页面：搜索和设置让位，标题与返回箭头独占一行 */
+  .topbar.tb-no-search .search{display:none}
+  .topbar.tb-no-settings #btnSettings{display:none}
   /* min-width:0：顶栏多出返回箭头后，320px 窄屏上搜索胶囊要能被压窄而不是把顶栏撑破 */
   .search{flex:1;min-width:0;width:auto;height:36px;padding:0 10px 0 11px;gap:8px}
   .search:focus-within{width:auto}
@@ -639,7 +650,6 @@ body.app-fs .vstage{
 /* 收听统计 · 移动端 */
 @media (max-width:780px){
   .stats-view{padding:28px 12px 48px}
-  .stats-title{font-size:22px}
   .seg-btn{padding:6px 11px;font-size:12px}
   .stats-hero{padding:20px 18px 18px;border-radius:22px}
   .hero-num .val{font-size:56px}
@@ -673,6 +683,24 @@ body.app-fs .vstage{
   .top-val{font-size:13px}
   .top-bar{left:8px;max-width:calc(100% - 16px)}
   .top-empty{padding:16px 12px;font-size:12px}
+}
+
+/* 收听统计 · 标题进顶栏后的页内布局。
+   断点必须和 js/ui.js 的 isPhone()（760px）一致：顶栏标题只在那个宽度下出现，
+   若这里用 780px，761~780px 会变成「顶栏没标题、页内标题也被隐藏」 */
+@media (max-width:760px){
+  .stats-view{padding:14px 12px 48px}
+  /* 时间档吸在顶栏下沿。.view 是滚动容器，sticky 的 top:0 正好贴在顶栏下面；
+     负 margin 让底条铺到 .view 的内容边缘（.view 有 overflow-x:hidden，不会横向溢出） */
+  .stats-head{
+    position:sticky;top:0;z-index:6;
+    margin:0 -12px 16px;padding:8px 12px 10px;
+    background:rgba(7,10,18,.96);
+    border-bottom:1px solid rgba(255,255,255,.06);
+  }
+  .stats-head .seg{width:100%}
+  .stats-head .seg .seg-btn{flex:1}
+  .stats-title{display:none}
 }
 
 /* 专辑管理 · 移动端：主按钮占满一行，行内缩略图缩一档，候选条横向滑动 */
