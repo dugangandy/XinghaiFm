@@ -1492,7 +1492,9 @@ select.input option{background:#161d29;color:var(--txt)}
 .stats-detail.open .detail-caret{transform:rotate(-135deg) translateY(-2px)}
 .detail-body{margin-top:8px}
 .detail-body[hidden]{display:none}
-.detail-list{max-height:340px;overflow:auto;overscroll-behavior:contain}
+/* 不要加 overscroll-behavior:contain：列表内容不足一屏时它不是滚动容器，
+   contain 会把滚轮/手指滑动整个吞掉，页面就滑不动了 */
+.detail-list{max-height:340px;overflow:auto}
 .drow{display:grid;grid-template-columns:minmax(94px,auto) 1fr auto;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.045)}
 .drow:last-child{border-bottom:0}
 .drow .d-k{font-size:12px;color:var(--txt-2);white-space:nowrap;font-variant-numeric:tabular-nums}
