@@ -21,7 +21,8 @@ const { isBlockedIp } = require('../cover-fetch');
 
 const DEFAULT_CDN = ['*.drive.quark.cn'];
 const DEFAULT_TIMEOUT = 8000;
-const LIST_TIMEOUT = 30000;
+/* 列目录超时：网盘大目录（几千项）首包可能很慢，30s 容易误判成失败把整次扫描打断 */
+const LIST_TIMEOUT = 60000;
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PAGES = 100;
 const TOKEN_TTL = (48 * 3600 - 300) * 1000;   // OpenList 默认 48h，提前 5 分钟过期
@@ -253,28 +254,44 @@ function withToken(cfg, opts, fn) {
   });
 }
 
+const PAGE_SIZE = 200;
+
 function listDir(cfg, token, dirPath, opts) {
   const o = opts || {};
   const items = [];
+  const seen = new Set();
   let provider = '', total = 0, write = false, pages = 0;
   function page(n) {
     const body = {
       path: String(dirPath || '/'),
       password: String(cfg.dirPassword || ''),
       page: n,
-      per_page: 200,
+      per_page: PAGE_SIZE,
       refresh: !!o.refresh
     };
     return requestJson(cfg, '/api/fs/list', body,
       Object.assign({}, o, { token: token, timeout: o.timeout || LIST_TIMEOUT })).then(function (r) {
       const d = (r && r.data) || {};
       const chunk = Array.isArray(d.content) ? d.content : [];
-      chunk.forEach(function (x) { items.push(x); });
+      let added = 0;
+      chunk.forEach(function (x) {
+        const name = String((x && x.name) || '');
+        if (!name) return;
+        const key = name + '|' + (x.is_dir ? 1 : 0);
+        if (seen.has(key)) return;          /* 服务端忽略 page 时会重复返回上一页 */
+        seen.add(key);
+        items.push(x);
+        added++;
+      });
       provider = d.provider || provider;
       total = Number(d.total) || total;
       write = !!d.write;
       pages = n;
-      if (!chunk.length || (total && items.length >= total) || n >= MAX_PAGES) return null;
+      /* 不拿 total 当终止条件：部分驱动（QuarkTV 等）的 total 只表示当前页，
+         提前 return 会把大目录截成 200 条，扫描结果就会「少很多文件」。
+         以「这一页没带来新条目 / 不满一页」为准，MAX_PAGES 兜底。 */
+      if (!chunk.length || !added || n >= MAX_PAGES) return null;
+      if (chunk.length < PAGE_SIZE) return null;
       return page(n + 1);
     });
   }
@@ -476,10 +493,12 @@ async function scanFolderAlist(lib, cfg, opts) {
   const o = opts || {};
   const root = String(lib.path || ('alist:' + lib.id));
   const base = String(cfg.base || lib.basePath || '/').replace(/\/+$/, '') || '/';
-  const maxDepth = Number(o.maxDepth) || 6;
+  /* 网盘目录常见「分类/年份/专辑/CD」这种层级，6 层容易截断；默认放到 8 层 */
+  const maxDepth = Number(o.maxDepth) || 8;
   const mediaExt = o.mediaExt || new Set(['mp3', 'mp4', 'm4a', 'flac', 'wav', 'ogg']);
   const skipDir = o.skipDir || /^[._]/;
   const listOpts = { resolve: o.resolve, timeout: o.timeout, refresh: false };
+  const onProgress = typeof o.onProgress === 'function' ? o.onProgress : null;
   const files = [];
   let dirs = 0;
 
@@ -492,6 +511,7 @@ async function scanFolderAlist(lib, cfg, opts) {
     /* 串行递归：网盘列目录比本地 readdir 慢得多，并发会打爆上游限流 */
     const r = await listDir(cfg, token, dir, listOpts);
     dirs++;
+    if (onProgress) { try { onProgress({ dirs: dirs, files: files.length, dir: dir }); } catch (e) {} }
     if (dirs > 5000) throw alistError('ALIST_SCAN_TOO_BIG', '目录数量超过上限，请缩小 basePath', 502);
     for (const it of (r.items || [])) {
       const name = String((it && it.name) || '');

@@ -147,21 +147,23 @@ test('login：token 缓存与 401 自动刷新一次', async function () {
   } finally { A.clearTokenCache(); await s.close(); }
 });
 
-test('listDir：按 total 分页累积，中文 path 原样 UTF-8', async function () {
+test('listDir：按页大小翻页，total 偏小不截断，中文 path 原样 UTF-8', async function () {
   const s = await mockServer(function (req, res, body) {
     const page = body.page;
     const items = page === 1
-      ? [{ name: '数学', is_dir: true, size: 0 }, { name: '如愿 - 王菲.flac', is_dir: false, size: 158000000 }]
-      : [{ name: '第二页.mp3', is_dir: false, size: 10 }];
-    jsonReply(res, 200, { code: 200, data: { content: items, total: 3, provider: 'QuarkTV', write: false } });
+      ? Array.from({ length: 200 }, function (_, i) { return { name: '一' + i + '.flac', is_dir: false, size: 1 }; })
+      : Array.from({ length: 50 }, function (_, i) { return { name: '二' + i + '.mp3', is_dir: false, size: 1 }; });
+    /* total 故意只报 200（等价于「只表示当前页」的驱动）：不能拿它当终止条件，
+       否则第二页会被截掉，扫描结果就会少很多文件 */
+    jsonReply(res, 200, { code: 200, data: { content: items, total: 200, provider: 'QuarkTV', write: false } });
   });
   try {
     const out = await A.listDir({ host: s.host }, 'tk', '/夸克网盘TV', s.opts);
-    assert.equal(out.items.length, 3);
-    assert.equal(out.total, 3);
+    assert.equal(out.items.length, 250);
     assert.equal(out.provider, 'QuarkTV');
     assert.equal(s.seen.length, 2);
     assert.equal(s.seen[0].body.path, '/夸克网盘TV');
+    assert.equal(s.seen[0].body.per_page, 200);
     assert.ok(s.seen[0].raw.includes(Buffer.from('夸克网盘TV', 'utf8')));
   } finally { await s.close(); }
 });

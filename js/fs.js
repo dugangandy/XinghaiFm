@@ -1571,13 +1571,16 @@
         : (data.dirMode !== undefined ? normDirMode(data.dirMode)
           : (activeLib.dirMode === 'auto' ? 'auto' : normDirMode(data.dirGroup ? 'cat' : 'flat')));
       if (dirMode !== undefined) { activeLib.dirMode = dirMode; activeLib.dirGroup = dirMode !== 'flat'; }
-      /* stale：服务端等了 2 分钟还没扫完，先把上次的缓存给我们看，
-         它那边还在后台接着扫，扫完落盘后 scannedAt 会变，下次能同步到 */
+      /* stale：服务端等满扫描等待上限还没扫完，先把上次的缓存给我们看，
+         它那边还在后台接着扫，扫完落盘后 scannedAt 会变，下次能同步到。
+         failed：后台那次已经失败（不是超时），界面要明确告诉用户「这是旧结果」。 */
       return {
         libId, rootName: data.rootName || activeLib.name, root: data.root || 'server', mode,
         files: data.files, scannedAt: Number(data.scannedAt) || 0, dirMode,
         dirGroup: dirMode === undefined ? undefined : dirMode !== 'flat',
-        stale: !!data.stale
+        stale: !!data.stale,
+        failed: !!data.failed,
+        error: data.error || ''
       };
     }
 
@@ -1631,6 +1634,18 @@
       const j = await res.json();
       return Number(j && j.scannedAt) || 0;
     } catch (e) { return 0; }
+  }
+
+  /* 网盘扫描进度（服务端模式）：/api/scan 是长请求，这里并发轮询进度。
+     拿不到就返回 null，调用方静默降级，别让进度接口影响扫描本身。 */
+  async function scanProgress(libId) {
+    if (mode !== 'server') return null;
+    try {
+      const q = libId ? '?libId=' + encodeURIComponent(libId) : '';
+      const res = await apiFetch('/api/scan/progress' + q, { cache: 'no-store' });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (e) { return null; }
   }
 
   /* ── 取文件 ── */
@@ -1788,9 +1803,11 @@
     queueCache, prefsCache, applyPrefs, pickPrefs, PREFS_KEYS, clearLastTrack,
     setDirGroup, setDirMode, setWatch, share,
     get watchSupported() { return watchSupported; },
+    /* 当前库是不是网盘库：前端据此跳过「批量探时长」这类会重复换直链的操作 */
+    get isAlist() { return mode === 'server' && !!(activeLib && activeLib.type === 'alist'); },
     listUsers, createUser, setUserDisabled, resetUserPassword, deleteUser,
     loadFavs, setFav, setFavTrack,
-    scan, scanStamp, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
+    scan, scanStamp, scanProgress, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,
     libs: () => libs.slice(),
     active: () => activeLib,

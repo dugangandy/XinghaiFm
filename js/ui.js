@@ -2328,6 +2328,9 @@
   async function probeDurations(list) {
     const token = ++probeToken;
     if (!FM.fs.hasSource) return;
+    /* 网盘库：探一次时长就要换一次直链 + 拉一次元数据，500 集会打爆上游限流，
+       还会和正在播的那一集抢连接。时长等真正播放时由 loadedmetadata 写回。 */
+    if (FM.fs.isAlist) return;
     const pool = list.filter(t => !t.duration && !t.__noDur).slice(0, 500);
     if (!pool.length) return;
     /* 屏幕上正在显示的那一页先探，用户先看到的那几行先有时长 */
@@ -4669,6 +4672,8 @@
   let barProbeId = '';
   async function probeBarDuration(t) {
     if (!t || t.duration || t.__noDur || barProbeId === t.id || !FM.fs.hasSource) return;
+    /* 网盘库不为底栏时长单独换一次直链：播放时拿到 metadata 会写回时长 */
+    if (FM.fs.isAlist) return;
     barProbeId = t.id;
     try {
       let dur = 0;
@@ -4891,6 +4896,8 @@
       hideTc();
       /* 取消是主动行为（切集 / 收起播放页），不是播放故障 */
       if (code === 'aborted') return;
+      /* 媒体加载失败：文案由 player 按 el.error.code 区分（编码不支持 / 直链失效） */
+      if (code === 'media') { toast(m || '媒体加载失败，请重试或重新扫描', 'warn'); return; }
       /* 明确不支持的格式（ape / wv / wma）：不走转码（一份要转几十秒），直接告诉用户换文件 */
       if (code === 'unsupported') {
         const ext = (e && e.ext) ? String(e.ext).toUpperCase() : '';
@@ -7284,7 +7291,7 @@
   }
 
   let scanSeq = 0;
-  /* stale 结果等后台扫完再读一次：一分钟一次，最多五次（大库外接盘够用了）。
+  /* stale 结果等后台扫完再读一次：一分钟一次，最多十次（覆盖服务端 10 分钟等待上限）。
      stale 只是「先给你旧的结果」，服务端/主进程那次 walk 还在跑，落盘后时间戳会变，
      所以判据用 scannedAt 有没有前进，而不是这次读到的数据看起来新不新
      （重试读的是缓存，缓存没更新时它照样能读出来，「不 stale」不等于「扫完了」） */
@@ -7294,7 +7301,7 @@
     const baseAt = FM.lib.scannedAt;
     let tries = 0;
     const timer = setInterval(async function () {
-      if (my !== staleRetry || libId !== FM.fs.activeId || ++tries > 5) { clearInterval(timer); return; }
+      if (my !== staleRetry || libId !== FM.fs.activeId || ++tries > 10) { clearInterval(timer); return; }
       if (navLocked()) return;
       /* refresh 不带：只读服务端/主进程的扫描缓存，不走盘 */
       try { await runScan({ silent: true, quiet: true, libId, background: true }); } catch (e) {}
@@ -7316,9 +7323,24 @@
        locked 单独记一份：加锁后中途出错也只释放自己这一把 */
     const wantLock = !o.background;
     let locked = false;
+    let progressTimer = 0;
     try {
       if (wantLock) { lockNav(); locked = true; showScanMask(); }
-      if (showBusy) setScanBusy(true, '正在扫描资源库…');
+      /* 网盘库逐层列目录很慢：扫描期间并发轮询进度，用户能看出还在动 */
+      const scanLib = FM.fs.libs().find(function (x) { return x.id === libId; });
+      if (showBusy && FM.fs.server && scanLib && scanLib.type === 'alist') {
+        setScanBusy(true, '正在扫描网盘，大库可能需要几分钟…');
+        progressTimer = setInterval(function () {
+          FM.fs.scanProgress(libId).then(function (p) {
+            if (!p || !p.running) return;
+            const tip = '网盘扫描中：' + (p.dirs || 0) + ' 个目录 · ' + (p.files || 0) + ' 个文件';
+            setScanBusy(true, tip);
+            if (refs.scanMaskHint) refs.scanMaskHint.textContent = tip;
+          });
+        }, 2000);
+      } else if (showBusy) {
+        setScanBusy(true, '正在扫描资源库…');
+      }
       /* 只有手动「重新扫描」才让服务端/主进程真的走盘；静默补扫一律读它们的扫描缓存 */
       const scan = await FM.fs.scan(function (p) {
         const tip = p.phase === 'list'
@@ -7344,8 +7366,11 @@
       }
       if (!o.silent) renderAll();
       else if (libSignature() !== before) renderAll({ quiet: true });
-      if (scan.stale) {
-        /* 服务端/主进程等了两分钟还没扫完，先给上次的结果；它还在后台接着扫，
+      if (scan.failed) {
+        /* 后台那次扫描已经失败（不是超时）：不能把旧结果当成「扫描完成」 */
+        if (!o.silent) toast('扫描失败（' + (scan.error || '网盘异常') + '），先显示上次的结果，请稍后重试', 'warn');
+      } else if (scan.stale) {
+        /* 服务端等满等待上限还没扫完，先给上次的结果；它还在后台接着扫，
            扫完会落盘，所以隔一分钟后重试读缓存，拿到新内容就自动换上去 */
         if (!o.silent) toast('库太大，扫描还在后台继续，先显示上次的结果', 'warn');
         retryAfterStale(libId);
@@ -7356,6 +7381,7 @@
       if (FM.fs.server && scan.coversPending) watchCovers(libId);
       return true;
     } finally {
+      if (progressTimer) { clearInterval(progressTimer); progressTimer = 0; }
       if (locked) unlockNav();
       /* 只有最新那次扫描能收起进度，旧扫描收尾不许关掉新扫描的提示；
          quiet 的那次本来就没弹，别去关别人正在显示的进度 */

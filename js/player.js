@@ -115,15 +115,25 @@
         clearTimeout(timer);
       }
       function on() { if (done) return; done = true; cleanup(); res(); }
-      /* 直链过期 / 403 时立刻报错，别让用户干等 8 秒超时 */
+      /* 直链过期 / 403 时立刻报错，别让用户干等超时。
+         网盘直链要 302 到 CDN，首包可能慢，兜底超时放宽到 15 秒。 */
       function onErr() {
         if (done) return;
         done = true; cleanup();
-        rej(new Error('媒体加载失败，请重试或重新扫描'));
+        const me = el.error || {};
+        const code = Number(me.code) || 0;
+        /* 4 = 编码/源不支持（视频常见于 H.265/HEVC）；2 = 网络中断（直链失效/上游拒绝） */
+        const msg = code === 4
+          ? '媒体源或编码不被浏览器支持（视频常见于 H.265），请转成 H.264 后再试'
+          : (code === 2 ? '直链加载失败，请重新扫描后再试' : '媒体加载失败，请重试或重新扫描');
+        const err = new Error(msg);
+        err.code = 'media';
+        err.mediaCode = code;
+        rej(err);
       }
       el.addEventListener(name, on);
       el.addEventListener('error', onErr);
-      timer = setTimeout(function () { if (done) return; done = true; cleanup(); res(); }, 8000);
+      timer = setTimeout(function () { if (done) return; done = true; cleanup(); res(); }, 15000);
     });
   }
 
@@ -283,16 +293,24 @@
       /* 视频集在播放页收起时走 <audio>：同一个文件，只是不让它解码视频轨道。
          上面 emit('track') 之后界面可能自动展开播放页、把 audioOnly 改回来，所以这里再确认。 */
       const asAudio = audioOnly && track.kind === 'video';
-      const want = (track.kind === 'video' && !asAudio) ? videoEl : audioEl;
+      let want = (track.kind === 'video' && !asAudio) ? videoEl : audioEl;
+      /* 音频元素一旦被 viz 接进 WebAudio 就退不出来，播无 CORS 的网盘直链只会静音：
+         这种情况改用 <video> 播同一个文件，保留原生输出（频谱这部分降级）。 */
+      if (s && s.alist && want === audioEl && FM.viz && FM.viz.taken && FM.viz.taken(audioEl)) want = videoEl;
       if (want !== el) { stopEl(el); media = el = want; }
       if (objectRevoke) { objectRevoke(); objectRevoke = null; }
       objectUrl = s.url;
       objectRevoke = s.revoke;
       /* 远程库的媒体是跨源的：不声明 CORS，WebAudio 的 MediaElementSource 会把采样全输出 0（进度条走、没声音）。
-         Alist 直链上游实测没有 ACAO 头，设 anonymous 会直接加载失败，这里强制 null。 */
-      /* removeAttribute 比赋 null 明确：赋 null 会被反射成字符串 "null" */
-      if (s && s.alist) el.removeAttribute('crossorigin');
-      else el.crossOrigin = FM.fs.remote ? 'anonymous' : '';
+         Alist 直链上游实测没有 ACAO 头，设 anonymous 会直接加载失败，这里强制不声明；
+         同时打标记，viz 接手前会跳过这个元素。 */
+      if (s && s.alist) {
+        el.removeAttribute('crossorigin');
+        el.dataset.fmAlist = '1';
+      } else {
+        el.crossOrigin = FM.fs.remote ? 'anonymous' : '';
+        delete el.dataset.fmAlist;
+      }
       el.src = objectUrl;
       el.playbackRate = rate;
       el.volume = volume;

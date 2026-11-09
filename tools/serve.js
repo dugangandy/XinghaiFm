@@ -304,6 +304,7 @@ function mutateLibs(uid, body) {
     /* 元数据、扫描缓存都按库目录存：库移除时顺手清掉，别留孤儿行 */
     if (lib.path) { try { DB.clearLibMeta(db, lib.path); } catch (e) {} }
     dropScanCache(lib.path);
+    scanProgress.delete(lib.path);
     /* 网盘库：连带清加密凭据与服务端本地封面目录。
        共享副本的 shared_id 没被带进 libs 映射，这里回查一次，别让收件人删副本时清掉源库配置 */
     const realLib = DB.getLib(db, uid, id);
@@ -819,12 +820,15 @@ async function walkAndCache(root) {
 /* 网盘库：递归调 /api/fs/list，产出与本地扫描同结构的快照。
    root 用 libs.path（alist:<libId>），所以缓存键 / 元数据键与本地库天然隔离。
    失败时不写缓存，交给 scanFolder 回退到旧快照（stale）。 */
-async function alistWalkAndCache(lib) {
+async function alistWalkAndCache(lib, onProgress) {
   /* 共享副本用源库 id 取凭据，否则副本永远报未配置 */
   const cfg = ALIST.readConfig(db, alistOwnerId(lib));
   if (!cfg) throw ALIST.alistError('ALIST_UNCONFIGURED', '网盘库未配置连接', 502);
   const data = await ALIST.scanFolderAlist(lib, cfg, {
-    mediaExt: MEDIA_EXT, skipDir: SKIP_DIR, maxDepth: MAX_DEPTH
+    mediaExt: MEDIA_EXT, skipDir: SKIP_DIR,
+    /* 网盘目录层级比本地深：至少放到 8 层，向上一层一层的「分类/年份/专辑/CD」 */
+    maxDepth: Math.max(Number(MAX_DEPTH) || 6, 8),
+    onProgress: onProgress
   });
   writeScanCache(lib.path, data);
   return data;
@@ -869,8 +873,9 @@ function sendAlistError(res, e) {
 
 /* 等别人那次 walk 最多等这么久：NAS 掉线、目录卡死时不能让后来的请求一起挂死。
    超时先把手里的旧缓存回给客户端，后台那次 walk 跑完仍然会落盘。
-   120 秒：第一次扫大库（几万文件、外接盘）一分半未必够，超过就先用旧数据顶上 */
-const SCAN_WAIT_MS = 120000;
+   10 分钟：网盘库逐层列目录很慢，几万文件扫半小时也正常；前端会轮询
+   /api/scan/progress 显示进度，用户不会以为卡死。 */
+const SCAN_WAIT_MS = 600000;
 
 function withTimeout(p, ms) {
   return new Promise(function (resolve, reject) {
@@ -885,12 +890,24 @@ function withTimeout(p, ms) {
    否则手动「重新扫描」也会永远挂在那个永远不结束的 Promise 上 */
 const SCAN_STALE_MS = 5 * 60 * 1000;
 
+/* 网盘扫描进度：/api/scan 是一次长请求，前端并发轮询这个内存表画进度。
+   每个库一条；扫描结束后只把 running 置 false，保留最后一次数字。 */
+const scanProgress = new Map();
+function setScanProgress(root, patch) {
+  const cur = scanProgress.get(root) || { running: false, dirs: 0, files: 0, startedAt: 0, at: 0 };
+  scanProgress.set(root, Object.assign(cur, patch, { at: Date.now() }));
+}
+function readScanProgress(root) {
+  return scanProgress.get(root) || { running: false, dirs: 0, files: 0, startedAt: 0, at: 0 };
+}
+
 /* opts.refresh = true 时跳过缓存重新走盘（前端「重新扫描」） */
 async function scanFolder(root, opts) {
   const o = opts || {};
   const cached = readScanCache(root);
   if (!o.refresh && cached) return cached;
   const k = scanKey(root);
+  const isAlist = !!(o.lib && o.lib.type === 'alist');
   let rec = scanInflight.get(k);
   if (rec && Date.now() - rec.at > SCAN_STALE_MS) {
     console.log('[scan] 上一次扫描卡住超过 5 分钟，丢弃重来');
@@ -899,23 +916,43 @@ async function scanFolder(root, opts) {
   }
   if (!rec) {
     const entry = { at: Date.now(), p: null };
-    const walker = (o.lib && o.lib.type === 'alist') ? alistWalkAndCache(o.lib) : walkAndCache(root);
-    entry.p = walker.finally(function () {
+    const walker = isAlist
+      ? alistWalkAndCache(o.lib, function (p) {
+        setScanProgress(root, { running: true, dirs: p.dirs, files: p.files });
+      })
+      : walkAndCache(root);
+    entry.p = walker.then(function (data) {
+      setScanProgress(root, { running: false, dirs: data.dirs || 0, files: (data.files || []).length });
+      return data;
+    }, function (err) {
+      const cur = readScanProgress(root);
+      setScanProgress(root, { running: false, dirs: cur.dirs, files: cur.files });
+      throw err;
+    }).finally(function () {
       /* 只清自己这一条：被判定卡死而替换掉的旧 walk 结束时不能把新的删掉 */
       if (scanInflight.get(k) === entry) scanInflight.delete(k);
     });
     scanInflight.set(k, entry);
+    if (isAlist) setScanProgress(root, { running: true, dirs: 0, files: 0, startedAt: Date.now() });
     rec = entry;
   }
   try {
     return await withTimeout(rec.p, SCAN_WAIT_MS);
   } catch (err) {
-    /* 超时 / 这次 walk 失败：有旧缓存就先给旧的，别让请求一直挂着 */
+    const timedOut = !!(err && err.code === 'ETIMEDOUT');
+    /* 超时 / 这次 walk 失败：有旧缓存就先给旧的，别让请求一直挂着。
+       失败要单独标出来：后台已经挂了，界面不能把它当成「扫描完成」。 */
     if (cached) {
-      console.log('[scan] 扫描超过 ' + Math.round(SCAN_WAIT_MS / 1000) + ' 秒，先回上次结果；后台扫完会自动落盘');
-      return Object.assign({}, cached, { stale: true });
+      console.log('[scan] ' + (timedOut
+        ? '扫描超过 ' + Math.round(SCAN_WAIT_MS / 1000) + ' 秒，先回上次结果；后台扫完会自动落盘'
+        : '扫描失败（' + ((err && err.code) || (err && err.message) || 'unknown') + '），先回上次结果'));
+      return Object.assign({}, cached, {
+        stale: true,
+        failed: !timedOut,
+        error: timedOut ? '' : String((err && err.code) || 'SCAN_FAILED')
+      });
     }
-    if (err && err.code === 'ETIMEDOUT') {
+    if (timedOut) {
       /* 连缓存都没有（第一次扫这么大的库）：不能说「扫描失败」，
          后台那次 walk 还在跑，扫完会落盘，再问一次就读到了 */
       const e2 = new Error('库太大，第一次扫描还没跑完；它会在后台继续，稍后再点「重新扫描」就能看到结果');
@@ -1884,6 +1921,13 @@ const server = http.createServer(async function (req, res) {
     let at = 0;
     try { at = Number(DB.getSetting(db, scanKey(root) + ':at', '0')) || 0; } catch (e) {}
     return json(res, { scannedAt: at });
+  }
+  /* 网盘扫描进度：前端在 /api/scan 长请求期间并发轮询这个接口。
+     本地库不会写进度，返回 running:false 即可，前端也不会轮询。 */
+  if (p === '/api/scan/progress') {
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    return json(res, readScanProgress(lib.path));
   }
   if (p === '/api/scan') {
     const lib = reqLib(uid, req, u);

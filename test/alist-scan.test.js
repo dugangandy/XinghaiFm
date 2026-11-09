@@ -107,8 +107,10 @@ test('scanFolderAlist：递归、中文 rel、深度上限、隐藏目录与扩�
   try {
     const lib = { id: 'l2', name: '夸克网盘TV', path: 'alist:l2', basePath: '/夸克网盘TV' };
     const cfg = { host: s.host, token: 'tk', base: '/夸克网盘TV' };
+    const progress = [];
     const out = await A.scanFolderAlist(lib, cfg, {
-      resolve: s.resolve, mediaExt: MEDIA_EXT, skipDir: SKIP_DIR, maxDepth: 2
+      resolve: s.resolve, mediaExt: MEDIA_EXT, skipDir: SKIP_DIR, maxDepth: 2,
+      onProgress: function (p) { progress.push(p); }
     });
     assert.equal(out.root, 'alist:l2');
     assert.equal(out.rootName, '夸克网盘TV');
@@ -123,11 +125,20 @@ test('scanFolderAlist：递归、中文 rel、深度上限、隐藏目录与扩�
     assert.ok(!rels.some(function (r) { return r.indexOf('.隐藏') >= 0 || r.endsWith('.pdf') || r.endsWith('.jpg'); }));
     assert.ok(!rels.some(function (r) { return r.indexOf('如愿 - 王菲') >= 0; }), '超过 maxDepth 不再递归');
 
+    /* 每个目录扫完都上报一次：最后一次的目录数和最终结果对齐 */
+    assert.ok(progress.length >= 2, '每个目录都应上报一次进度');
+    assert.equal(progress[progress.length - 1].dirs, out.dirs);
+    assert.ok(progress[progress.length - 1].files <= out.files.length);
+
     /* 深度放到 3 才能拿到第三层文件 */
     const deep = await A.scanFolderAlist(lib, cfg, {
       resolve: s.resolve, mediaExt: MEDIA_EXT, skipDir: SKIP_DIR, maxDepth: 3
     });
     assert.ok(deep.files.some(function (f) { return f.rel === '音乐/如愿/如愿 - 王菲.flac'; }));
+
+    /* 不传 maxDepth 时默认 8 层：第三层目录不该被截断 */
+    const def = await A.scanFolderAlist(lib, cfg, { resolve: s.resolve, mediaExt: MEDIA_EXT, skipDir: SKIP_DIR });
+    assert.ok(def.files.some(function (f) { return f.rel === '音乐/如愿/如愿 - 王菲.flac'; }));
   } finally { A.clearTokenCache(); await s.close(); }
 });
 
@@ -196,10 +207,18 @@ test('/api/scan：alist 库缓存命中 / scan/at / stale 回退 / 未配置错�
     const at = await (await fetch(base + '/api/scan/at?libId=l2', { headers: H })).json();
     assert.equal(at.scannedAt, snapshot.scannedAt);
 
+    /* 没在扫时进度接口也要有稳定结构，前端才敢无条件轮询 */
+    const prog = await (await fetch(base + '/api/scan/progress?libId=l2', { headers: H })).json();
+    assert.equal(prog.running, false);
+    assert.equal(prog.dirs, 0);
+    assert.equal(prog.files, 0);
+
     /* refresh=1 但没有连接配置：不能清空旧列表，应回 stale 快照 */
     const stale = await (await fetch(base + '/api/scan?libId=l2&refresh=1', { headers: H })).json();
     assert.equal(stale.stale, true);
     assert.equal(stale.files.length, 1, '旧快照必须保留');
+    assert.equal(stale.failed, true, '后台扫描失败必须单独标记，不能当成扫描完成');
+    assert.equal(stale.error, 'ALIST_UNCONFIGURED');
 
     /* 没有旧缓存的库：返回结构化 ALIST_UNCONFIGURED，不是 500 scan failed */
     const r3 = await fetch(base + '/api/scan?libId=l3&refresh=1', { headers: H });
