@@ -340,12 +340,28 @@
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
+  /* 安卓壳把封面缓存在本地磁盘（见 android 的 Covers.kt）：新图若和旧图同名，
+     URL 不变，壳里那份旧字节会一直命中。保存成功后把旧地址交给壳删掉。
+     桌面端没有 window.fmAndroid，这一步自然跳过。 */
+  function dropNativeCache(oldUrl) {
+    if (!oldUrl || !window.fmAndroid || typeof window.fmAndroid.dropCover !== 'function') return;
+    try {
+      window.fmAndroid.dropCover(String(oldUrl));
+      /* 当场的版本参数 ?r= 是会话内的，上次启动留下的那条地址没有它，一并删掉 */
+      const bare = String(oldUrl)
+        .replace(/([?&])r=[^&]*&?/, '$1')
+        .replace(/[?&]$/, '');
+      if (bare && bare !== oldUrl) window.fmAndroid.dropCover(bare);
+    } catch (e) {}
+  }
+
   /* ── 写盘（不重读索引）──
      批量补封面时不能每张都 load()：网页端每次 load() 都要为全部封面重新取签名 URL，
      几十张就会退化成 O(n²)。这里只管把一张图落盘，由调用方决定什么时候刷新索引。 */
   async function writeCover(album, payload, libId) {
     const dirName = album && (album.dirName || album.key);
     if (!dirName || !payload) return { ok: false, reason: '缺少专辑目录或图片' };
+    const oldUrl = (album && album.cover) || '';
     /* 绑定发起时的库：批量写入是逐张 await 的，中途切库后剩下的请求
        不能按新库定位 —— 否则会把这一库的封面写到另一个库的同名目录里 */
     const lib = libId || FM.fs.activeId || '';
@@ -360,6 +376,7 @@
         if (!entry) return { ok: false, reason: '本地写入失败' };
         if (entry.error) return { ok: false, reason: entry.error };
       } catch (e) { console.warn('[covers] 保存失败', e); return { ok: false, reason: '本地写入异常' }; }
+      dropNativeCache(oldUrl);
       return { ok: true };
     }
     if (!FM.fs.server) return { ok: false, reason: '当前模式不支持' };
@@ -373,7 +390,7 @@
           headers: headers,
           body: JSON.stringify({ dirName: dirName, payload: payload })
         });
-        if (r && r.ok) return { ok: true };
+        if (r && r.ok) { dropNativeCache(oldUrl); return { ok: true }; }
         if (r && r.status === 429 && attempt === 0) { await sleep(400); continue; }
         /* 服务端会把具体原因放在 body.reason（例如 EACCES 的权限说明）：有就直接说给用户听 */
         let detail = '';

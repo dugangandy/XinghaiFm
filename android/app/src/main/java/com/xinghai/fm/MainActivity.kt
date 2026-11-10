@@ -34,6 +34,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -51,6 +52,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.FileInputStream
 import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
@@ -72,6 +74,10 @@ class MainActivity : Activity() {
     private var customView: View? = null
     private var customCallback: WebChromeClient.CustomViewCallback? = null
     private val ui = Handler(Looper.getMainLooper())
+    /* 会话 cookie 的本地副本：CookieManager 只能在主线程碰，
+       而封面拦截发生在 WebView 的 IO 线程，所以在这里缓存一份给拦截层用。
+       页面加载完成、种完 cookie 时各刷新一次（服务端滑动续期后也不会太旧） */
+    @Volatile private var coverCookie = ""
     /* 换服务器后静默重登用；网页本体走 WebView，不经这里 */
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -127,6 +133,13 @@ class MainActivity : Activity() {
 
     /* ── 服务器地址 ── */
     fun serverBase(): String = getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_BASE, "") ?: ""
+
+    /* 封面接口的路径前缀。base 允许带子路径（http://host/fm），
+       这种情况下 <img> 的 path 是 /fm/api/cover/…，不能只认 /api/cover/ */
+    private fun coverPrefix(): String {
+        val p = runCatching { Uri.parse(serverBase()).path }.getOrNull().orEmpty()
+        return p.trimEnd('/') + "/api/cover/"
+    }
 
     private fun saveBase(v: String) {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_BASE, v).apply()
@@ -273,6 +286,28 @@ class MainActivity : Activity() {
         w.addJavascriptInterface(Bridge(), "fmAndroid")
 
         w.webViewClient = object : WebViewClient() {
+            /* 封面走本地磁盘缓存：同一张图只在第一次真联网，之后永远读本地文件。
+               只拦 /api/cover/，页面、脚本、媒体流一概不碰。
+               这个方法在 WebView 的 IO 线程，允许同步读写（Covers.get 内部也是同步下载） */
+            override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
+                if (!req.method.equals("GET", true)) return null
+                val u = req.url
+                if (!u.path.orEmpty().startsWith(coverPrefix())) return null
+                /* 只用主线程维护的那份副本：这里在 WebView 的 IO 线程，别去碰 CookieManager */
+                val f = Covers.get(this@MainActivity, u.toString(), coverCookie) ?: return null
+                return runCatching {
+                    WebResourceResponse(Covers.mimeOf(u.toString()), null, FileInputStream(f)).apply {
+                        setResponseHeaders(
+                            mapOf(
+                                /* 顺手给 WebView 自己也留一份，双重保险 */
+                                "cache-control" to "max-age=604800",
+                                "content-length" to f.length().toString()
+                            )
+                        )
+                    }
+                }.getOrNull()
+            }
+
             override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean {
                 val url = req.url.toString()
                 val base = serverBase()
@@ -295,6 +330,11 @@ class MainActivity : Activity() {
             }
 
             override fun onPageFinished(view: WebView, url: String) {
+                /* 页面每次加载完刷新一次 cookie 副本（服务端滑动续期会换新 cookie）；
+                   这里在主线程，可以安全调 CookieManager */
+                coverCookie = runCatching {
+                    CookieManager.getInstance().getCookie(serverBase()).orEmpty()
+                }.getOrNull().orEmpty()
                 if (!loadFailed) hideOffline()
                 if (!url.contains("/__auth")) {
                     /* 主页已经加载成功过：之后再被赶到登录页就是会话真没了（或用户点了退出），
@@ -343,11 +383,15 @@ class MainActivity : Activity() {
         val uid = p.getString("uid", "").orEmpty()
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
+        /* 种完 cookie 同步一份给封面拦截层用（见 coverCookie），它不在主线程读 CookieManager */
+        fun syncCookie() {
+            coverCookie = runCatching { cm.getCookie(base).orEmpty() }.getOrNull().orEmpty()
+        }
         cm.setCookie(base, "fm_sess=" + token + "; Path=/", null)
         if (uid.isNotEmpty()) {
-            cm.setCookie(base, "fm_uid=" + uid + "; Path=/") { _ -> cm.flush(); onDone() }
+            cm.setCookie(base, "fm_uid=" + uid + "; Path=/") { _ -> cm.flush(); syncCookie(); onDone() }
         } else {
-            cm.flush(); onDone()
+            cm.flush(); syncCookie(); onDone()
         }
     }
 
@@ -611,8 +655,12 @@ class MainActivity : Activity() {
                     if (b.isEmpty()) { toast("请填写服务器地址"); return@setPositiveButton }
                     saveBase(b)
                     if (b == old) { mountWeb(); return@setPositiveButton }
-                    /* 换服务器：旧 token / uid 都作废，先静默重登，换不到就让网页自己弹登录页 */
+                    /* 换服务器：旧 token / uid 都作废，先静默重登，换不到就让网页自己弹登录页。
+                       封面缓存也要清：两台服务器很可能有同名专辑（文件名只由目录名派生），
+                       不清就会把上一个服务器的图显示到新的上面 */
                     p.edit().remove("token").remove("uid").apply()
+                    coverCookie = ""
+                    Thread { Covers.clear(this@MainActivity) }.apply { isDaemon = true }.start()
                     reloginSilently(b) { mountWeb() }
                 }
                 .setNegativeButton("取消", null)
@@ -628,9 +676,12 @@ class MainActivity : Activity() {
             /* 先删本地会话：登录页只看 prefs 里的 token，删晚了会被它当成「已登录」自动进主页。
                cookie 的清理是异步的，等它落地再切页，别让登录页和旧 cookie 撞在一起 */
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("token").remove("uid").apply()
+            coverCookie = ""
             val cm = CookieManager.getInstance()
             cm.removeAllCookies {
                 cm.flush()
+                /* 封面缓存也一起清：换个账号登录时，本地不该还留着上一个人能看到的库封面 */
+                Thread { Covers.clear(this@MainActivity) }.apply { isDaemon = true }.start()
                 runOnUiThread { toLogin() }
             }
         }
@@ -776,6 +827,21 @@ class MainActivity : Activity() {
            （VideoPlayerActivity.publish），网页这边的推送让路：
            两边都往同一条通知上写，会互相覆盖成「暂停」。current 是 @Volatile，JS 线程读没问题 */
         private fun videoOwnsNotice(): Boolean = VideoPlayerActivity.current != null
+
+        /* 网页换完封面后调一次：新图和旧图可能同名（服务端同名覆盖），
+           壳里缓存的是旧字节，得把那条删掉，否则重启后永远显示旧图。
+           从 JS 线程进来，删文件丢后台线程做 */
+        @JavascriptInterface
+        fun dropCover(url: String?) {
+            val u = url ?: return
+            Thread { Covers.drop(this@MainActivity, u) }.apply { isDaemon = true }.start()
+        }
+
+        /* 整库封面缓存清空（留给「清缓存」这类入口用） */
+        @JavascriptInterface
+        fun clearCoverCache() {
+            Thread { Covers.clear(this@MainActivity) }.apply { isDaemon = true }.start()
+        }
 
         @JavascriptInterface
         fun setPlaying(on: Boolean) {

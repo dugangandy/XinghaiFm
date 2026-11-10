@@ -30,8 +30,6 @@ import android.webkit.CookieManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
-import java.net.HttpURLConnection
-import java.net.URL
 
 class PlaybackService : Service() {
 
@@ -269,7 +267,8 @@ class PlaybackService : Service() {
     /* ── 锁屏封面：有封面用专辑图、无封面用 App logo ──
      * 网页传进来的是封面 URL（服务器模式下多半是站内相对路径 + 会话 cookie）。
      * 原生下载拿不到 WebView 的同源身份，所以这里要自己补绝对地址、带上 WebView 的 cookie；
-     * 拉取失败或没有封面就回退到应用图标。 */
+     * 拉取失败或没有封面就回退到应用图标。
+     * 图片统一走 Covers 的磁盘缓存：和网页里的 <img> 共用一份，切集不再重复下载。 */
     private fun loadArtwork(url: String) {
         if (url.isEmpty()) { artBitmap = null; return }
         val full = absoluteCoverUrl(url)
@@ -277,7 +276,10 @@ class PlaybackService : Service() {
         /* cookie 得在主线程取（CookieManager 要走 WebView 的线程） */
         val cookie = runCatching { CookieManager.getInstance().getCookie(full) }.getOrNull().orEmpty()
         Thread {
-            val bmp = runCatching { downloadBitmap(full, cookie) }.getOrNull()
+            val bmp = runCatching {
+                val f = Covers.get(this, full, cookie) ?: return@runCatching null
+                decodeArtwork(f.readBytes())
+            }.getOrNull()
             /* 回到主线程应用；期间可能已切了别的封面，只应用仍是最新的那次 */
             mainHandler.post {
                 if (url == coverUrl) {
@@ -297,39 +299,30 @@ class PlaybackService : Service() {
         return base + if (url.startsWith("/")) url else "/" + url
     }
 
-    private fun downloadBitmap(url: String, cookie: String): Bitmap? {
-        val conn = (URL(url).openConnection() as? HttpURLConnection) ?: return null
-        conn.connectTimeout = 5000
-        conn.readTimeout = 8000
-        conn.instanceFollowRedirects = true
-        conn.setRequestProperty("User-Agent", "XinghaiFM")
-        if (cookie.isNotEmpty()) conn.setRequestProperty("Cookie", cookie)
-        try {
-            val bytes = conn.inputStream.use { it.readBytes() }
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-            var sample = 1
-            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) > TARGET_ART) sample *= 2
-            val opts = BitmapFactory.Options().apply {
-                inSampleSize = sample
-                inPreferredConfig = Bitmap.Config.ARGB_8888
-            }
-            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
-            val maxDim = maxOf(bmp.width, bmp.height)
-            if (maxDim > TARGET_ART) {
-                val sc = TARGET_ART.toFloat() / maxDim
-                return Bitmap.createScaledBitmap(
-                    bmp,
-                    (bmp.width * sc).toInt().coerceAtLeast(1),
-                    (bmp.height * sc).toInt().coerceAtLeast(1),
-                    true
-                )
-            }
-            return bmp
-        } finally {
-            conn.disconnect()
+    /* 从缓存文件的字节解码出锁屏用的位图（缩到 TARGET_ART 以内，别顶到 binder 上限） */
+    private fun decodeArtwork(bytes: ByteArray): Bitmap? {
+        if (bytes.isEmpty()) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) > TARGET_ART) sample *= 2
+        val opts = BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
         }
+        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
+        val maxDim = maxOf(bmp.width, bmp.height)
+        if (maxDim > TARGET_ART) {
+            val sc = TARGET_ART.toFloat() / maxDim
+            return Bitmap.createScaledBitmap(
+                bmp,
+                (bmp.width * sc).toInt().coerceAtLeast(1),
+                (bmp.height * sc).toInt().coerceAtLeast(1),
+                true
+            )
+        }
+        return bmp
     }
 
     private fun logoBitmap(): Bitmap? {
