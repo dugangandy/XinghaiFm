@@ -188,6 +188,10 @@ object Covers {
         }
     }
 
+    /* 当前本机封面缓存占用（存储管理页展示用）。
+       直接扫一次目录，不走 knownTotal 估算：用户在设置里点到这一页时，准确比快更重要 */
+    fun size(ctx: Context): Long = totalOf(ctx)
+
     /* 清空全部缓存：退出登录 / 换服务器时调用，别让上一个服务器的图留在本地 */
     fun clear(ctx: Context) {
         dir(ctx).listFiles()?.forEach { runCatching { it.delete() } }

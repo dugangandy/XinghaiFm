@@ -1027,6 +1027,23 @@ body.has-player .view.am-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .cache-chip.warn{color:#fbbf24;border-color:rgba(251,191,36,.28);background:rgba(251,191,36,.09)}
 .cache-hint{font-size:11px;color:var(--dim);line-height:18px}
 .cache-btn{flex:none;height:30px;padding:0 13px;font-size:12px}
+/* ── 存储管理：标签页把索引 / 封面 / 下载分开放 ── */
+.store-mgr{display:flex;flex-direction:column;gap:12px;padding:2px 0 4px}
+.store-tabs{
+  display:flex;gap:4px;padding:3px;border-radius:12px;
+  border:1px solid var(--line);background:rgba(255,255,255,.03);
+}
+.store-tab{
+  flex:1;height:30px;border:0;border-radius:9px;background:transparent;cursor:pointer;
+  font-size:12.5px;color:var(--dim);transition:.16s;
+}
+.store-tab:hover{color:var(--txt)}
+.store-tab.on{color:var(--txt);background:rgba(34,211,238,.14);box-shadow:inset 0 0 0 1px rgba(34,211,238,.3)}
+.store-pane{display:flex;flex-direction:column;gap:10px;min-height:140px}
+.store-pane[hidden]{display:none}
+.store-foot{display:flex;justify-content:flex-end}
+.store-clear{height:30px;padding:0 13px;font-size:12px}
+.cache-btn:disabled,.store-clear:disabled{opacity:.45;cursor:not-allowed}
 .field{display:flex;flex-direction:column;gap:7px}
 .field label{font-size:11px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase}
 .input{

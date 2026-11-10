@@ -400,167 +400,357 @@
     return ok;
   }
 
-  /* 设置菜单里的「缓存管理…」：逐库列出索引缓存的大小 / 更新时间 / 规模，
-     单库可清，也可以一键全清。清的都是可重建的扫描结果，用户数据不在里面。 */
-  function openCacheManager() {
-    const sum = U.el('p', { class: 'cache-sum' });
-    const list = U.el('div', { class: 'cache-list' });
-    const body = U.el('div', { class: 'cache-mgr' }, [
-      sum, list,
-      U.el('p', { class: 'confirm-note', text: '索引缓存只是扫描结果，清除后下次打开资源库会重新扫描；分类、播放进度、收藏与设置不受影响。' })
-    ]);
-    openModal({
-      title: '缓存管理',
-      cls: 'cache-modal',
-      body: body,
-      actions: [
-        { label: '清除全部', cls: 'danger', onClick: function () { clearAll(); return false; } },
-        { label: '完成', cls: 'btn-primary' }
-      ]
-    });
+  /* 设置菜单里的「存储管理」：本机会占空间的东西按类型分开管
+     —— 资源库索引 / 封面缓存 / 下载数据。
+     索引清了只是下次重开库时重扫；封面和下载清了要重新联网下载，所以这两类都走二次确认。 */
+  function openStorageManager() {
+    const TABS = [
+      { id: 'index', label: '资源库索引' },
+      { id: 'cover', label: '封面缓存' },
+      { id: 'dl', label: '下载数据' }
+    ];
+    const tabBar = U.el('div', { class: 'store-tabs' });
+    const host = U.el('div', { class: 'store-host' });
+    const panes = {};
+    const tabBtns = {};
 
-    function fmtAt(ts) {
-      if (!ts) return '';
-      const d = new Date(ts);
-      const p = function (n) { return (n < 10 ? '0' : '') + n; };
-      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
-        p(d.getHours()) + ':' + p(d.getMinutes());
+    function select(id) {
+      if (!panes[id]) return;
+      Object.keys(panes).forEach(function (k) { panes[k].node.hidden = k !== id; });
+      Object.keys(tabBtns).forEach(function (k) { tabBtns[k].classList.toggle('on', k === id); });
+      panes[id].paint();
     }
 
-    /* 缓存的目录口径：写的是这份索引按什么结构扫的，不是当前的设置项 */
-    const DIR_TEXT = { flat: '平铺结构', cat: '二级目录', auto: '自动检测' };
+    /* ── 页一：资源库索引（原「缓存管理」的内容）──
+       逐库列出索引缓存的大小 / 更新时间 / 规模，单库可清，也能一键全清。
+       清的都是可重建的扫描结果，用户数据不在里面。 */
+    function indexPane() {
+      const sum = U.el('p', { class: 'cache-sum' });
+      const list = U.el('div', { class: 'cache-list' });
+      const clearBtn = U.el('button', { class: 'btn store-clear', type: 'button', text: '清除全部索引' });
+      const node = U.el('div', { class: 'store-pane' }, [
+        sum,
+        list,
+        U.el('div', { class: 'store-foot' }, [clearBtn]),
+        U.el('p', { class: 'confirm-note', text: '索引缓存只是扫描结果，清除后下次打开资源库会重新扫描；分类、播放进度、收藏与设置不受影响。' })
+      ]);
+      clearBtn.onclick = function () { clearAll(); };
 
-    function fmtNum(n) {
-      return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-    }
+      function fmtAt(ts) {
+        if (!ts) return '';
+        const d = new Date(ts);
+        const p = function (n) { return (n < 10 ? '0' : '') + n; };
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+          p(d.getHours()) + ':' + p(d.getMinutes());
+      }
 
-    /* 按资源库归并：同一个库可能同时留着本命名空间和无前缀孤儿两份索引，算一行 */
-    function groups() {
-      let items = [];
-      try { items = FM.store.indexCacheItems() || []; } catch (e) {}
-      const map = new Map();
-      items.forEach(function (it) {
-        const id = it.libId || '';
-        if (!map.has(id)) map.set(id, []);
-        map.get(id).push(it);
-      });
-      const out = [];
-      (FM.fs.libs() || []).forEach(function (l) {
-        out.push({
-          name: l.name || '未命名资源库', id: l.id,
-          cur: l.id === FM.fs.activeId,
-          items: map.get(l.id) || [], real: true
+      /* 缓存的目录口径：写的是这份索引按什么结构扫的，不是当前的设置项 */
+      const DIR_TEXT = { flat: '平铺结构', cat: '二级目录', auto: '自动检测' };
+
+      function fmtNum(n) {
+        return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+      }
+
+      /* 按资源库归并：同一个库可能同时留着本命名空间和无前缀孤儿两份索引，算一行 */
+      function groups() {
+        let items = [];
+        try { items = FM.store.indexCacheItems() || []; } catch (e) {}
+        const map = new Map();
+        items.forEach(function (it) {
+          const id = it.libId || '';
+          if (!map.has(id)) map.set(id, []);
+          map.get(id).push(it);
         });
-        map.delete(l.id);
-      });
-      /* 库已经移除、或者登录前留下的无前缀孤儿：也要能看见、能清掉 */
-      map.forEach(function (its, id) {
-        out.push({
-          name: id ? '已移除的资源库' : '旧版本索引', id: id, cur: false,
-          title: id ? '库 id：' + id : '登录前遗留的无前缀索引',
-          items: its, real: false
+        const out = [];
+        (FM.fs.libs() || []).forEach(function (l) {
+          out.push({
+            name: l.name || '未命名资源库', id: l.id,
+            cur: l.id === FM.fs.activeId,
+            items: map.get(l.id) || [], real: true
+          });
+          map.delete(l.id);
         });
-      });
-      return out;
-    }
+        /* 库已经移除、或者登录前留下的无前缀孤儿：也要能看见、能清掉 */
+        map.forEach(function (its, id) {
+          out.push({
+            name: id ? '已移除的资源库' : '旧版本索引', id: id, cur: false,
+            title: id ? '库 id：' + id : '登录前遗留的无前缀索引',
+            items: its, real: false
+          });
+        });
+        return out;
+      }
 
-    /* 一行里要看得清三件事：这是哪个库（当前库带标记）、占多少空间、这份索引上次扫出什么 */
-    function paint() {
-      const gs = groups();
-      let total = 0, cached = 0, libs = 0;
-      list.textContent = '';
-      gs.forEach(function (g) {
-        const bytes = g.items.reduce(function (n, it) { return n + it.bytes; }, 0);
-        /* 同一个库有新旧两份时，详情取最新的那份，体积算总和 */
-        const primary = g.items.slice().sort(function (a, b) { return b.scannedAt - a.scannedAt; })[0] || null;
-        total += bytes;
-        if (g.real) { libs++; if (primary) cached++; }
+      /* 一行里要看得清三件事：这是哪个库（当前库带标记）、占多少空间、这份索引上次扫出什么 */
+      function paint() {
+        const gs = groups();
+        let total = 0, cached = 0, libs = 0;
+        list.textContent = '';
+        gs.forEach(function (g) {
+          const bytes = g.items.reduce(function (n, it) { return n + it.bytes; }, 0);
+          /* 同一个库有新旧两份时，详情取最新的那份，体积算总和 */
+          const primary = g.items.slice().sort(function (a, b) { return b.scannedAt - a.scannedAt; })[0] || null;
+          total += bytes;
+          if (g.real) { libs++; if (primary) cached++; }
 
-        const head = U.el('div', { class: 'cache-head' }, [
-          U.el('span', { class: 'cache-lib', text: g.name, title: g.title || g.name })
-        ]);
-        if (g.cur) head.appendChild(U.el('span', { class: 'cache-tag', text: '当前' }));
-        head.appendChild(U.el('span', {
-          class: 'cache-size' + (primary ? '' : ' none'),
-          text: primary ? fmtFreed(bytes) : '无缓存'
-        }));
+          const head = U.el('div', { class: 'cache-head' }, [
+            U.el('span', { class: 'cache-lib', text: g.name, title: g.title || g.name })
+          ]);
+          if (g.cur) head.appendChild(U.el('span', { class: 'cache-tag', text: '当前' }));
+          head.appendChild(U.el('span', {
+            class: 'cache-size' + (primary ? '' : ' none'),
+            text: primary ? fmtFreed(bytes) : '无缓存'
+          }));
 
-        const main = U.el('div', { class: 'cache-main' }, [head]);
-        const meta = U.el('div', { class: 'cache-meta' });
-        if (!primary) {
-          meta.appendChild(U.el('span', { class: 'cache-hint', text: '打开这个库时会重新扫描' }));
-        } else if (!primary.ok) {
-          meta.appendChild(U.el('span', { class: 'cache-chip warn', text: '索引结构无法识别，建议清除' }));
-        } else {
-          if (primary.scannedAt) {
-            /* 相对时间更好懂，精确到分钟的时间挂 title：排查「怎么还是旧的」时才需要 */
-            meta.appendChild(U.el('span', {
-              class: 'cache-chip',
-              text: U.fmtAgo(primary.scannedAt) + '更新',
-              title: '上次扫描：' + fmtAt(primary.scannedAt)
+          const main = U.el('div', { class: 'cache-main' }, [head]);
+          const meta = U.el('div', { class: 'cache-meta' });
+          if (!primary) {
+            meta.appendChild(U.el('span', { class: 'cache-hint', text: '打开这个库时会重新扫描' }));
+          } else if (!primary.ok) {
+            meta.appendChild(U.el('span', { class: 'cache-chip warn', text: '索引结构无法识别，建议清除' }));
+          } else {
+            if (primary.scannedAt) {
+              /* 相对时间更好懂，精确到分钟的时间挂 title：排查「怎么还是旧的」时才需要 */
+              meta.appendChild(U.el('span', {
+                class: 'cache-chip',
+                text: U.fmtAgo(primary.scannedAt) + '更新',
+                title: '上次扫描：' + fmtAt(primary.scannedAt)
+              }));
+            }
+            if (primary.albums || primary.tracks) {
+              meta.appendChild(U.el('span', { class: 'cache-chip', text: fmtNum(primary.albums) + ' 张专辑' }));
+              meta.appendChild(U.el('span', { class: 'cache-chip', text: fmtNum(primary.tracks) + ' 集' }));
+            }
+            if (DIR_TEXT[primary.dirMode]) {
+              meta.appendChild(U.el('span', { class: 'cache-chip', text: DIR_TEXT[primary.dirMode] }));
+            }
+            /* 新旧两份并存时体积比预期大，点明一下，别让人以为统计错了 */
+            if (g.items.length > 1) meta.appendChild(U.el('span', { class: 'cache-chip warn', text: '含旧版遗留索引' }));
+            if (!meta.childNodes.length) meta.appendChild(U.el('span', { class: 'cache-hint', text: '无索引详情' }));
+          }
+          main.appendChild(meta);
+
+          const row = U.el('div', { class: 'cache-row' + (primary ? '' : ' is-empty') }, [main]);
+          if (primary) {
+            row.appendChild(U.el('button', {
+              class: 'btn cache-btn', type: 'button', text: '清除',
+              onclick: function () { clearList(g.items, '「' + g.name + '」的索引缓存'); }
             }));
           }
-          if (primary.albums || primary.tracks) {
-            meta.appendChild(U.el('span', { class: 'cache-chip', text: fmtNum(primary.albums) + ' 张专辑' }));
-            meta.appendChild(U.el('span', { class: 'cache-chip', text: fmtNum(primary.tracks) + ' 集' }));
-          }
-          if (DIR_TEXT[primary.dirMode]) {
-            meta.appendChild(U.el('span', { class: 'cache-chip', text: DIR_TEXT[primary.dirMode] }));
-          }
-          /* 新旧两份并存时体积比预期大，点明一下，别让人以为统计错了 */
-          if (g.items.length > 1) meta.appendChild(U.el('span', { class: 'cache-chip warn', text: '含旧版遗留索引' }));
-          if (!meta.childNodes.length) meta.appendChild(U.el('span', { class: 'cache-hint', text: '无索引详情' }));
-        }
-        main.appendChild(meta);
+          list.appendChild(row);
+        });
+        sum.textContent = libs
+          ? '共 ' + libs + ' 个资源库 · ' + cached + ' 个已缓存 · 占用 ' + (total ? fmtFreed(total) : '0 KB')
+          : '还没有资源库';
+      }
 
-        const row = U.el('div', { class: 'cache-row' + (primary ? '' : ' is-empty') }, [main]);
-        if (primary) {
-          row.appendChild(U.el('button', {
-            class: 'btn cache-btn', type: 'button', text: '清除',
-            onclick: function () { clearList(g.items, '「' + g.name + '」的索引缓存'); }
-          }));
-        }
-        list.appendChild(row);
-      });
-      sum.textContent = libs
-        ? '共 ' + libs + ' 个资源库 · ' + cached + ' 个已缓存 · 占用 ' + (total ? fmtFreed(total) : '0 KB')
-        : '还没有资源库';
-    }
+      /* 清完探一次写入：探不通说明不是这份缓存导致的（磁盘满 / 隐私模式），别给用户假希望 */
+      function clearList(items, label) {
+        let freed = 0;
+        items.forEach(function (it) {
+          try { freed += FM.store.clearIndexCacheItem(it.full) || 0; } catch (e) { console.warn('[ui] 清理索引缓存失败', e); }
+        });
+        const ok = FM.store.probe();
+        if (ok) FM.store.resetBroken();
+        const done = '已清除' + label + (freed ? '（约 ' + fmtFreed(freed) + '）' : '');
+        if (ok) toast(done + '，下次打开资源库时将重新扫描', null, { key: TOAST_CACHE, ms: 4200 });
+        else toast(done + '，但仍无法写入，请检查设备剩余存储', 'warn', { key: TOAST_CACHE, ms: 6000 });
+        paint();
+      }
 
-    /* 清完探一次写入：探不通说明不是这份缓存导致的（磁盘满 / 隐私模式），别给用户假希望 */
-    function clearList(items, label) {
-      let freed = 0;
-      items.forEach(function (it) {
-        try { freed += FM.store.clearIndexCacheItem(it.full) || 0; } catch (e) { console.warn('[ui] 清理索引缓存失败', e); }
-      });
-      const ok = FM.store.probe();
-      if (ok) FM.store.resetBroken();
-      const done = '已清除' + label + (freed ? '（约 ' + fmtFreed(freed) + '）' : '');
-      if (ok) toast(done + '，下次打开资源库时将重新扫描', null, { key: TOAST_CACHE, ms: 4200 });
-      else toast(done + '，但仍无法写入，请检查设备剩余存储', 'warn', { key: TOAST_CACHE, ms: 6000 });
+      function clearAll() {
+        const all = [];
+        let bytes = 0, count = 0;
+        groups().forEach(function (g) {
+          if (!g.items.length) return;
+          count++;
+          g.items.forEach(function (it) { bytes += it.bytes; all.push(it); });
+        });
+        if (!all.length) { toast('暂无可清理的索引缓存'); return; }
+        confirmModal({
+          title: '清除全部索引缓存？',
+          message: '将删除 ' + count + ' 个资源库的索引缓存（约 ' + fmtFreed(bytes) + '）。',
+          note: '分类、播放进度、收藏与设置不受影响；下次打开资源库时将重新扫描。',
+          icon: 'broom', okText: '全部清除', danger: true
+        }).then(function (ok) {
+          if (ok) clearList(all, '全部 ' + count + ' 个资源库的索引缓存');
+        });
+      }
+
       paint();
+      return { node: node, paint: paint };
     }
 
-    function clearAll() {
-      const all = [];
-      let bytes = 0, count = 0;
-      groups().forEach(function (g) {
-        if (!g.items.length) return;
-        count++;
-        g.items.forEach(function (it) { bytes += it.bytes; all.push(it); });
-      });
-      if (!all.length) { toast('暂无可清理的索引缓存'); return; }
-      confirmModal({
-        title: '清除全部索引缓存？',
-        message: '将删除 ' + count + ' 个资源库的索引缓存（约 ' + fmtFreed(bytes) + '）。',
-        note: '分类、播放进度、收藏与设置不受影响；下次打开资源库时将重新扫描。',
-        icon: 'broom', okText: '全部清除', danger: true
-      }).then(function (ok) {
-        if (ok) clearList(all, '全部 ' + count + ' 个资源库的索引缓存');
-      });
+    /* ── 页二：封面缓存 ──
+       App 里 <img> 的封面由壳缓存到 cacheDir/covers（见 Covers.kt）。
+       网页端 / 桌面端的封面在服务端或库目录里，不占本机空间，这边显示「不可用」并说明原因。 */
+    function coverPane() {
+      const sizeEl = U.el('span', { class: 'cache-size' });
+      const head = U.el('div', { class: 'cache-head' }, [
+        U.el('span', { class: 'cache-lib', text: '本机封面缓存' }),
+        sizeEl
+      ]);
+      const meta = U.el('div', { class: 'cache-meta' });
+      const btn = U.el('button', { class: 'btn cache-btn', type: 'button', text: '一键清除' });
+      const row = U.el('div', { class: 'cache-row' }, [
+        U.el('div', { class: 'cache-main' }, [head, meta]),
+        btn
+      ]);
+      const node = U.el('div', { class: 'store-pane' }, [
+        row,
+        U.el('p', { class: 'confirm-note', text: '封面显示过一次就会缓存在本机，清掉后重新显示时会再下载一次；资源库里的封面文件不受影响。' })
+      ]);
+      const can = !!(FM.android && FM.android.native && FM.android.canManageCoverCache);
+      /* 上一次 paint 统计到的体积：壳里异步删文件，成功后没法回传释放量，
+         只能拿这个值来显示「已清除约 X」 */
+      let lastBytes = 0;
+
+      function paint() {
+        meta.textContent = '';
+        const bytes = can ? FM.android.coverCacheSize() : -1;
+        lastBytes = bytes > 0 ? bytes : 0;
+        sizeEl.textContent = bytes >= 0 ? fmtS(bytes) : '不可用';
+        sizeEl.classList.toggle('none', !(bytes > 0));
+        if (!can) {
+          meta.appendChild(U.el('span', { class: 'cache-hint', text: '只统计本机 App 的缓存；网页端和桌面端的封面在服务端，不占本机空间' }));
+        } else if (bytes > 0) {
+          meta.appendChild(U.el('span', { class: 'cache-chip', text: '显示过就不再重复下载' }));
+        } else {
+          meta.appendChild(U.el('span', { class: 'cache-hint', text: '还没有封面缓存' }));
+        }
+        btn.disabled = !can || !(bytes > 0);
+      }
+
+      btn.onclick = function () {
+        if (btn.disabled) return;
+        confirmModal({
+          title: '清除封面缓存？',
+          message: '将清空本机缓存的封面图片' + (lastBytes > 0 ? '（约 ' + fmtS(lastBytes) + '）' : '') + '。',
+          note: '之后显示封面会重新下载一次（每张几十 KB）；播放进度、收藏与设置不受影响。',
+          icon: 'broom', okText: '清除', danger: true
+        }).then(function (ok) {
+          if (!ok) return;
+          const freed = lastBytes;
+          /* 删除是壳里另起线程做的，先把按钮按住，等它删完再重新统计 */
+          btn.disabled = true;
+          sizeEl.textContent = '清理中…';
+          sizeEl.classList.remove('none');
+          lastBytes = 0;
+          if (!FM.android.clearCoverCache()) { paint(); return; }
+          /* 上万张封面时删一轮可能要几秒：数字还没归零就再等一轮，最多跟 4 次 */
+          let tries = 0;
+          (function refresh() {
+            paint();
+            if (can && lastBytes > 0 && ++tries < 4) { setTimeout(refresh, 700); return; }
+            toast(freed > 0 ? '已清除封面缓存（约 ' + fmtS(freed) + '）' : '封面缓存已清除',
+              null, { key: TOAST_CACHE, ms: 3200 });
+          })();
+        });
+      };
+      return { node: node, paint: paint };
     }
 
-    paint();
+    /* ── 页三：下载数据 ──
+       离线下载只有 App 有，清单在壳里（Dl.snapshot），网页只按快照统计。
+       一键清除复用已有的 removeDownloads 桥：它会把排队中 / 下载中 / 已完成的一起收拾掉。 */
+    function dlPane() {
+      const sizeEl = U.el('span', { class: 'cache-size' });
+      const head = U.el('div', { class: 'cache-head' }, [
+        U.el('span', { class: 'cache-lib', text: '本机下载数据' }),
+        sizeEl
+      ]);
+      const meta = U.el('div', { class: 'cache-meta' });
+      const btn = U.el('button', { class: 'btn cache-btn', type: 'button', text: '一键清除' });
+      const row = U.el('div', { class: 'cache-row' }, [
+        U.el('div', { class: 'cache-main' }, [head, meta]),
+        btn
+      ]);
+      const node = U.el('div', { class: 'store-pane' }, [
+        row,
+        U.el('p', { class: 'confirm-note', text: '下载内容存在手机本地，清掉后这些曲目要联网播放，想离线听需重新下载。' })
+      ]);
+      const can = !!(FM.android && FM.android.native && FM.android.canRemoveMany);
+
+      /* 壳里的清单是懒加载的：每次统计前先拉一次，避免显示上次的数字 */
+      function items() {
+        if (!can) return [];
+        try { FM.android.refreshDownloads(); } catch (e) {}
+        const all = FM.android.allDownloads ? (FM.android.allDownloads() || []) : [];
+        return all.filter(function (it) { return it && it.rel; });
+      }
+
+      function isDone(it) { return it.state === 'done' || !it.state; }
+
+      /* 已完成算整个文件（size），未完成算已经下到的字节（loaded）：
+         未完成条目也有 .part 占着空间，只统计 done 会显示偏小 */
+      function bytesOf(all) {
+        return all.reduce(function (n, it) {
+          return n + (isDone(it) ? (it.size || 0) : (it.loaded || 0));
+        }, 0);
+      }
+
+      function paint() {
+        const all = items();
+        const done = all.filter(isDone);
+        const bytes = can ? bytesOf(all) : 0;
+        meta.textContent = '';
+        sizeEl.textContent = can ? fmtS(bytes) : '不可用';
+        sizeEl.classList.toggle('none', !(bytes > 0));
+        if (!can) {
+          meta.appendChild(U.el('span', { class: 'cache-hint', text: '离线下载只在 App 里；当前环境没有可清理的下载数据' }));
+        } else if (!all.length) {
+          meta.appendChild(U.el('span', { class: 'cache-hint', text: '还没有下载内容' }));
+        } else {
+          meta.appendChild(U.el('span', { class: 'cache-chip', text: done.length + ' 集已下载' }));
+          if (all.length > done.length) {
+            meta.appendChild(U.el('span', { class: 'cache-chip', text: '另有 ' + (all.length - done.length) + ' 个未完成' }));
+          }
+        }
+        btn.disabled = !can || !all.length;
+      }
+
+      btn.onclick = function () {
+        if (btn.disabled) return;
+        const all = items();
+        const bytes = bytesOf(all);
+        confirmModal({
+          title: '清除全部下载？',
+          message: '将删除本机 ' + all.length + ' 个下载条目' + (bytes ? '（约 ' + fmtS(bytes) + '）' : '') + '。',
+          note: '删除后这些曲目需要联网播放，想离线听要重新下载；收藏、播放进度与设置不受影响。',
+          icon: 'trash', okText: '全部删除', danger: true
+        }).then(function (ok) {
+          if (!ok) return;
+          const n = FM.android.removeDownloads(all.map(function (it) { return it.rel; }));
+          /* dlMap 已就地删掉，先重绘一次把按钮按住，别让人在删文件期间又点一次；
+             壳里删完文件还会推 onChange，700ms 后按真实快照再对一遍数字 */
+          paint();
+          setTimeout(function () {
+            paint();
+            toast(n ? '已清除 ' + n + ' 个下载' : '下载数据已清除', null, { key: TOAST_CACHE, ms: 3200 });
+          }, 700);
+        });
+      };
+      return { node: node, paint: paint };
+    }
+
+    TABS.forEach(function (t) {
+      const b = U.el('button', { class: 'store-tab', type: 'button', text: t.label });
+      b.onclick = function () { select(t.id); };
+      tabBtns[t.id] = b;
+      tabBar.appendChild(b);
+    });
+    panes.index = indexPane();
+    panes.cover = coverPane();
+    panes.dl = dlPane();
+    Object.keys(panes).forEach(function (k) { host.appendChild(panes[k].node); });
+
+    openModal({
+      title: '存储管理',
+      cls: 'cache-modal',
+      body: U.el('div', { class: 'store-mgr' }, [tabBar, host]),
+      actions: [{ label: '完成', cls: 'btn-primary' }]
+    });
+    select('index');
   }
 
   function cacheBroken() {
@@ -5678,12 +5868,13 @@
     }
 
     const maintenance = [];
-    /* 本机索引缓存（index:<libId>）随库变大，而所有库共用 WebView 那点 localStorage 配额：
-       给一个随时能清的出口，逐库看体积 / 更新时间、单清或全清都在弹窗里（openCacheManager）。
+    /* 本机占空间的东西分三类：索引缓存（index:<libId>）、封面缓存、离线下载。
+       索引随库变大，而所有库共用 WebView 那点 localStorage 配额，所以给个随时能清的出口；
+       三类的体积统计和清理都在「存储管理」弹窗里（openStorageManager）。
        菜单不显示库数：数量得遍历键名，且在这里也没有决策价值 */
     maintenance.push({
-      label: '缓存管理', icon: 'broom',
-      onClick: openCacheManager
+      label: '存储管理', icon: 'broom',
+      onClick: openStorageManager
     });
     /* 在线更新只在 APK 里有（下载/安装都得壳配合）。状态走右侧小字、不占第二行；
        静默查到新版本后直接改那行字，不用重开菜单 */

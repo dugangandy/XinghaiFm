@@ -206,6 +206,29 @@
     return list.length;
   }
 
+  /* 全部库的下载条目（存储管理统计 / 一键清空用）。
+     壳里的索引本来就不分库，libDownloads() 是按当前库过滤过的，这里要全量 */
+  function allDownloads() {
+    const out = [];
+    const keys = Object.keys(dlMap);
+    for (let i = 0; i < keys.length; i++) out.push(dlMap[keys[i]]);
+    return out;
+  }
+
+  /* 本机封面缓存（壳里 cacheDir/covers）：
+     旧 APK 没有这两个桥方法（网页热更新、壳不更新），返回 -1 让界面降级成「不可用」 */
+  function coverCacheSize() {
+    try {
+      return typeof NATIVE.coverCacheSize === 'function' ? (Number(NATIVE.coverCacheSize()) || 0) : -1;
+    } catch (e) { return -1; }
+  }
+
+  /* 清空是异步的（壳里起线程删），释放了多少用界面统计到的上一个值显示 */
+  function clearCoverCache() {
+    if (typeof NATIVE.clearCoverCache !== 'function') return false;
+    try { NATIVE.clearCoverCache(); return true; } catch (e) { return false; }
+  }
+
   /* 壳在下载状态变化时回调：拉一次新清单，再让界面自己刷 */
   function onChange() {
     refreshDownloads();
@@ -255,9 +278,14 @@
     freeSpace,
     removeDownload,
     removeDownloads,
+    /* 存储管理：全量下载清单 + 本机封面缓存 */
+    allDownloads,
+    coverCacheSize,
+    clearCoverCache,
     /* 旧 APK 没这些桥方法（网页是热更新的，壳不是），界面上要说清楚 */
     get canRemove() { return typeof NATIVE.removeDownload === 'function'; },
     get canRemoveMany() { return typeof NATIVE.removeDownloads === 'function'; },
+    get canManageCoverCache() { return typeof NATIVE.coverCacheSize === 'function'; },
     refreshDownloads,
     onChange,
     syncMedia,

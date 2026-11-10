@@ -837,7 +837,12 @@ class MainActivity : Activity() {
             Thread { Covers.drop(this@MainActivity, u) }.apply { isDaemon = true }.start()
         }
 
-        /* 整库封面缓存清空（留给「清缓存」这类入口用） */
+        /* 本机封面缓存占用（字节）：存储管理页展示 */
+        @JavascriptInterface
+        fun coverCacheSize(): Long = runCatching { Covers.size(this@MainActivity) }.getOrDefault(0L)
+
+        /* 整库封面缓存清空。异步做：上限 2GB 时这里可能有上万个文件，
+           同步删除会把调用它的 JS 线程卡住（界面跟着定住）；释放多少由界面自己按上一次统计显示 */
         @JavascriptInterface
         fun clearCoverCache() {
             Thread { Covers.clear(this@MainActivity) }.apply { isDaemon = true }.start()
