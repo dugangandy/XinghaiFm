@@ -1174,7 +1174,10 @@ select.input option{background:#161d29;color:var(--txt)}
 }
 .lib-ico .i{width:16px;height:16px}
 .lib-info{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}
+/* 库名一行：名字过长就省略，后面的类型胶囊（网盘）始终露在前面不被挤掉 */
+.lib-name{display:flex;align-items:center;gap:6px;min-width:0}
 .lib-info b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lib-name b{min-width:0}
 .lib-info small{font-size:11px;color:var(--dim);word-break:break-all;line-height:1.35}
 /* 每个库的规模（专辑 / 集数 / 占用）：首页头部收掉后信息挪到这里 */
 .lib-info .lib-stats{
