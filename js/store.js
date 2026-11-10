@@ -152,9 +152,14 @@
           name: own ? k : '',
           libId: k.indexOf('index:') === 0 ? k.slice(6) : '',
           bytes: (full.length + raw.length) * 2,
+          /* ok=false：值在但解析不出来（写入被截断 / 老格式），界面提示建议清除 */
+          ok: !!meta,
           scannedAt: Number(meta && meta.scannedAt) || 0,
           albums: (meta && meta.albums && meta.albums.length) || 0,
-          tracks: (meta && meta.tracks && meta.tracks.length) || 0
+          tracks: (meta && meta.tracks && meta.tracks.length) || 0,
+          /* 这份索引是按哪种目录口径扫的：flat / cat / auto，老缓存里只有布尔 dirGroup */
+          dirMode: !meta ? '' : (meta.dirMode === 'cat' || meta.dirMode === 'auto' || meta.dirMode === 'flat'
+            ? meta.dirMode : (meta.dirGroup ? 'cat' : 'flat'))
         });
       }
     } catch (e) { console.warn('[store] 读取缓存明细失败', e); }

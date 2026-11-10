@@ -411,6 +411,7 @@
     ]);
     openModal({
       title: '缓存管理',
+      cls: 'cache-modal',
       body: body,
       actions: [
         { label: '清除全部', cls: 'danger', onClick: function () { clearAll(); return false; } },
@@ -426,6 +427,13 @@
         p(d.getHours()) + ':' + p(d.getMinutes());
     }
 
+    /* 缓存的目录口径：写的是这份索引按什么结构扫的，不是当前的设置项 */
+    const DIR_TEXT = { flat: '平铺结构', cat: '二级目录', auto: '自动检测' };
+
+    function fmtNum(n) {
+      return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
     /* 按资源库归并：同一个库可能同时留着本命名空间和无前缀孤儿两份索引，算一行 */
     function groups() {
       let items = [];
@@ -438,38 +446,74 @@
       });
       const out = [];
       (FM.fs.libs() || []).forEach(function (l) {
-        out.push({ name: l.name, items: map.get(l.id) || [], real: true });
+        out.push({
+          name: l.name || '未命名资源库', id: l.id,
+          cur: l.id === FM.fs.activeId,
+          items: map.get(l.id) || [], real: true
+        });
         map.delete(l.id);
       });
       /* 库已经移除、或者登录前留下的无前缀孤儿：也要能看见、能清掉 */
       map.forEach(function (its, id) {
-        out.push({ name: id ? '已移除的资源库' : '旧版本索引', items: its, real: false });
+        out.push({
+          name: id ? '已移除的资源库' : '旧版本索引', id: id, cur: false,
+          title: id ? '库 id：' + id : '登录前遗留的无前缀索引',
+          items: its, real: false
+        });
       });
       return out;
     }
 
+    /* 一行里要看得清三件事：这是哪个库（当前库带标记）、占多少空间、这份索引上次扫出什么 */
     function paint() {
       const gs = groups();
       let total = 0, cached = 0, libs = 0;
       list.textContent = '';
       gs.forEach(function (g) {
         const bytes = g.items.reduce(function (n, it) { return n + it.bytes; }, 0);
+        /* 同一个库有新旧两份时，详情取最新的那份，体积算总和 */
         const primary = g.items.slice().sort(function (a, b) { return b.scannedAt - a.scannedAt; })[0] || null;
         total += bytes;
         if (g.real) { libs++; if (primary) cached++; }
-        const main = U.el('div', { class: 'cache-main' }, [
-          U.el('div', { class: 'cache-head' }, [
-            U.el('span', { class: 'cache-lib', text: g.name }),
-            U.el('span', { class: 'cache-size' + (primary ? '' : ' none'), text: primary ? fmtFreed(bytes) : '无缓存' })
-          ])
+
+        const head = U.el('div', { class: 'cache-head' }, [
+          U.el('span', { class: 'cache-lib', text: g.name, title: g.title || g.name })
         ]);
-        if (primary) {
-          const parts = [];
-          if (primary.scannedAt) parts.push('更新于 ' + fmtAt(primary.scannedAt));
-          if (primary.albums || primary.tracks) parts.push(primary.albums + ' 张专辑 · ' + primary.tracks + ' 集');
-          main.appendChild(U.el('div', { class: 'cache-sub', text: parts.join(' · ') || '无索引详情' }));
+        if (g.cur) head.appendChild(U.el('span', { class: 'cache-tag', text: '当前' }));
+        head.appendChild(U.el('span', {
+          class: 'cache-size' + (primary ? '' : ' none'),
+          text: primary ? fmtFreed(bytes) : '无缓存'
+        }));
+
+        const main = U.el('div', { class: 'cache-main' }, [head]);
+        const meta = U.el('div', { class: 'cache-meta' });
+        if (!primary) {
+          meta.appendChild(U.el('span', { class: 'cache-hint', text: '打开这个库时会重新扫描' }));
+        } else if (!primary.ok) {
+          meta.appendChild(U.el('span', { class: 'cache-chip warn', text: '索引结构无法识别，建议清除' }));
+        } else {
+          if (primary.scannedAt) {
+            /* 相对时间更好懂，精确到分钟的时间挂 title：排查「怎么还是旧的」时才需要 */
+            meta.appendChild(U.el('span', {
+              class: 'cache-chip',
+              text: U.fmtAgo(primary.scannedAt) + '更新',
+              title: '上次扫描：' + fmtAt(primary.scannedAt)
+            }));
+          }
+          if (primary.albums || primary.tracks) {
+            meta.appendChild(U.el('span', { class: 'cache-chip', text: fmtNum(primary.albums) + ' 张专辑' }));
+            meta.appendChild(U.el('span', { class: 'cache-chip', text: fmtNum(primary.tracks) + ' 集' }));
+          }
+          if (DIR_TEXT[primary.dirMode]) {
+            meta.appendChild(U.el('span', { class: 'cache-chip', text: DIR_TEXT[primary.dirMode] }));
+          }
+          /* 新旧两份并存时体积比预期大，点明一下，别让人以为统计错了 */
+          if (g.items.length > 1) meta.appendChild(U.el('span', { class: 'cache-chip warn', text: '含旧版遗留索引' }));
+          if (!meta.childNodes.length) meta.appendChild(U.el('span', { class: 'cache-hint', text: '无索引详情' }));
         }
-        const row = U.el('div', { class: 'cache-row' }, [main]);
+        main.appendChild(meta);
+
+        const row = U.el('div', { class: 'cache-row' + (primary ? '' : ' is-empty') }, [main]);
         if (primary) {
           row.appendChild(U.el('button', {
             class: 'btn cache-btn', type: 'button', text: '清除',
@@ -478,7 +522,9 @@
         }
         list.appendChild(row);
       });
-      sum.textContent = '共 ' + libs + ' 个资源库，' + cached + ' 个有索引缓存，占用约 ' + (total ? fmtFreed(total) : '0 KB');
+      sum.textContent = libs
+        ? '共 ' + libs + ' 个资源库 · ' + cached + ' 个已缓存 · 占用 ' + (total ? fmtFreed(total) : '0 KB')
+        : '还没有资源库';
     }
 
     /* 清完探一次写入：探不通说明不是这份缓存导致的（磁盘满 / 隐私模式），别给用户假希望 */

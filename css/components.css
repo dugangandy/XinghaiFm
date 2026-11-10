@@ -995,19 +995,37 @@ body.has-player .view.am-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .confirm-msg{font-size:13.5px;color:var(--txt);line-height:1.65;word-break:break-word}
 .confirm-note{font-size:11.5px;color:var(--dim);line-height:1.75}
 /* ── 缓存管理弹窗（设置菜单）── */
+/* 用 vw 兜底而不是 100%：grid 弹窗容器是 auto 列，100% 在窄屏会被内容撑大 */
+.modal.cache-modal{width:min(480px,calc(100vw - 32px))}
 .cache-mgr{display:flex;flex-direction:column;gap:12px;padding:2px 0 4px}
 .cache-sum{font-size:11.5px;color:var(--dim)}
 .cache-list{display:flex;flex-direction:column;gap:8px}
 .cache-row{
   display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:12px;
-  border:1px solid var(--line);background:rgba(255,255,255,.03);
+  border:1px solid var(--line);background:rgba(255,255,255,.03);transition:.18s;
 }
-.cache-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
-.cache-head{display:flex;align-items:baseline;gap:10px;min-width:0}
-.cache-lib{font-size:13.5px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cache-size{flex:none;margin-left:auto;font-size:12px;color:var(--cyan);font-variant-numeric:tabular-nums}
-.cache-size.none{color:var(--dim)}
-.cache-sub{font-size:11.5px;color:var(--dim);line-height:1.6}
+.cache-row:hover{border-color:var(--line-2);background:rgba(255,255,255,.055)}
+/* 没缓存的库弱化一档：它只是告诉你「这儿暂时没东西可清」 */
+.cache-row.is-empty{background:rgba(255,255,255,.015)}
+.cache-row.is-empty:hover{border-color:var(--line);background:rgba(255,255,255,.03)}
+.cache-row.is-empty .cache-lib{color:var(--dim)}
+.cache-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.cache-head{display:flex;align-items:center;gap:8px;min-width:0}
+.cache-lib{flex:0 1 auto;min-width:0;font-size:13.5px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cache-tag{
+  flex:none;padding:0 6px;border-radius:6px;font-size:10px;line-height:17px;
+  color:var(--cyan);border:1px solid rgba(34,211,238,.3);background:rgba(34,211,238,.12);
+}
+.cache-size{flex:none;margin-left:auto;font-size:12.5px;font-weight:600;color:var(--txt);font-variant-numeric:tabular-nums}
+.cache-size.none{color:var(--dim);font-weight:400;font-size:12px}
+/* 详情拆成一排小标签：更新时间 / 规模 / 目录口径各占一格，窄屏自动换行 */
+.cache-meta{display:flex;flex-wrap:wrap;gap:5px}
+.cache-chip{
+  padding:1px 7px;border-radius:7px;font-size:10.5px;line-height:16px;color:var(--dim);
+  border:1px solid var(--line);background:rgba(255,255,255,.03);font-variant-numeric:tabular-nums;
+}
+.cache-chip.warn{color:#fbbf24;border-color:rgba(251,191,36,.28);background:rgba(251,191,36,.09)}
+.cache-hint{font-size:11px;color:var(--dim);line-height:18px}
 .cache-btn{flex:none;height:30px;padding:0 13px;font-size:12px}
 .field{display:flex;flex-direction:column;gap:7px}
 .field label{font-size:11px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase}
