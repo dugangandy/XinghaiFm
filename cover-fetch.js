@@ -664,15 +664,14 @@ async function run(rootArg, options) {
         const ext = /png/i.test(got.type) ? ".png" : ".jpg";
         const file = crypto.createHash("sha1").update(dirName).digest("hex").slice(0, 16) + ext;
         await fsp.writeFile(path.join(coverDir, file), buf);
-        map[dirName] = {
+        await mergeMapEntry(coverDir, dirName, {
           file: file,
           title: dirName,
           albumId: "",
           score: 1,
           at: new Date().toISOString().slice(0, 10),
           source: manualVal
-        };
-        await fsp.writeFile(mapFile, JSON.stringify(map, null, 2), "utf8");
+        });
         ok++;
         say("✓ 1.00  " + dirName.slice(0, 30) + "（manual.json 指定的图片）" + String.fromCharCode(10));
       } catch (e) {
@@ -781,16 +780,17 @@ async function run(rootArg, options) {
       const ext = /png/i.test(saveType) ? '.png' : '.jpg';
       const file = crypto.createHash('sha1').update(dirName).digest('hex').slice(0, 16) + ext;
       await fsp.writeFile(path.join(coverDir, file), saveBuf);
-      map[dirName] = {
+      /* 抓一张存一张（中途打断也不丢）：只合并这一条，别把开跑时读的整份 map 回写，
+         否则会抹掉这期间用户在界面上手动补的封面 */
+      await mergeMapEntry(coverDir, dirName, {
         file: file,
         title: picked.title,
         albumId: picked.id,
         score: +picked.score.toFixed(3),
         at: new Date().toISOString().slice(0, 10),
         source: picked.source
-      };
+      });
       ok++;
-      await fsp.writeFile(mapFile, JSON.stringify(map, null, 2), 'utf8');   // 抓一张存一张，中途打断也不丢
       say('✓ ' + picked.score.toFixed(2) + ' [' + picked.source + '] ' + dirName.slice(0, 26) + '\n     ' + picked.title.slice(0, 46) + '\n');
     } catch (e) {
       failed++;
@@ -799,8 +799,7 @@ async function run(rootArg, options) {
     }
   }
 
-  await fsp.writeFile(mapFile, JSON.stringify(map, null, 2), 'utf8');
-
+  /* 索引已经随每张封面逐条合并过，末尾不再整份回写（会覆盖并发写入的条目） */
   say('完成：新增 ' + ok + '，已有 ' + kept + '，未匹配 ' + failed);
   if (misses.length) {
     say('\n需要人工确认的专辑：');
@@ -903,6 +902,30 @@ async function writeMap(coverDir, map) {
   }
 }
 
+/* covers.json 是整份覆盖，必须按封面目录串行「读 → 改 → 写」。
+   一键抓取是 3 路并发，两个请求同时读到旧索引、各自回写，
+   后写的那个会把先写那条抹掉 —— 界面显示「已自动替换」，刷新后封面又空了。 */
+const mapLocks = new Map();
+function withMapLock(coverDir, fn) {
+  const key = path.resolve(coverDir);
+  const prev = mapLocks.get(key) || Promise.resolve();
+  const job = prev.then(fn, fn);                 /* 上一棒失败不影响这一棒 */
+  const tail = job.then(function () {}, function () {});
+  mapLocks.set(key, tail);
+  tail.then(function () { if (mapLocks.get(key) === tail) mapLocks.delete(key); });
+  return job;
+}
+
+/* 只往索引里塞一条：读最新的盘上内容再写，别用调用方手里那份可能过期的 map */
+function mergeMapEntry(coverDir, dirName, entry) {
+  return withMapLock(coverDir, async function () {
+    const map = await readMap(coverDir);
+    map[dirName] = entry;
+    await writeMap(coverDir, map);
+    return entry;
+  });
+}
+
 /* 手动保存一张封面：opt 里给 dataUrl（上传）或 url（自动获取到的候选），其余字段原样记进 covers.json */
 async function saveCoverForDir(root, dirName, opt) {
   /* Alist 库不写网盘：调用方传 coverDir 指到服务端本地数据目录。
@@ -913,7 +936,6 @@ async function saveCoverForDir(root, dirName, opt) {
   /* 先探一次写权限：等写到图片才失败的话，用户只能看到一句 EACCES，不知道是目录权限问题 */
   try { await fsp.access(coverDir, fs.constants.W_OK); }
   catch (e) { throw new Error(fsErrorText(e, coverDir)); }
-  const map = await readMap(coverDir);
   let buf, ext;
   if (opt.dataUrl) {
     const m = /^data:([^;]+);base64,(.*)$/.exec(String(opt.dataUrl));
@@ -943,30 +965,36 @@ async function saveCoverForDir(root, dirName, opt) {
   const stamp = crypto.createHash('sha1').update(buf).digest('hex').slice(0, 10);
   /* 只接受纯文件名；调用方给的 file 带路径就直接丢掉，改用内容哈希命名（防路径穿越写盘） */
   const file = safeCoverName(opt.file) || (crypto.createHash('sha1').update(dirName).digest('hex').slice(0, 16) + '-' + stamp + ext);
-  /* 换图后旧文件还在 covers.json 里就清掉，免得留孤儿文件；旧值同样要过滤，别被历史脏数据带着越界删除 */
-  const old = map[dirName];
-  const oldFile = safeCoverName(old && old.file);
-  if (oldFile && oldFile !== file) {
-    try { await fsp.unlink(path.join(coverDir, oldFile)); } catch (e) {}
-  }
   const target = path.join(coverDir, file);
-  try {
-    /* 同名文件可能属于别的用户或带只读属性：目录可写时先删掉再写，比直接覆盖稳妥 */
-    try { await fsp.unlink(target); } catch (e) {}
-    await fsp.writeFile(target, buf);
-  } catch (e) {
-    throw new Error(fsErrorText(e, coverDir));
-  }
-  map[dirName] = {
-    file: file,
-    title: opt.title || dirName,
-    albumId: opt.albumId || '',
-    score: opt.source === 'xmly' ? 0.99 : 1,
-    at: new Date().toISOString().slice(0, 10),
-    source: opt.source || 'user'
-  };
-  await writeMap(coverDir, map);
-  return map[dirName];
+  /* 读索引 → 清旧图 → 写新图 → 回写索引，整段串行：
+     批量抓取时这里会被并发调用，各自拿着旧的 map 回写就会互相抹掉条目 */
+  return withMapLock(coverDir, async function () {
+    const map = await readMap(coverDir);
+    /* 换图后旧文件还在 covers.json 里就清掉，免得留孤儿文件；旧值同样要过滤，别被历史脏数据带着越界删除 */
+    const old = map[dirName];
+    const oldFile = safeCoverName(old && old.file);
+    if (oldFile && oldFile !== file) {
+      try { await fsp.unlink(path.join(coverDir, oldFile)); } catch (e) {}
+    }
+    try {
+      /* 同名文件可能属于别的用户或带只读属性：目录可写时先删掉再写，比直接覆盖稳妥 */
+      try { await fsp.unlink(target); } catch (e) {}
+      await fsp.writeFile(target, buf);
+    } catch (e) {
+      throw new Error(fsErrorText(e, coverDir));
+    }
+    const entry = {
+      file: file,
+      title: opt.title || dirName,
+      albumId: opt.albumId || '',
+      score: opt.source === 'xmly' ? 0.99 : 1,
+      at: new Date().toISOString().slice(0, 10),
+      source: opt.source || 'user'
+    };
+    map[dirName] = entry;
+    await writeMap(coverDir, map);
+    return entry;
+  });
 }
 
 /* 删掉某专辑封面：covers.json 条目 + 图片文件一起清。
@@ -975,14 +1003,17 @@ async function removeCover(root, dirName, opt) {
   const coverDir = (opt && opt.coverDir)
     ? path.resolve(opt.coverDir)
     : path.join(path.resolve(root), COVER_DIR);
-  let map = {};
-  try { map = JSON.parse(await fsp.readFile(path.join(coverDir, 'covers.json'), 'utf8')) || {}; } catch (e) {}
-  const entry = map[dirName];
-  /* 索引里的 file 也要过滤：即使历史上被写入过带路径的值，也不能让它越界删文件 */
-  const entryFile = safeCoverName(entry && entry.file);
-  if (entryFile) { try { await fsp.unlink(path.join(coverDir, entryFile)); } catch (e) {} }
-  delete map[dirName];
-  await writeMap(coverDir, map);
+  /* 和 saveCoverForDir 共用一把锁：删除时的读改写同样不能被并发写入覆盖 */
+  return withMapLock(coverDir, async function () {
+    let map = {};
+    try { map = JSON.parse(await fsp.readFile(path.join(coverDir, 'covers.json'), 'utf8')) || {}; } catch (e) {}
+    const entry = map[dirName];
+    /* 索引里的 file 也要过滤：即使历史上被写入过带路径的值，也不能让它越界删文件 */
+    const entryFile = safeCoverName(entry && entry.file);
+    if (entryFile) { try { await fsp.unlink(path.join(coverDir, entryFile)); } catch (e) {} }
+    delete map[dirName];
+    await writeMap(coverDir, map);
+  });
 }
 
 /* 按标题去喜马拉雅搜几张候选封面（封面的勾选在网页里做，这里只返回可预览的 URL） */

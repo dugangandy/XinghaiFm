@@ -83,6 +83,23 @@ test('saveCoverForDir：file 路径穿越不能写到 coverDir 之外', async ()
   }
 });
 
+test('saveCoverForDir：并发写入不会互相覆盖 covers.json 条目', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-cover-race-'));
+  const url = 'data:image/jpeg;base64,' + Buffer.alloc(2048, 3).toString('base64');
+  try {
+    /* 一键抓取是 3 路并发写多张封面：读改写没有串行的话，后写的会把先写的条目抹掉 */
+    const names = ['专辑一', '专辑二', '专辑三', '专辑四', '专辑五', '专辑六'];
+    await Promise.all(names.map(function (n) { return saveCoverForDir(root, n, { dataUrl: url }); }));
+    const map = JSON.parse(fs.readFileSync(path.join(root, '.fm-covers', 'covers.json'), 'utf8'));
+    names.forEach(function (n) {
+      assert.ok(map[n] && map[n].file, n + ' 的索引条目应保留');
+      assert.ok(fs.existsSync(path.join(root, '.fm-covers', map[n].file)), n + ' 的封面文件应在盘上');
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('saveCoverForDir：超过 2MB 的上传被拒，正常尺寸能落盘', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-cover-test-'));
   const url = bytes => 'data:image/jpeg;base64,' + Buffer.alloc(bytes, 7).toString('base64');
