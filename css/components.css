@@ -994,6 +994,21 @@ body.has-player .view.am-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .confirm-txt{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;padding-top:1px}
 .confirm-msg{font-size:13.5px;color:var(--txt);line-height:1.65;word-break:break-word}
 .confirm-note{font-size:11.5px;color:var(--dim);line-height:1.75}
+/* ── 缓存管理弹窗（设置菜单）── */
+.cache-mgr{display:flex;flex-direction:column;gap:12px;padding:2px 0 4px}
+.cache-sum{font-size:11.5px;color:var(--dim)}
+.cache-list{display:flex;flex-direction:column;gap:8px}
+.cache-row{
+  display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:12px;
+  border:1px solid var(--line);background:rgba(255,255,255,.03);
+}
+.cache-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.cache-head{display:flex;align-items:baseline;gap:10px;min-width:0}
+.cache-lib{font-size:13.5px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cache-size{flex:none;margin-left:auto;font-size:12px;color:var(--cyan);font-variant-numeric:tabular-nums}
+.cache-size.none{color:var(--dim)}
+.cache-sub{font-size:11.5px;color:var(--dim);line-height:1.6}
+.cache-btn{flex:none;height:30px;padding:0 13px;font-size:12px}
 .field{display:flex;flex-direction:column;gap:7px}
 .field label{font-size:11px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase}
 .input{

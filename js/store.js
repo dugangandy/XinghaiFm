@@ -133,21 +133,51 @@
     return { keys: keys, bytes: chars * 2 };
   }
 
-  /* 菜单里只报份数（遍历键名，不去读几 MB 的值，展开菜单不卡） */
-  function indexCacheCount() { return indexCacheKeys(false).keys.length; }
+  /* 缓存管理弹窗用：每份索引的明细（体积 / 扫描时间 / 规模）。
+     体积和规模都得读整份值，所以只在用户点开弹窗时调用，菜单展开路径别碰 */
+  function indexCacheItems() {
+    const out = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const full = localStorage.key(i);
+        const k = indexCacheKey(full);
+        if (!k) continue;
+        const own = !ns || full.indexOf(P + ns + ':') === 0;
+        let raw = '';
+        try { raw = String(localStorage.getItem(full) || ''); } catch (e) {}
+        let meta = null;
+        if (raw) { try { meta = JSON.parse(raw); } catch (e) {} }
+        out.push({
+          full: full,
+          name: own ? k : '',
+          libId: k.indexOf('index:') === 0 ? k.slice(6) : '',
+          bytes: (full.length + raw.length) * 2,
+          scannedAt: Number(meta && meta.scannedAt) || 0,
+          albums: (meta && meta.albums && meta.albums.length) || 0,
+          tracks: (meta && meta.tracks && meta.tracks.length) || 0
+        });
+      }
+    } catch (e) { console.warn('[store] 读取缓存明细失败', e); }
+    return out;
+  }
 
-  /* 真要报体积时才读值 */
-  function indexCacheSize() {
-    const s = indexCacheKeys(true);
-    return { count: s.keys.length, bytes: s.bytes };
+  /* 按 full 键清一份（full 来自 indexCacheItems）：孤儿键没有当前命名空间前缀，
+     再走 drop(name) 会误删同名库的现行缓存，所以删除走 full，内存缓存只清自己那份 */
+  function clearIndexCacheItem(full) {
+    const k = indexCacheKey(full);
+    if (!k) return 0;
+    let chars = 0;
+    try {
+      chars = full.length + String(localStorage.getItem(full) || '').length;
+      localStorage.removeItem(full);
+    } catch (e) { console.warn('[store] 清理索引缓存失败', full, e); }
+    if (!ns || full.indexOf(P + ns + ':') === 0) { delete cache[k]; dirty.delete(k); }
+    return chars * 2;
   }
 
   function clearIndexCache() {
     const s = indexCacheKeys(true);
-    s.keys.forEach(function (it) {
-      try { localStorage.removeItem(it.full); } catch (e) {}
-      if (it.name) { delete cache[it.name]; dirty.delete(it.name); }
-    });
+    s.keys.forEach(function (it) { clearIndexCacheItem(it.full); });
     return { count: s.keys.length, bytes: s.bytes };
   }
 
@@ -232,7 +262,7 @@
     read, write, touch, drop, flush,
     onPersist: fn => { onPersist = fn; },
     onBroken: fn => { onBroken = fn; },
-    clearIndexCache, indexCacheCount, indexCacheSize, probe, resetBroken,
+    clearIndexCache, clearIndexCacheItem, indexCacheItems, probe, resetBroken,
     PREFIX: P,
     get namespace() { return ns; }
   };

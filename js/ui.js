@@ -400,18 +400,121 @@
     return ok;
   }
 
-  /* 设置菜单里的「清除索引缓存…」：先把清什么、留什么说清楚，再动手。
-     没超配额时也允许主动清（换库前腾地方），所以不复用警告那条文案 */
-  function clearCacheFlow() {
-    let s = { count: 0, bytes: 0 };
-    try { s = FM.store.indexCacheSize(); } catch (e) {}
-    if (!s.count) { toast('暂无可清理的索引缓存'); return; }
-    confirmModal({
-      title: '清除索引缓存？',
-      message: '将删除 ' + s.count + ' 个资源库的索引缓存（约 ' + fmtFreed(s.bytes) + '）。',
-      note: '分类、播放进度、收藏与设置不受影响；下次打开资源库时将重新扫描。',
-      icon: 'broom', okText: '清除缓存', danger: true
-    }).then(function (ok) { if (ok) clearLocalCache(); });
+  /* 设置菜单里的「缓存管理…」：逐库列出索引缓存的大小 / 更新时间 / 规模，
+     单库可清，也可以一键全清。清的都是可重建的扫描结果，用户数据不在里面。 */
+  function openCacheManager() {
+    const sum = U.el('p', { class: 'cache-sum' });
+    const list = U.el('div', { class: 'cache-list' });
+    const body = U.el('div', { class: 'cache-mgr' }, [
+      sum, list,
+      U.el('p', { class: 'confirm-note', text: '索引缓存只是扫描结果，清除后下次打开资源库会重新扫描；分类、播放进度、收藏与设置不受影响。' })
+    ]);
+    openModal({
+      title: '缓存管理',
+      body: body,
+      actions: [
+        { label: '清除全部', cls: 'danger', onClick: function () { clearAll(); return false; } },
+        { label: '完成', cls: 'btn-primary' }
+      ]
+    });
+
+    function fmtAt(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      const p = function (n) { return (n < 10 ? '0' : '') + n; };
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+        p(d.getHours()) + ':' + p(d.getMinutes());
+    }
+
+    /* 按资源库归并：同一个库可能同时留着本命名空间和无前缀孤儿两份索引，算一行 */
+    function groups() {
+      let items = [];
+      try { items = FM.store.indexCacheItems() || []; } catch (e) {}
+      const map = new Map();
+      items.forEach(function (it) {
+        const id = it.libId || '';
+        if (!map.has(id)) map.set(id, []);
+        map.get(id).push(it);
+      });
+      const out = [];
+      (FM.fs.libs() || []).forEach(function (l) {
+        out.push({ name: l.name, items: map.get(l.id) || [], real: true });
+        map.delete(l.id);
+      });
+      /* 库已经移除、或者登录前留下的无前缀孤儿：也要能看见、能清掉 */
+      map.forEach(function (its, id) {
+        out.push({ name: id ? '已移除的资源库' : '旧版本索引', items: its, real: false });
+      });
+      return out;
+    }
+
+    function paint() {
+      const gs = groups();
+      let total = 0, cached = 0, libs = 0;
+      list.textContent = '';
+      gs.forEach(function (g) {
+        const bytes = g.items.reduce(function (n, it) { return n + it.bytes; }, 0);
+        const primary = g.items.slice().sort(function (a, b) { return b.scannedAt - a.scannedAt; })[0] || null;
+        total += bytes;
+        if (g.real) { libs++; if (primary) cached++; }
+        const main = U.el('div', { class: 'cache-main' }, [
+          U.el('div', { class: 'cache-head' }, [
+            U.el('span', { class: 'cache-lib', text: g.name }),
+            U.el('span', { class: 'cache-size' + (primary ? '' : ' none'), text: primary ? fmtFreed(bytes) : '无缓存' })
+          ])
+        ]);
+        if (primary) {
+          const parts = [];
+          if (primary.scannedAt) parts.push('更新于 ' + fmtAt(primary.scannedAt));
+          if (primary.albums || primary.tracks) parts.push(primary.albums + ' 张专辑 · ' + primary.tracks + ' 集');
+          main.appendChild(U.el('div', { class: 'cache-sub', text: parts.join(' · ') || '无索引详情' }));
+        }
+        const row = U.el('div', { class: 'cache-row' }, [main]);
+        if (primary) {
+          row.appendChild(U.el('button', {
+            class: 'btn cache-btn', type: 'button', text: '清除',
+            onclick: function () { clearList(g.items, '「' + g.name + '」的索引缓存'); }
+          }));
+        }
+        list.appendChild(row);
+      });
+      sum.textContent = '共 ' + libs + ' 个资源库，' + cached + ' 个有索引缓存，占用约 ' + (total ? fmtFreed(total) : '0 KB');
+    }
+
+    /* 清完探一次写入：探不通说明不是这份缓存导致的（磁盘满 / 隐私模式），别给用户假希望 */
+    function clearList(items, label) {
+      let freed = 0;
+      items.forEach(function (it) {
+        try { freed += FM.store.clearIndexCacheItem(it.full) || 0; } catch (e) { console.warn('[ui] 清理索引缓存失败', e); }
+      });
+      const ok = FM.store.probe();
+      if (ok) FM.store.resetBroken();
+      const done = '已清除' + label + (freed ? '（约 ' + fmtFreed(freed) + '）' : '');
+      if (ok) toast(done + '，下次打开资源库时将重新扫描', null, { key: TOAST_CACHE, ms: 4200 });
+      else toast(done + '，但仍无法写入，请检查设备剩余存储', 'warn', { key: TOAST_CACHE, ms: 6000 });
+      paint();
+    }
+
+    function clearAll() {
+      const all = [];
+      let bytes = 0, count = 0;
+      groups().forEach(function (g) {
+        if (!g.items.length) return;
+        count++;
+        g.items.forEach(function (it) { bytes += it.bytes; all.push(it); });
+      });
+      if (!all.length) { toast('暂无可清理的索引缓存'); return; }
+      confirmModal({
+        title: '清除全部索引缓存？',
+        message: '将删除 ' + count + ' 个资源库的索引缓存（约 ' + fmtFreed(bytes) + '）。',
+        note: '分类、播放进度、收藏与设置不受影响；下次打开资源库时将重新扫描。',
+        icon: 'broom', okText: '全部清除', danger: true
+      }).then(function (ok) {
+        if (ok) clearList(all, '全部 ' + count + ' 个资源库的索引缓存');
+      });
+    }
+
+    paint();
   }
 
   function cacheBroken() {
@@ -5530,14 +5633,11 @@
 
     const maintenance = [];
     /* 本机索引缓存（index:<libId>）随库变大，而所有库共用 WebView 那点 localStorage 配额：
-       给一个随时能清的手动出口；写不进去时那条警告里的「清除索引缓存」走的是同一个函数。
-       rightText 只报库数（遍历键名），体积等点开确认框再算，免得展开菜单去读几 MB 的值 */
-    let cacheCount = 0;
-    try { cacheCount = FM.store.indexCacheCount(); } catch (e) {}
+       给一个随时能清的出口，逐库看体积 / 更新时间、单清或全清都在弹窗里（openCacheManager）。
+       菜单不显示库数：数量得遍历键名，且在这里也没有决策价值 */
     maintenance.push({
-      label: '清除索引缓存…', icon: 'broom',
-      rightText: cacheCount ? cacheCount + ' 个库' : '',
-      onClick: clearCacheFlow
+      label: '缓存管理', icon: 'broom',
+      onClick: openCacheManager
     });
     /* 在线更新只在 APK 里有（下载/安装都得壳配合）。状态走右侧小字、不占第二行；
        静默查到新版本后直接改那行字，不用重开菜单 */
@@ -5948,10 +6048,9 @@
   }
 
   /* 资源库行的两段副文案：路径（远程库不暴露真实路径）与规模（专辑/集/占用）。
-     选择弹窗和资源库设置抽屉共用，口径才不会漂 */
+     选择弹窗和资源库设置抽屉共用，口径才不会漂。
+     网盘库不再印「网盘目录 …」：库名后面已经有「网盘」胶囊，副标题只留规模 */
   function libPathText(l) {
-    /* 网盘库没有本地路径：显示网盘内的根目录，便于「分别建库」时区分两条库 */
-    if (l.type === 'alist') return '网盘目录 ' + (l.basePath || '/');
     return (l.fixed || FM.fs.remote) ? '远程资源库' : String(l.path || '').replace(/\\/g, '/');
   }
 
@@ -5972,15 +6071,18 @@
   }
 
   /* 资源库单选行：选中态 / 缺失态 / 规模行都在这里画，弹窗与抽屉复用。
-     库路径是纯文字信息，手机上要能长按复制，所以单独标 .selectable（其余界面文字禁选） */
+     库路径是纯文字信息，手机上要能长按复制，所以单独标 .selectable（其余界面文字禁选）。
+     网盘库：类型胶囊跟在库名后面，不印路径行（网盘目录对用户没意义） */
   function libRowHtml(l) {
     const cur = l.id === FM.fs.activeId;
     const scale = libScaleText(l);
+    const isAlist = l.type === 'alist';
     return '<span class="lib-ico">' + icon(l.missing ? 'moon' : ((l.fixed || FM.fs.remote) ? 'library' : 'folder')) + '</span>' +
-      '<div class="lib-info"><b>' + esc(l.name) + '</b><small class="selectable">' + esc(libPathText(l)) + '</small>' +
+      '<div class="lib-info"><div class="lib-name"><b>' + esc(l.name) + '</b>' +
+      (isAlist ? '<span class="lib-share">网盘</span>' : '') + '</div>' +
+      (isAlist ? '' : '<small class="selectable">' + esc(libPathText(l)) + '</small>') +
       (scale ? '<span class="lib-stats">' + esc(scale) + '</span>' : '') +
-      (l.missing ? '<em>' + (l.type === 'alist' ? '网盘连接未配置，请先配置连接' : '资源库目录不存在，需要重新定位') + '</em>' : '') + '</div>' +
-      (l.type === 'alist' ? '<span class="lib-share">网盘</span>' : '') +
+      (l.missing ? '<em>' + (isAlist ? '网盘连接未配置，请先编辑网盘连接' : '资源库目录不存在，需要重新定位') + '</em>' : '') + '</div>' +
       (l.shared ? '<span class="lib-share">共享</span>' : '') +
       (cur ? '<span class="lib-cur">当前</span>' : '');
   }
@@ -6123,8 +6225,9 @@
         const lt = DIR_MODE_LABEL[lm];
         const modeTitle = '目录结构：' + lt[0] + '（' + lt[1] + '）。点击切换';
         /* 目录自动监听：桌面本地库走「更多」菜单；手机 / 网页端（fixed 库）在行上直接给按钮，
-           否则默认没开 --allow-lib-edit 时那个菜单根本不出现，用户就没法打开监听 */
-        const showWatchBtn = FM.fs.watchSupported && (FM.fs.native || FM.fs.server) &&
+           否则默认没开 --allow-lib-edit 时那个菜单根本不出现，用户就没法打开监听。
+           网盘库是虚拟目录，主机侧没法 chokidar，行上不给这个胶囊 */
+        const showWatchBtn = l.type !== 'alist' && FM.fs.watchSupported && (FM.fs.native || FM.fs.server) &&
           canManageLib() && !l.shared && (FM.android || l.fixed);
         const watchTitle = '目录自动监听：' + (l.watch ? '已开启' : '已关闭') + '。点击' + (l.watch ? '关闭' : '开启');
         row.innerHTML = libRowHtml(l) +
@@ -6136,12 +6239,8 @@
             ? '<button class="lib-mode lib-watch' + (l.watch ? ' on' : '') + '" type="button" title="' + esc(watchTitle) + '">' +
               (l.watch ? '监听中' : '监听关') + '</button>'
             : '') +
-          /* fixed 库没有「更多」菜单，网盘配置按钮始终放在行上，否则没开 --allow-lib-edit 就进不去 */
-          (l.type === 'alist' && canConfigAlist() && !l.shared
-            ? '<button class="lib-mode lib-cfg" type="button" title="配置网盘连接">连接</button>'
-            : '') +
           (l.fixed ? '' : '<button class="icon-btn lib-more" title="更多">' + icon('more') + '</button>');
-        const mode = row.querySelector('.lib-mode:not(.lib-watch):not(.lib-cfg)');
+        const mode = row.querySelector('.lib-mode:not(.lib-watch)');
         if (mode) mode.addEventListener('click', function (e) {
           e.stopPropagation();
           openMenu(e.currentTarget, dirModeItems(l, draw));
@@ -6151,17 +6250,12 @@
           e.stopPropagation();
           toggleWatchFlow(l, draw);
         });
-        const cfg = row.querySelector('.lib-cfg');
-        if (cfg) cfg.addEventListener('click', function (e) {
-          e.stopPropagation();
-          openAlistConfigDialog(l, draw);
-        });
         const more = row.querySelector('.lib-more');
         if (more) more.addEventListener('click', function (e) { e.stopPropagation(); libRowMenu(e.currentTarget, l, draw, handle); });
         row.addEventListener('click', function (e) {
           if (e.target.closest('.lib-more') || e.target.closest('.lib-mode') || cur) return;
           if (l.missing) {
-            toast(l.type === 'alist' ? '网盘连接未配置，请先点「连接」配置' : '资源库目录不存在，请先重新定位', 'warn');
+            toast(l.type === 'alist' ? '网盘连接未配置，请先在「更多」里编辑网盘连接' : '资源库目录不存在，请先重新定位', 'warn');
             return;
           }
           close();
@@ -6185,15 +6279,15 @@
     }
     items.push({ label: '重命名', icon: 'edit', onClick: function () { renameLibFlow(l, redraw); } });
     if (l.type === 'alist' && canConfigAlist() && !l.shared) {
-      items.push({ label: '网盘连接…', icon: 'refresh', onClick: function () { openAlistConfigDialog(l, redraw); } });
+      items.push({ label: '编辑网盘连接…', icon: 'refresh', onClick: function () { openAlistConfigDialog(l, redraw); } });
     }
     if (FM.fs.native) {
       items.push({ label: '重新定位…', icon: 'folder', onClick: function () { relocateFlow(l, redraw); } });
       items.push({ label: '在文件夹中打开', icon: 'folder', onClick: function () { FM.fs.openLib(l.id); } });
     }
     /* 目录自动监听：默认关，按库手动打开；共享来的只读副本不让它替源库做主。
-       纯网页本地目录没有主机侧监听，也不给入口 */
-    if (FM.fs.watchSupported && (FM.fs.native || FM.fs.server) && canManageLib() && !l.fixed) {
+       纯网页本地目录没有主机侧监听，网盘库是虚拟目录也没有，都不给入口 */
+    if (l.type !== 'alist' && FM.fs.watchSupported && (FM.fs.native || FM.fs.server) && canManageLib() && !l.fixed) {
       items.push({
         label: l.watch ? '关闭目录自动监听' : '开启目录自动监听',
         icon: l.watch ? 'check' : 'refresh',
@@ -7059,7 +7153,7 @@
     if (!lib) return;
     if (lib.missing) {
       toast(lib.type === 'alist'
-        ? '「' + lib.name + '」网盘连接未配置，请先点「连接」配置'
+        ? '「' + lib.name + '」网盘连接未配置，请先在「更多」里编辑网盘连接'
         : '「' + lib.name + '」资源库目录不存在，请先重新定位', 'warn');
       openLibDrawer();
       return;
