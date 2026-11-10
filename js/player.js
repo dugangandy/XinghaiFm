@@ -13,7 +13,8 @@
   }
   const LOOPS = ['all', 'one', 'shuffle', 'off'];
   const LOOP_LABEL = { all: '列表循环', one: '单集循环', shuffle: '随机播放', off: '顺序播放' };
-  const LOOP_ICON = { all: 'repeat', one: 'repeat1', shuffle: 'shuffle', off: 'repeat' };
+  /* off（顺序播放）不能复用 repeat：和列表循环同图标，用户看不出区别 */
+  const LOOP_ICON = { all: 'repeat', one: 'repeat1', shuffle: 'shuffle', off: 'order' };
 
   /* 音频走独立的 <audio>：安卓 WebView 里那个 <video> 藏在 display:none 的播放页里，
      暂停后再换源经常起不来（要杀掉 App 才能恢复），桌面 Chrome 没这毛病。

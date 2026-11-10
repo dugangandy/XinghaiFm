@@ -195,10 +195,7 @@ class VideoPlayerActivity : Activity() {
         base = (getSharedPreferences("fm", MODE_PRIVATE).getString("base", "") ?: "").trim().trimEnd('/')
         am = getSystemService(AudioManager::class.java)
         slop = ViewConfiguration.get(this).scaledTouchSlop
-        rate = readRate()
-        scaleMode = getSharedPreferences("fm", MODE_PRIVATE).getInt("videoScale", 1).coerceIn(0, SCALE_NAMES.size - 1)
-        loopOne = getSharedPreferences("fm", MODE_PRIVATE).getBoolean("videoLoop", false)
-        bgAudio = getSharedPreferences("fm", MODE_PRIVATE).getBoolean("videoBgPlay", false)
+        resetPlaybackSettings()
         parseIntent(intent)
         client = OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
@@ -234,18 +231,20 @@ class VideoPlayerActivity : Activity() {
         if (!intent.hasExtra("list")) return
         setIntent(intent)
         parseIntent(intent)
+        /* 换了一条新视频：设置回到默认，别把上一条的倍速/尺寸/循环方式带过来 */
+        resetPlaybackSettings()
+        applyScale(scaleMode)
+        syncSpeedBtn()
         if (tracks.isNotEmpty()) playIndex(index, startFrom(intent), autoplay)
     }
 
-    private fun readRate(): Float {
-        val r = getSharedPreferences("fm", MODE_PRIVATE).getFloat("videoRate", 1f)
-        return snapRate(r)
-    }
-
-    private fun snapRate(r: Float): Float {
-        var best = RATES[0]
-        for (x in RATES) if (abs(x - r) < abs(best - r)) best = x
-        return best
+    /* 每打开一条新视频都从默认状态起播：倍速 1x、原比例、连续播放、后台播放关闭。
+       这四项刻意不落盘，上次调过的设置不该影响下一个视频 */
+    private fun resetPlaybackSettings() {
+        rate = 1f
+        scaleMode = 1
+        loopOne = false
+        bgAudio = false
     }
 
     private fun parseIntent(i: Intent?) {
@@ -274,7 +273,7 @@ class VideoPlayerActivity : Activity() {
 
         /* 画面层：按视频原始宽高比摆放，不再拉伸铺满 */
         videoFrame = AspectLayout(this)
-        applyScale(scaleMode, false)
+        applyScale(scaleMode)
         videoFrame.addView(tex, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         root.addView(videoFrame, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
@@ -640,7 +639,6 @@ class VideoPlayerActivity : Activity() {
     private fun loopRow(): LinearLayout =
         chipGridRow("播放方式", LOOP_NAMES, { if (loopOne) 1 else 0 }) { i ->
             loopOne = i == 1
-            getSharedPreferences("fm", MODE_PRIVATE).edit().putBoolean("videoLoop", loopOne).apply()
             showHud(LOOP_NAMES[i]); hideHudSoon()
         }
 
@@ -675,7 +673,6 @@ class VideoPlayerActivity : Activity() {
             setPadding(0, 0, 0, 0)
             setOnCheckedChangeListener { _, on ->
                 bgAudio = on
-                getSharedPreferences("fm", MODE_PRIVATE).edit().putBoolean("videoBgPlay", on).apply()
                 player?.setWakeMode(if (on) C.WAKE_MODE_NETWORK else C.WAKE_MODE_NONE)
                 showHud(if (on) "后台自动播放已开启" else "后台自动播放已关闭")
                 hideHudSoon()
@@ -767,7 +764,7 @@ class VideoPlayerActivity : Activity() {
 
     /* 画面尺寸：满屏拉伸；原比例按片源；固定比例把画面拉伸进该比例的框里
      * 「满屏」只在横屏全屏下算数：竖屏拉伸会把人像片拉成一整屏变形，按原比例留黑边 */
-    private fun applyScale(i: Int, save: Boolean = true) {
+    private fun applyScale(i: Int) {
         scaleMode = i.coerceIn(0, SCALE_NAMES.size - 1)
         videoFrame.stretch = scaleMode == 0 && isFullscreen
         videoFrame.fixedRatio = when (scaleMode) {
@@ -775,7 +772,6 @@ class VideoPlayerActivity : Activity() {
             3 -> 16f / 9f
             else -> 0f
         }
-        if (save) getSharedPreferences("fm", MODE_PRIVATE).edit().putInt("videoScale", scaleMode).apply()
     }
 
     /* 选集：竖屏从底部弹（0.6 屏高，主流播放器的手感），横屏仍从右侧抽屉滑出 */
@@ -1030,7 +1026,6 @@ class VideoPlayerActivity : Activity() {
         rate = r
         player?.setPlaybackSpeed(r)
         syncSpeedBtn()
-        getSharedPreferences("fm", MODE_PRIVATE).edit().putFloat("videoRate", r).apply()
     }
 
     private fun fmtRate(r: Float): String {
@@ -1212,7 +1207,7 @@ class VideoPlayerActivity : Activity() {
         requestedOrientation = if (on) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         if (on) goImmersive() else exitImmersive()
-        applyScale(scaleMode, false)        /* 满屏只在横屏生效，转屏后重算画面尺寸 */
+        applyScale(scaleMode)               /* 满屏只在横屏生效，转屏后重算画面尺寸 */
         layoutControlRows()                 /* 竖屏收小一档、横屏正常尺寸 */
         fullscreenBtn.setImageResource(if (on) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
         fullscreenBtn.contentDescription = if (on) "退出全屏" else "全屏"

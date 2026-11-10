@@ -1134,12 +1134,16 @@
   }
 
   /* ── 分类 CRUD（都只影响当前库） ── */
+  /* 分类默认按名称字母序（中文按拼音）排：建的时间先后对用户没意义，按名字排才好找。
+     order 字段只留着同步时兜底，不再决定展示顺序 */
   function cats() {
     let list = ensureCats();
     /* 平铺模式不展示「目录分类」（d 前缀）：那是按目录分两级时自动建的，
        切回平铺后没有专辑会挂上去，留着点进去就是空的 */
     if (!dirGroupMode) list = list.filter(function (c) { return String(c.id).charAt(0) !== 'd'; });
-    return list.slice().sort((a, b) => a.order - b.order);
+    return list.slice().sort(function (a, b) {
+      return U.naturalCompare(a.name || '', b.name || '') || (a.order || 0) - (b.order || 0);
+    });
   }
 
   function addCat(name, color) {
