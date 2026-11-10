@@ -46,8 +46,12 @@
   let prepareRel = '';    // 正在等的是哪条文件：同一集重载时复用它，别杀刚转了一半的任务
   let pausedAt = 0;       // 上次暂停的时刻，用来判断恢复时要不要回退
   let pausedTrackId = null;
-  /* 后台里暂停超过这么久，恢复播放前把数据源重挂一次：安卓 WebView 长时间空闲后
-     音频输出可能已经被系统拆掉，play() 照样推进进度却没有声音 */
+  /* 这次暂停发生时页面在不在前台：后台/失焦时的暂停基本都是被打断（来电、别的 App
+     抢音频焦点、拔耳机、锁屏），不是用户在界面上按的，恢复时要重建音频输出（见 needsRearm） */
+  let pausedAway = false;
+  /* 安卓壳里恢复播放前把数据源重挂一次：WebView 长时间空闲后音频输出可能已经被系统拆掉，
+     play() 照样推进进度却没有声音。这个阈值只留给桌面/浏览器——那边没这毛病，
+     不必每次恢复都白拉一遍源；壳里按「是否被打断」判断，不看停了几秒 */
   const REARM_AFTER = 5 * 60 * 1000;
   /* 回到前台后的这段时间内恢复也算：坏掉的是音频输出，用户往往是先切回 App 再点播放键 */
   const REARM_GRACE = 2 * 60 * 1000;
@@ -204,7 +208,7 @@
     const my = ++loadToken;
     if (cur && cur.id !== track.id) saveProgress(true);   // 换集前先把旧集落盘
     mediaTrackId = null;                                   // 过渡期的 pause/emptied 一律不算
-    pausedAt = 0; pausedTrackId = null;                    // 换集不触发自动回退
+    pausedAt = 0; pausedTrackId = null; pausedAway = false; // 换集不触发自动回退
     cur = track;
     /* 壳内视频：整条队列交给原生播放器，网页不碰 <video> */
     if (track.kind === 'video' && FM.android) {
@@ -378,7 +382,7 @@
     /* 切库/清空时把还在排队的转码也撤掉：资源库都换了，转出来的文件没人要 */
     if (prepareCtrl) { try { prepareCtrl.abort(); } catch (e) {} prepareCtrl = null; prepareRel = ''; }
     mediaTrackId = null;
-    pausedAt = 0; pausedTrackId = null;
+    pausedAt = 0; pausedTrackId = null; pausedAway = false;
     eachEl(stopEl);
     queue = [];
     index = -1;
@@ -388,36 +392,52 @@
   }
 
   /* ── 播放控制 ── */
-  /* 长时间后台暂停后恢复播放：安卓壳里 Chromium 可能已经把音频输出拆掉了，
+  /* 被打断之后恢复播放：安卓壳里 Chromium 的音频输出可能已经被拆掉了，
      play() 照样落地、进度照走、通知栏也显示在播，但一点声音都没有。
      网页层拿不到「是否真的出声」（壳里 WebAudio 是禁用的），只能先重挂一次数据源，
-     让解码/输出管线重建；短暂停不走这条路，不折腾。
-     返回 false 表示期间用户切了集 / 按了暂停，调用方别再硬起播。
-     重挂失败（源失效、拿不到元数据）不拦播放：返回 true，让原来的 play() 自己去报错。 */
+     让解码/输出管线重建。
+     返回 false = 这次别再由调用方起播：期间用户切了集 / 按了暂停，或者原地重挂失败、
+     已经改成整条重新载入（load 自己会接着播）。 */
   async function rearm(el, my, at) {
+    const pos = el.currentTime || 0;
+    const r0 = el.playbackRate;
+    let ok = false;
     try {
-      const pos = el.currentTime || 0;
-      const r0 = el.playbackRate;
       el.load();
       await once(el, 'loadedmetadata');
-      if (my !== loadToken || el !== media || pausedAt !== at) return false;
-      /* 元数据没到（超时/源失效）：别硬 seek，也别改倍速，交给 play() */
-      if (el.readyState < 1) return true;
-      const d = el.duration;
-      const to = (isFinite(d) && d > 0) ? Math.min(pos, Math.max(0, d - 0.5)) : pos;
-      if (to > 0) { try { el.currentTime = to; } catch (e) {} }
-      el.playbackRate = r0;
-      ev.emit('time', el.currentTime, isFinite(d) ? d : 0);
-      return true;
+      ok = el.readyState >= 1;
     } catch (e) {
-      return true;
+      ok = false;
     }
+    /* 期间用户切了集 / 按了暂停：这次恢复作废，别再去拉源、也别硬起播 */
+    if (my !== loadToken || el !== media || pausedAt !== at) return false;
+    /* 元数据没到（超时/源失效）：别拿着死管线硬起播，改成完整重载一次 ——
+       顺便让 FM.fs.src 重新签一遍地址（后台停久了签名 URL 可能已经过期） */
+    if (!ok) { reloadAt(pos); return false; }
+    const d = el.duration;
+    const to = (isFinite(d) && d > 0) ? Math.min(pos, Math.max(0, d - 0.5)) : pos;
+    if (to > 0) { try { el.currentTime = to; } catch (e) {} }
+    el.playbackRate = r0;
+    ev.emit('time', el.currentTime, isFinite(d) ? d : 0);
+    return true;
   }
 
-  /* 这次恢复要不要重挂数据源：同一条内容、停够久，且「现在在后台」或「刚回到前台不久」
-     —— 坏掉的是音频输出，用户经常是先切回 App 再点播放键，只认 document.hidden 会漏掉这条 */
+  /* 原地重挂失败时的兜底：整条重新载入。会重新走一次 FM.fs.src（拿到新地址），
+     位置沿用重挂前的那一处；restored: true 让界面别把视频播放页又弹开 */
+  function reloadAt(pos) {
+    if (!cur) return;
+    load(cur, { seek: pos, autoplay: true, restored: true });
+  }
+
+  /* 这次恢复要不要重挂数据源。判据是「这次暂停是不是被打断的」，不是「停了多久」：
+     来电、别人放语音、拔耳机这类打断常常只有几秒到几十秒，用时间阈值只会把真正
+     要修的情况挡在外面（短打断后恢复 = 进度在走、一点声音都没有）。
+       页面还在后台时恢复：通知栏 / 锁屏 / 耳机键都在这个时候按下，一律重挂；
+       暂停发生在后台或失焦时：系统打断，切回 App 再点播放键同样要重挂。
+     桌面/浏览器没有这个毛病，仍按原来的长时间暂停判断，不白拉一遍源。 */
   function needsRearm() {
-    if (rearming || !pausedAt || !cur || pausedTrackId !== cur.id) return false;
+    if (rearming || !media.paused || !pausedAt || !cur || pausedTrackId !== cur.id) return false;
+    if (window.fmAndroid && (document.hidden || pausedAway)) return true;
     if (Date.now() - pausedAt < REARM_AFTER) return false;
     return document.hidden || (Date.now() - visibleAt < REARM_GRACE);
   }
@@ -474,7 +494,7 @@
     media.currentTime = U.clamp(t, 0, media.duration || 0);
     ev.emit('time', media.currentTime, media.duration);
     saveProgress(true, false);   // 拖动后立刻落盘；远程仍按 10 秒节流，别按一下推一次
-    pausedAt = 0; pausedTrackId = null;   // 用户自己选的位置，恢复时别再回退
+    pausedAt = 0; pausedTrackId = null; pausedAway = false;   // 用户自己选的位置，恢复时别再回退
   }
 
   function seekRatio(r) {
@@ -907,8 +927,12 @@
       if (el !== media) return;
       restoreVolume();
       pauseSleepClock();
-      ev.emit('state', false);
+      /* 暂停时页面已经不在前台（切后台 / 锁屏 / 来电盖上来）= 被打断，
+         恢复时音频输出可能已经没了，要重挂数据源（见 needsRearm）。
+         用户在界面上按的暂停有焦点，不会命中这条。 */
+      pausedAway = document.hidden || !document.hasFocus();
       pausedAt = Date.now(); pausedTrackId = cur ? cur.id : null;
+      ev.emit('state', false);
       saveProgress(true);
     });
     el.addEventListener('ended', function () {

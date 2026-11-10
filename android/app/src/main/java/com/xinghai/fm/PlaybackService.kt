@@ -120,6 +120,10 @@ class PlaybackService : Service() {
 
     val isPlaying: Boolean get() = playing
 
+    /* 通知栏上这条还有没有可接着播的内容。MainActivity.leave 据此决定返回键是
+       退到后台还是真退出：界面一拆，通知栏的播放键就没有执行通道了（见 act） */
+    val hasTrack: Boolean get() = title.isNotEmpty()
+
     private val noisy = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
             if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY && playing) {

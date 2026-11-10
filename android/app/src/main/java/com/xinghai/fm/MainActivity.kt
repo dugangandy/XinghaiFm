@@ -493,13 +493,17 @@ class MainActivity : Activity() {
     }
 
     /* 最后一次返回：
-     *   正在播放 → 退回后台继续播（服务与通知栏都留着，点通知直接回来）
-     *   没在播放 → 再按一次退出
-     * 以前这里一律 finish：finish 会停前台服务（通知没了），但 WebView 里的媒体还在渲染进程里出声，
-     * 于是变成「有声音、没入口」，既控制不了也回不来。 */
+     *   通知栏上还有这一集（播放中，或被打断后停在暂停）→ 退回后台，界面留着
+     *   什么都没有（刚启动、没播过） → 再按一次退出
+     * 以前只有「正在播放」才留：暂停态 finish 之后服务与通知栏还在，但网页和 JS 桥
+     * 都拆了，通知栏的播放键只能走「先把指令存起来、再从 Service 起 Activity」——
+     * 后半句会被 10+ 的后台启动限制静默拒绝（见 OpenActivity 注释），
+     * 表现就是「点了播放没反应、也不出声，进 App 才恢复」。
+     * 所以只要通知栏还有可接着播的内容，就保留界面这条执行通道。
+     * 真要退出：从最近任务里划掉（PlaybackService.onTaskRemoved 会把服务和通知一起收掉）。 */
     private fun leave() {
         val svc = PlaybackService.current
-        if (svc != null && svc.isPlaying) {
+        if (svc != null && svc.hasTrack) {
             /* 通知被系统关掉时「后台继续播」照样是有声音没入口：这种就直接停播退出 */
             if (notificationsBlocked()) {
                 web?.evaluateJavascript("window.FM && FM.player && FM.player.pause && FM.player.pause()", null)
@@ -507,6 +511,9 @@ class MainActivity : Activity() {
                 finish()
                 return
             }
+            /* 暂停态的返回键以前是「再按一次退出」，现在只退到后台：
+               给一句提示，别让人以为返回没生效 */
+            if (!svc.isPlaying) toast(Msg.BG_KEEP_PLAYER)
             moveTaskToBack(true)
             return
         }
