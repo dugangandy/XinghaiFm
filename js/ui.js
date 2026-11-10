@@ -3621,14 +3621,11 @@
           U.el('div', { class: 'cover-cand-pic' }, [
             U.el('img', { src: c.url, alt: '', referrerpolicy: 'no-referrer' })
           ]),
-          U.el('span', {
-            class: 'cover-cand-src',
-            text: c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马'
-          }),
+          U.el('span', { class: 'cover-cand-src', text: coverSrcLabel(c.source) }),
           U.el('div', { class: 'cover-cand-title', text: c.title || '' })
         ]);
         cell.addEventListener('click', function () {
-          pending = { kind: 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' };
+          pending = { kind: c.source || 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' };
           deleteMode = false;
           preview.src = c.url;
           preview.style.display = 'block';
@@ -3714,12 +3711,15 @@
 
   /* ── 专辑管理：批量补封面 ──────────────────────────────────────
    * 只处理「当前资源库里还没有封面」的专辑。一键抓取时：
-   *   - 喜马拉雅候选相似度 ≥ AUTO_COVER_SCORE：直接写入（几乎同名才敢自动替换）
+   *   - 帆书官方 / 喜马拉雅候选相似度 ≥ AUTO_COVER_SCORE：直接写入（几乎同名才敢自动替换）
    *   - 其余：把候选图摆出来，用户点选后点「保存」才批量写入
    * 未选择的专辑一张都不写，这是需求的硬约束。
    * 搜索复用 FM.covers.search（网页端 /api/covers/search、桌面端 IPC），
    * 写入走 FM.covers.saveOne / saveMany —— 后者批量期间只刷新一次索引。 */
-  const AUTO_COVER_SCORE = 0.9;    /* 自动替换阈值：宁缺勿滥，只信几乎完全同名的喜马拉雅结果 */
+  const COVER_SRC_LABEL = { fanshu: '帆书', douban: '豆瓣', xmly: '喜马', geekbang: '极客', baidu: '百度' };
+  function coverSrcLabel(src) { return COVER_SRC_LABEL[src] || '喜马'; }
+
+  const AUTO_COVER_SCORE = 0.9;    /* 自动替换阈值：宁缺勿滥，只信几乎完全同名的帆书/喜马拉雅结果 */
   const COVER_WORKERS = 3;         /* 并发数：喜马拉雅对高频请求敏感，3 路够快也不容易被拦 */
   const COVER_PICK_MAX = 6;        /* 每行最多摆几张候选 */
   const COVER_PAGE_SIZE = 20;      /* 每页 20 条；一键抓取只处理当前页，避免一口气打几百个请求 */
@@ -3833,7 +3833,7 @@
       extra = '<div class="am-cands">' + '<i class="am-sk"></i><i class="am-sk"></i><i class="am-sk"></i>' + '</div>';
     } else if (r.status === 'pick' && r.cands.length) {
       extra = '<div class="am-cands">' + r.cands.map(function (c, i) {
-        const src = c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马';
+        const src = coverSrcLabel(c.source);
         /* 卡片本身点一下是选中；右下角的放大镜单独打开大图，用来确认这张到底合不合适 */
         return '<div class="am-cand' + (r.picked === i ? ' on' : '') + '"' +
           ' data-act="cover-pick" data-id="' + esc(r.albumId) + '" data-c="' + i + '"' +
@@ -3904,13 +3904,18 @@
     try { list = await FM.covers.search(a.title || row.title, { limit: COVER_PICK_MAX, page: 0 }); } catch (e) { list = []; }
     if (job.cancel) { row.status = 'pending'; paintCoverRow(row); return; }
     const cands = (list || []).filter(function (c) { return c && c.url; });
-    /* 只有喜马拉雅来源才允许自动写入：极客/百度是按词搜出来的图，标题对不上也不能信 */
-    const best = cands.slice()
-      .sort(function (x, y) { return (Number(y.score) || 0) - (Number(x.score) || 0); })
-      .find(function (c) { return c.source === 'xmly' && Number(c.score) >= AUTO_COVER_SCORE; });
+    /* 只有帆书官方和喜马拉雅才允许自动写入：极客/豆瓣/百度是按词搜出来的图，标题对不上也不能信 */
+    const autoSrc = { fanshu: 1, xmly: 1 };
+    const best = cands.filter(function (c) {
+      return autoSrc[c.source] && Number(c.score) >= AUTO_COVER_SCORE;
+    }).sort(function (x, y) {
+      /* 同分时官方优先：樊登/帆书库要的就是官方那张 */
+      return (y.source === 'fanshu' ? 1 : 0) - (x.source === 'fanshu' ? 1 : 0)
+        || (Number(y.score) || 0) - (Number(x.score) || 0);
+    })[0];
     if (best) {
       const res = await FM.covers.saveOne(a, {
-        kind: 'xmly', url: best.url, albumId: best.id, title: best.title, source: 'xmly'
+        kind: best.source, url: best.url, albumId: best.id, title: best.title, source: best.source
       });
       if (res.ok) {
         row.status = 'auto';
@@ -4076,7 +4081,7 @@
       const c = cands[cur] || {};
       img.src = c.url || '';
       titleEl.textContent = c.title || row.title || '';
-      srcEl.textContent = (c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马') +
+      srcEl.textContent = coverSrcLabel(c.source) +
         (c.score ? ' · ' + Number(c.score).toFixed(2) : '');
       prevBtn.disabled = cur <= 0;
       nextBtn.disabled = cur >= cands.length - 1;
@@ -4119,7 +4124,7 @@
       const c = r.cands[r.picked];
       items.push({
         row: r, album: a,
-        payload: { kind: 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' }
+        payload: { kind: c.source || 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' }
       });
     });
     if (!items.length) { toast('这些专辑已不在资源库里了', 'warn'); return; }
@@ -4227,7 +4232,7 @@
         '<div class="am-head-txt">' +
           '<h1 class="am-title">专辑管理</h1>' +
           '<p class="am-desc">这里只列还没有封面的专辑，每页 ' + COVER_PAGE_SIZE +
-            ' 条。一键抓取只处理当前页：喜马拉雅相似度 ≥ ' + AUTO_COVER_SCORE +
+            ' 条。一键抓取只处理当前页：帆书官方/喜马拉雅相似度 ≥ ' + AUTO_COVER_SCORE +
             ' 的自动写入，其余挑一张再保存，未选中的不会写入。</p>' +
         '</div>' +
         '<button class="btn ' + (job.running ? 'btn-ghost am-stop' : 'btn-primary') + '"' +
