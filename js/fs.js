@@ -834,18 +834,10 @@
   function applyMeta(data) {
     if (!data || data.empty) return false;
     let touched = false;
-    if (activeId) {
+    if (data.catsManual !== undefined && activeId) {
       const manualKey = 'catsManual:' + activeId;
       const manual = !!FM.store.read(manualKey, false);
-      let incoming = data.catsManual === undefined ? manual : !!data.catsManual;
-      /* Older servers return ordered cats but don't include catsManual yet. A non-alphabetical
-         snapshot is evidence that the saved positions are intentional, not creation order. */
-      if (data.catsManual === undefined && Array.isArray(data.cats) && data.cats.length > 1) {
-        const byName = data.cats.slice().sort(function (a, b) {
-          return U.naturalCompare(a.name || '', b.name || '') || (Number(a.order) || 0) - (Number(b.order) || 0);
-        });
-        incoming = incoming || data.cats.some(function (c, i) { return c.id !== byName[i].id; });
-      }
+      const incoming = !!data.catsManual;
       if (incoming !== manual) {
         FM.store.write(manualKey, incoming);
         FM.store.touch(manualKey);
@@ -1733,16 +1725,17 @@
       if (!res.ok) {
         let txt = '';
         try { txt = (await res.text()).trim(); } catch (e) {}
+        let structured = null;
+        try { structured = JSON.parse(txt); } catch (e) {}
+        const alistError = structured && structured.error;
+        /* /api/prepare 的网盘取链失败是结构化错误；404 也可能表示扫描快照已过期。
+           这类错误不能退到浏览器 WASM：Worker 仍要 fetch 同一条无 CORS 直链。 */
+        if (alistError && alistError.code) {
+          throw tcError('alist-failed', alistError.message || '网盘播放失败');
+        }
         /* 501 = 服务器上没装 ffmpeg；429 = 切集太快被限流（一秒 5 次）。
            这两种都不是「文件坏了」，文案要分开，别让用户去查文件 */
         if (res.status === 429) throw tcError('busy', txt);
-        /* 网盘库 502：凭据失效 / 没配置 / 直链拿不到。这类错误不能退到 WASM 再失败
-           一遍（它同样要取直链），直接把网盘那边的结论抛给界面 */
-        if (res.status === 502) {
-          let msg = '';
-          try { msg = ((JSON.parse(txt) || {}).error || {}).message || ''; } catch (e) {}
-          throw tcError('alist-failed', msg || '网盘取链失败');
-        }
         throw tcError(res.status === 501 ? 'no-ffmpeg' : (/^(ffmpeg-failed|bad-format)$/.test(txt) ? txt : 'ffmpeg-failed'), txt);
       }
       const data = await res.json();
