@@ -11,18 +11,26 @@
      值就是目标容器。 */
   const NEEDS_TC = { flv: 'mp4' };
 
+  /* 客户端 WASM 转码能救的格式：浏览器解不了，但前端自己解码 + 重编码成 mp3，
+     经 MSE 边转边播（首块就能出声），转完写本地缓存（见 js/wma.js）。 */
+  const CLIENT_TC = { wma: 1 };
+
   /* 能扫进来、但不做播放支持的格式：点了直接提示「不支持的文件格式」。
-     ape / wv / wma 全靠 ffmpeg 转 mp3 才能播，但一张整轨 ape 要转近一分钟、
-     一集 wma 有声书也要几十秒，等起来比报错更难受，所以只保留在列表里
-     （时长照常显示），点播放明确告诉你换格式。 */
-  const UNSUPPORTED = { wma: 1, ape: 1, wv: 1 };
+     ape / wv 缺少成熟的 WASM 解码器（同一套机制后续可以补），
+     所以只保留在列表里（时长照常显示），点播放明确告诉你换格式。 */
+  const UNSUPPORTED = { ape: 1, wv: 1 };
 
   function isVideo(ext) {
     return !!VIDEO[String(ext || '').toLowerCase()];
   }
 
   function needsTranscode(ext) {
-    return !!NEEDS_TC[String(ext || '').toLowerCase()];
+    const e = String(ext || '').toLowerCase();
+    return !!NEEDS_TC[e] || !!CLIENT_TC[e];
+  }
+
+  function clientTranscode(ext) {
+    return !!CLIENT_TC[String(ext || '').toLowerCase()];
   }
 
   function unsupported(ext) {
@@ -34,9 +42,11 @@
     AUDIO,
     ALL: Object.assign({}, AUDIO, VIDEO),
     NEEDS_TC,
+    CLIENT_TC,
     UNSUPPORTED,
     isVideo,
     needsTranscode,
+    clientTranscode,
     unsupported,
     kindOf: ext => (isVideo(ext) ? 'video' : 'audio')
   };

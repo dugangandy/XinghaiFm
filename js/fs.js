@@ -1678,6 +1678,21 @@
     if (!FM.media.needsTranscode(extOf(rel))) return null;
     const signal = opts && opts.signal;
     if (signal && signal.aborted) throw tcError('aborted');
+
+    /* 客户端转码（目前是 wma → mp3，走 MSE 边转边播）：解码和编码都在浏览器里做，
+       服务器只按 Range 发原始字节，不占 CPU 也不落转码文件。
+       不成就继续往下走服务端/主进程的 ffmpeg，别让用户彻底播不了。 */
+    if (FM.wma && FM.media.clientTranscode && FM.media.clientTranscode(extOf(rel))) {
+      try {
+        return await FM.wma.ensure(rel, {
+          signal: signal,
+          onProgress: opts && opts.onProgress
+        });
+      } catch (e) {
+        if (e && e.code === 'aborted') throw e;
+        console.warn('[wma] 客户端转码失败，退回 ffmpeg：' + ((e && e.message) || e));
+      }
+    }
     if (mode === 'desktop' && window.fmNative && window.fmNative.prepare) {
       /* IPC 本身没法取消，只能带个 id 过去：切集时再发一条 cancel 让主进程停掉 ffmpeg */
       const id = 'tc' + (++tcSeq);
@@ -1748,8 +1763,9 @@
     /* 需要转码的格式只在显式要求时才转：ui.js 的时长探测也会调 src()，
        默认转码会让「打开一张 wma 专辑」并发转几十集。网盘库没有本地文件可转，直接拦掉。 */
     if (!isAlist && opts && opts.prepare) {
-      const tc = await prepare(rel, { signal: opts.signal });
-      if (tc && tc.url) return { url: tc.url, revoke: null, transcoded: true };
+      const tc = await prepare(rel, { signal: opts.signal, onProgress: opts.onProgress });
+      /* mse 标记要透传：MediaSource 的地址不能被元素二次 load，播放器得区别对待 */
+      if (tc && tc.url) return { url: tc.url, revoke: null, transcoded: true, mse: !!tc.mse };
     }
     /* 安卓壳：已下载的曲目优先播本机 127.0.0.1 文件，不直连服务器、不耗流量。
        local 标记给播放器用：这个地址相对页面是跨源的，且小服务不返回 ACAO，

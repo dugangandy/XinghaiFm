@@ -129,7 +129,8 @@ const MIME = {
   '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2'
+  '.woff2': 'font/woff2',
+  '.wasm': 'application/wasm'
 };
 
 /* ── 音频流：Range 直读磁盘，避免把整本有声书读进内存 ──

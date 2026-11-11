@@ -506,6 +506,7 @@ const MIME = {
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  '.wasm': 'application/wasm',
   '.mp3': 'audio/mpeg',
   '.m4a': 'audio/mp4',
   '.m4b': 'audio/mp4',
@@ -554,11 +555,14 @@ function gzipOf(buf) {
    图片额外放行 data/blob 与封面候选的外链，媒体放行 blob 和 APK 里的本机 127.0.0.1 */
 const CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  /* wasm-unsafe-eval：客户端转码要编译 wma/ogg 的 WebAssembly 模块。
+     只放开 wasm，不动 'unsafe-eval' 本身。 */
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https: http:",
   "media-src 'self' blob: data: http://127.0.0.1:*",
   "connect-src 'self' http://127.0.0.1:*",
+  "worker-src 'self'",
   "font-src 'self'",
   "object-src 'none'",
   "frame-ancestors 'none'",

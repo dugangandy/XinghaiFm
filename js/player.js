@@ -37,6 +37,9 @@
   let cur = null;
   let objectUrl = null;
   let objectRevoke = null;
+  /* 当前源是不是 MediaSource（客户端转码的 wma）：这种地址被元素 load 过一次之后
+     就不能再 load 了，Chrome 直接判 MEDIA_ERR_SRC_NOT_SUPPORTED */
+  let mediaMse = false;
   let kind = 'audio';          // 当前这一集是音频还是视频
   let loadToken = 0;
   let saveAt = 0;
@@ -287,7 +290,15 @@
         ev.emit('preparing', null);
       }
       try {
-        s = await FM.fs.src(track.rel, { prepare: true, signal: prepareCtrl ? prepareCtrl.signal : undefined });
+        s = await FM.fs.src(track.rel, {
+          prepare: true,
+          signal: prepareCtrl ? prepareCtrl.signal : undefined,
+          /* 客户端转码要几十秒：把进度喂给过渡层的百分比文案 */
+          onProgress: function (p) {
+            if (my !== loadToken) return;
+            ev.emit('tcProgress', { pct: Math.round((Number(p) || 0) * 100), track: track });
+          }
+        });
       } finally {
         /* 切集了就别再关别人的加载态：只有当前这次载入负责收尾 */
         if (needTc && my === loadToken) {
@@ -309,27 +320,35 @@
          这种情况改用 <video> 播同一个文件，保留原生输出（频谱这部分降级）。 */
       if (noCors && want === audioEl && FM.viz && FM.viz.taken && FM.viz.taken(audioEl)) want = videoEl;
       if (want !== el) { stopEl(el); media = el = want; }
-      if (objectRevoke) { objectRevoke(); objectRevoke = null; }
+      /* 同一个地址又来了（重复点同一集 / 恢复播放）：别再来一遍 src + load。
+         普通 URL 会被打断重新缓冲；MediaSource 的地址更严重 —— 同一个 MediaSource
+         二次 load 会被 Chrome 判 MEDIA_ERR_SRC_NOT_SUPPORTED。 */
+      const reuse = !!(objectUrl && objectUrl === s.url && el === media &&
+        el.readyState >= 1 && !el.error);
+      if (!reuse && objectRevoke) { objectRevoke(); objectRevoke = null; }
       objectUrl = s.url;
       objectRevoke = s.revoke;
-      /* 远程库的媒体是跨源的：不声明 CORS，WebAudio 的 MediaElementSource 会把采样全输出 0（进度条走、没声音）。
-         noCors 的源（网盘直链、本机已下载文件）上游/小服务都没有 ACAO 头，声明 anonymous
-         会直接加载失败，这里强制不声明（null 是「移除属性」；空串反而是 anonymous）；
-         同时打标记，viz 接手前会跳过这个元素。 */
-      if (noCors) {
-        el.removeAttribute('crossorigin');
-        el.dataset.fmNoCors = '1';
-      } else {
-        el.crossOrigin = FM.fs.remote ? 'anonymous' : '';
-        delete el.dataset.fmNoCors;
+      mediaMse = !!s.mse;
+      if (!reuse) {
+        /* 远程库的媒体是跨源的：不声明 CORS，WebAudio 的 MediaElementSource 会把采样全输出 0（进度条走、没声音）。
+           noCors 的源（网盘直链、本机已下载文件）上游/小服务都没有 ACAO 头，声明 anonymous
+           会直接加载失败，这里强制不声明（null 是「移除属性」；空串反而是 anonymous）；
+           同时打标记，viz 接手前会跳过这个元素。 */
+        if (noCors) {
+          el.removeAttribute('crossorigin');
+          el.dataset.fmNoCors = '1';
+        } else {
+          el.crossOrigin = FM.fs.remote ? 'anonymous' : '';
+          delete el.dataset.fmNoCors;
+        }
+        el.src = objectUrl;
+        el.playbackRate = rate;
+        el.volume = volume;
+        el.muted = muted;
+        el.load();
+        await once(el, 'loadedmetadata');
+        if (my !== loadToken) return;
       }
-      el.src = objectUrl;
-      el.playbackRate = rate;
-      el.volume = volume;
-      el.muted = muted;
-      el.load();
-      await once(el, 'loadedmetadata');
-      if (my !== loadToken) return;
       ev.emit('loading', false);
       /* 扩展名说是视频、实际只有音轨（或者反过来）时以真实轨道为准。
          asAudio 时用的一定是 <audio>，videoWidth 恒为 0，别拿它把 kind 改掉。 */
@@ -363,6 +382,9 @@
     setTimeout(function () {
       if (my !== loadToken || !cur) return;
       if (!el.paused || el.error || el.readyState >= 2) return;
+      /* MediaSource 的地址 load 一次就废了：这里重挂只会把刚建好的管线打坏，
+         慢网络下还不如让它继续等（首块 0.6 秒，真卡住用户会自己重试） */
+      if (mediaMse) return;
       try { el.load(); el.play(); } catch (e) {}
     }, 2000);
   }
@@ -408,6 +430,9 @@
     const pos = el.currentTime || 0;
     const r0 = el.playbackRate;
     let ok = false;
+    /* MediaSource 的地址 el.load() 之后就废了（Chrome 直接 error 4），只能整条
+       重新载入：这时 FM.fs.src 会命中刚转好的整段缓存，秒开且能任意 seek */
+    if (mediaMse) { reloadAt(pos); return false; }
     try {
       el.load();
       await once(el, 'loadedmetadata');
