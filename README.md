@@ -176,7 +176,7 @@ fm/
 ├─ build/              应用图标与启动图
 ├─ dist/               打包产物
 ├─ 启动.bat            浏览器模式的本地服务器
-├─ 启动-公网.bat        服务器模式 + SSH 反向隧道（读 .tunnel.json）
+├─ 启动-公网.command   服务器模式 + SSH 反向隧道（读 .tunnel.json）
 └─ README.md
 ```
 
@@ -238,7 +238,7 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 
    打开 `http://127.0.0.1:8080/`，用用户名 + 密码登录后进资源库。
 
-3. **挂到公网**：把 `.tunnel.example.json` 复制成 `.tunnel.json`，填 `ssh.host`（`ssh.key` 留空用 `~/.ssh/id_rsa`），双击 `启动-公网.bat`：
+3. **挂到公网**：把 `.tunnel.example.json` 复制成 `.tunnel.json`，填 `ssh.host`（`ssh.key` 留空用 `~/.ssh/id_rsa`），双击 `启动-公网.command`：
 
    ```
    清理服务器上残留的 8889 监听…
@@ -327,7 +327,7 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 | `fm.db` | `%APPDATA%\星海FM\`（macOS：`~/Library/Application Support/星海FM/`） | SQLite：用户 / 资源库 / 远程配置 | 删了要重新 `node tools/init-db.js`（音频不受影响） |
 | `.fm-meta.json` | 每个资源库目录内 | 分类 / 改名 + 进度 / 时长 | 删了会重建，远程端暂时看不到分类 |
 | `.fm-covers/covers.json` | 每个资源库目录内 | 封面索引 | 删了只是没封面 |
-| `.tunnel.json` | 项目根目录 | 公网隧道配置 | 删了 `启动-公网.bat` 会提示缺配置 |
+| `.tunnel.json` | 项目根目录 | 公网隧道配置 | 删了 `启动-公网.command` 会提示缺配置 |
 
 桌面版 LocalStorage 在 `%APPDATA%\星海FM\Local Storage\leveldb`，是分类 / 进度 / 索引缓存的主副本，不用手工改；收藏在 `fm.db`。
 
@@ -367,7 +367,7 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 
 环境变量 `FM_DATA_FILE`：把数据库文件指到别处（默认 `%APPDATA%\星海FM\fm.db`），测试或多实例时用。
 
-`启动-公网.bat` 自动拼 `<localPort> --host 127.0.0.1 [--config <file>]`，再按 `.tunnel.json` 决定是否加 `--allow-lib-edit`。
+`启动-公网.command` 自动拼 `<localPort> --host 127.0.0.1 [--config <file>]`，再按 `.tunnel.json` 决定是否加 `--allow-lib-edit`。
 
 ### `tools/tunnel.js` 参数
 
