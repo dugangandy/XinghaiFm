@@ -1680,8 +1680,7 @@
     if (signal && signal.aborted) throw tcError('aborted');
 
     /* 客户端转码（目前是 wma → mp3，走 MSE 边转边播）：解码和编码都在浏览器里做，
-       服务器只按 Range 发原始字节，不占 CPU 也不落转码文件。
-       不成就继续往下走服务端/主进程的 ffmpeg，别让用户彻底播不了。 */
+       服务器只按 Range 发原始字节，不占 CPU 也不落转码文件。 */
     if (FM.wma && FM.media.clientTranscode && FM.media.clientTranscode(extOf(rel))) {
       try {
         return await FM.wma.ensure(rel, {
@@ -1690,7 +1689,12 @@
         });
       } catch (e) {
         if (e && e.code === 'aborted') throw e;
-        console.warn('[wma] 客户端转码失败，退回 ffmpeg：' + ((e && e.message) || e));
+        /* 这一类格式只有客户端这条路（transcode.js 的 NEEDS 只有 flv，ffmpeg 那边
+           对 wma 直接 reject bad-format）。继续往下走只会多等一轮、报同一句
+           「播放失败」，还把真正的原因丢掉 —— 所以这里直接把原因带出去。 */
+        console.warn('[wma] 客户端转码失败：' + ((e && e.message) || e));
+        throw tcError('client-tc-failed',
+          '这个文件浏览器转不了（' + ((e && e.message) || '未知原因') + '）');
       }
     }
     if (mode === 'desktop' && window.fmNative && window.fmNative.prepare) {

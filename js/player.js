@@ -346,6 +346,9 @@
         el.volume = volume;
         el.muted = muted;
         el.load();
+        /* 客户端转码的 wma 走 MSE 边转边播：SourceBuffer 装不下整段，得让转码那边
+           知道播放头在哪，才能只喂附近一段、把远处回收掉（见 js/wma.js 的 pump） */
+        if (mediaMse && FM.wma && FM.wma.bind) FM.wma.bind(el, objectUrl);
         await once(el, 'loadedmetadata');
         if (my !== loadToken) return;
       }

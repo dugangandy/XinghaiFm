@@ -54,20 +54,23 @@ async function runStream(m) {
   try { asf = demuxASF(head); } catch (e) {}
   const inRate = (asf && asf.sampleRate) || 44100;
   const channels = (asf && asf.channels) || 1;
-  post({
-    type: 'meta',
-    duration: (asf && asf.duration) || 0,
-    sampleRate: inRate,
-    channels: channels,
-    bitRate: (asf && asf.bitRate) || 0,
-    packetSize: (asf && asf.packetSize) || 0
-  });
-
   const outRate = (m.targetRate && m.targetRate < inRate) ? m.targetRate : inRate;
   /* 码率按实际声道定：单声道 48k 对语音够用（10 分钟 3.6MB），
      立体声给 80k，否则音乐类 WMA 会糊成一片（10 分钟约 6MB）。
      LAME 在 MPEG-2（22050Hz）下 8~160kbps 都合法 */
   const bitrate = m.bitrate || (channels > 1 ? 80 : 48);
+  /* outRate / outBitrate 一起报给主线程：日志里能对上「多久的音频 = 多大 mp3」，
+     判断 SourceBuffer 配额、缓存体积时用得上 */
+  post({
+    type: 'meta',
+    duration: (asf && asf.duration) || 0,
+    sampleRate: inRate,
+    channels: channels,
+    outRate: outRate,
+    outBitrate: bitrate,
+    bitRate: (asf && asf.bitRate) || 0,
+    packetSize: (asf && asf.packetSize) || 0
+  });
   const wasmAb = await (await fetch('./mp3.wasm')).arrayBuffer();
   const enc = await Enc.createEncoder('audio/mpeg', wasmAb);
   enc.configure({ sampleRate: outRate, channels: channels, bitrate: bitrate });
@@ -87,32 +90,51 @@ async function runStream(m) {
 
   let read = 0;
   let totalOut = 0;
+  /* 分段计时：CPU 到底花在等数据、解码（含重采样）还是编码上，日志里能直接看出来 */
+  let netMs = 0, decMs = 0, encMs = 0;
 
   while (read < size) {
     const end = Math.min(read + CHUNK, size) - 1;
-    const bytes = new Uint8Array(await rangeRead(m.url, read, end));
-    const r = dec.decode(bytes);
+    let t = performance.now();
+    const raw = await rangeRead(m.url, read, end);
+    netMs += performance.now() - t;
     read = end + 1;
+
+    t = performance.now();
+    const r = dec.decode(new Uint8Array(raw));
+    let pcm = null;
     if (r.channelData.length && r.channelData[0].length) {
-      const pcm = toOutRate(r.channelData);
-      if (pcm[0].length) emit(enc, pcm);
+      pcm = toOutRate(r.channelData);
+      if (!pcm[0].length) pcm = null;
     }
+    decMs += performance.now() - t;
+
+    if (pcm) { t = performance.now(); emit(enc, pcm); encMs += performance.now() - t; }
     post({ type: 'progress', stage: 'encode', done: read, total: size });
   }
 
+  let t = performance.now();
   const tail = dec.flush();
   if (tail.channelData.length && tail.channelData[0].length) {
     const pcm = toOutRate(tail.channelData);
     if (pcm[0].length) emit(enc, pcm);
   }
+  decMs += performance.now() - t;
+
+  t = performance.now();
   const fin = enc.finalize();
   if (fin && fin.length) {
     const copy = fin.slice();
     totalOut += copy.length;
     post({ type: 'chunk', bytes: copy.buffer, n: copy.length }, [copy.buffer]);
   }
+  encMs += performance.now() - t;
+
   dec.free();
-  post({ type: 'done', bytes: totalOut, duration: (asf && asf.duration) || 0, sampleRate: outRate });
+  post({
+    type: 'done', bytes: totalOut, duration: (asf && asf.duration) || 0, sampleRate: outRate,
+    ms: { net: Math.round(netMs), dec: Math.round(decMs), enc: Math.round(encMs) }
+  });
 
   function emit(encoder, pcm) {
     const out = encoder.encode(pcm);

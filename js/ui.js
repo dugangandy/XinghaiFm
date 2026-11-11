@@ -5337,6 +5337,9 @@
       if (code === 'busy') { toast('服务端正忙，请稍后重试', 'warn'); return; }
       if (code === 'no-encoder') { toast('该格式需要转换成 mp3/mp4 才能播，请用桌面端或服务器模式', 'warn'); return; }
       if (code === 'ffmpeg-failed' || code === 'bad-format') { toast('转换失败，文件可能已损坏', 'warn'); return; }
+      /* 浏览器端转码失败（wma 这类只有客户端这条路）：把具体原因带出来，
+         否则用户只看到「播放失败」，分不清是超时、卡住还是文件不对 */
+      if (code === 'client-tc-failed') { toast(m || '这个文件转不了，请先转成 mp3', 'warn'); return; }
       const offline = (typeof navigator !== 'undefined' && navigator.onLine === false) ||
         (FM.fs && FM.fs.link === 'offline');
       if (m === U.NET_FAIL || offline) toast(U.NET_FAIL, 'warn');
