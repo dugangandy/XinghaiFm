@@ -3033,6 +3033,29 @@
     /* 库根键归一：服务端落库时已经统一过大小写和斜杠，客户端这里只做比较用 */
     function normRoot(s) { return String(s || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase(); }
 
+    /* 跨库榜单行：服务端/主进程已经补了 libId；旧版本再从库列表按目录反查兜底 */
+    function libIdOfRow(r) {
+      if (r.libId) return String(r.libId);
+      if (!FM.fs || !FM.fs.libs) return '';
+      const key = normRoot(r.libRoot);
+      if (!key) return '';
+      const hit = (FM.fs.libs() || []).find(function (l) { return normRoot(l.path) === key; });
+      return hit ? hit.id : '';
+    }
+
+    /* 别的库的专辑不在内存模型里：从该库的本地索引缓存按 albumId 还原目录名。
+       covers.js 的 forAlbum 靠 dirName / key 匹配，只有 title 是匹配不到精确条目的 */
+    function foreignAlbum(libId, albumId) {
+      if (!libId || !FM.db || !FM.db.index || !FM.lib || !FM.lib.indexAlbums) return null;
+      try {
+        const idx = FM.db.index(libId);
+        if (!idx) return null;
+        const list = FM.lib.indexAlbums(idx) || [];
+        for (let i = 0; i < list.length; i++) if (list[i] && list[i].id === albumId) return list[i];
+      } catch (e) {}
+      return null;
+    }
+
     function topCatName(a) {
       if (!a || !Array.isArray(a.cats) || !a.cats.length) return '';
       const list = (FM.lib && FM.lib.cats) ? FM.lib.cats() : [];
@@ -3053,17 +3076,23 @@
       const peak = Math.max.apply(null, rows.map(function (r) { return r.secs; }).concat([1]));
       const here = normRoot(curRoot());
       box.innerHTML = rows.map(function (r, i) {
-        /* 全库维度里其他库的专辑不在当前内存模型中：只有 id 和写入时的标题快照 */
-        const a = FM.lib ? FM.lib.album(r.albumId) : null;
+        /* albumId 是目录路径哈希：两个库里同名目录会撞成同一个 id，
+           所以先按 libRoot 判断是不是当前库，再决定能不能用内存里的专辑对象
+           （跨库行用当前库的同名对象会拿错标题和封面） */
+        const sameLib = !r.libRoot || !here || normRoot(r.libRoot) === here;
+        const a = (sameLib && FM.lib) ? FM.lib.album(r.albumId) : null;
         const title = (a && a.title) || r.title || '未命名专辑';
         const initial = initialOf(a || { title: title });
-        const art = (a && a.cover)
-          ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">'
+        /* 跨库封面：该库索引缓存里有对应专辑就按目录名查；没有就退回标题快照做相似匹配 */
+        let cover = a && a.cover;
+        if (!cover && !sameLib && FM.covers) {
+          const lid = libIdOfRow(r);
+          if (lid) cover = FM.covers.forAlbum(foreignAlbum(lid, r.albumId) || { dirName: r.title || '' }, lid);
+        }
+        const art = cover
+          ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(cover) + '" alt="">'
           : '<span class="top-rings"><i></i><i></i><i></i></span>' +
             '<span class="top-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span>';
-        /* albumId 是目录路径哈希：两个库里同名目录会撞成同一个 id，
-           所以跳转前还得确认这条数据本身就属于当前库，否则会跳到另一张同名专辑 */
-        const sameLib = !r.libRoot || !here || normRoot(r.libRoot) === here;
         const open = !!a && sameLib;
         const bits = [];
         const cn = topCatName(a);
@@ -3112,9 +3141,30 @@
           if (!alive || seq !== topSeq || scope !== topScope) return;
           if (!res || res.ok === false) { fail(); return; }
           topLoadedScope = scope;
-          renderTop(res.rows || []);
+          const rows = res.rows || [];
+          renderTop(rows);
+          warmTopCovers(rows, seq, scope);
         })
         .catch(fail);
+    }
+
+    /* 别的库的封面索引按需读一次：读到之前跨库条目只有首字渐变，读完后补一次静默重绘。
+       同一个库一个会话只读一次，之后都是同步查表（和搜索页同一套机制） */
+    function warmTopCovers(rows, seq, scope) {
+      if (!FM.covers || !FM.covers.ensureLib) return;
+      const hereKey = normRoot(curRoot());
+      const ids = [];
+      rows.forEach(function (r) {
+        if (!r.libRoot || normRoot(r.libRoot) === hereKey) return;
+        const id = libIdOfRow(r);
+        if (id && id !== (FM.fs && FM.fs.activeId) && ids.indexOf(id) < 0) ids.push(id);
+      });
+      if (!ids.length) return;
+      Promise.all(ids.map(function (id) { return FM.covers.ensureLib(id); })).then(function (rs) {
+        if (rs.indexOf(true) < 0) return;         /* 没有新读到：不重绘，免得闪一下 */
+        if (!alive || seq !== topSeq || scope !== topScope) return;
+        renderTop(rows);
+      }).catch(function () {});
     }
 
     async function refreshDuration(m) {

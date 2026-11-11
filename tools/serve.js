@@ -1802,8 +1802,18 @@ const server = http.createServer(async function (req, res) {
       if (!lib) return send(res, 403, 'unknown lib');
       root = lib.path;
     }
-    try { return json(res, { ok: true, rows: DB.albumListenTop(db, uid, root, limit) }); }
-    catch (e) { console.warn('[listen] 榜查询失败：' + e.message); return json(res, { ok: false, rows: [] }); }
+    try {
+      const rows = DB.albumListenTop(db, uid, root, limit);
+      /* 补 libId：前端要靠它去读「别的资源库」的封面索引。
+         /api/libs 出于安全不下发 path，前端没法自己从 libRoot 反查库 id */
+      const byRoot = new Map();
+      userLibs(uid).forEach(function (l) {
+        const key = DB.libRootKey(l.path);
+        if (key && !byRoot.has(key)) byRoot.set(key, l.id);
+      });
+      rows.forEach(function (r) { r.libId = byRoot.get(String(r.libRoot || '')) || ''; });
+      return json(res, { ok: true, rows: rows });
+    } catch (e) { console.warn('[listen] 榜查询失败：' + e.message); return json(res, { ok: false, rows: [] }); }
   }
   if (p === '/api/favs') {
     const own = function (id) { return userLibs(uid).some(function (l) { return l.id === id; }); };
