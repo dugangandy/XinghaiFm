@@ -834,6 +834,16 @@
   function applyMeta(data) {
     if (!data || data.empty) return false;
     let touched = false;
+    if (data.catsManual !== undefined && activeId) {
+      const manualKey = 'catsManual:' + activeId;
+      const manual = !!FM.store.read(manualKey, false);
+      const incoming = !!data.catsManual;
+      if (incoming !== manual) {
+        FM.store.write(manualKey, incoming);
+        FM.store.touch(manualKey);
+        touched = true;
+      }
+    }
     if (Array.isArray(data.cats) && Number(data.v) >= 2 && activeId) {
       if (normCats(FM.db.catsFor(activeId)) !== normCats(data.cats)) {
         FM.db.setCatsFor(activeId, data.cats);
@@ -982,6 +992,7 @@
     if (add.durations) Object.assign(base.durations || (base.durations = {}), add.durations);
     /* 目录分类黑名单是整份名单，后推的覆盖先推的（都是本地当前完整列表） */
     if (add.dirCatDropped) base.dirCatDropped = add.dirCatDropped;
+    if (add.catsManual !== undefined) base.catsManual = add.catsManual;
     /* 上次收听那一集：按用户存（服务端 settings），不跟库共享。
        空串是有效值（清空队列时用来把服务端那条也清掉），不能用真值判断 */
     if (add.lastTrack !== undefined) base.lastTrack = add.lastTrack;
@@ -1115,6 +1126,7 @@
         if (patch.progress) one.progress = patch.progress;
         if (patch.durations) one.durations = patch.durations;
         if (patch.dirCatDropped) one.dirCatDropped = patch.dirCatDropped;
+        if (patch.catsManual !== undefined) one.catsManual = patch.catsManual;
         if (patch.lastTrack !== undefined) one.lastTrack = patch.lastTrack;
         if (patch.queue) one.queue = patch.queue;
         if (patch.prefs) one.prefs = patch.prefs;

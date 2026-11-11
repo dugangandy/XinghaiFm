@@ -12,6 +12,7 @@
   const TRACK_END = '已经到底啦~';   // 手机端滚动加载到底时的收尾文案
   let refs = {};
   let dragId = null;
+  let catDragId = null;
   let queueOpen = false;
   let scrubbing = false;
   let menuEl = null;
@@ -934,10 +935,12 @@
       refs.catList.innerHTML = '<div class="cat-empty">' + (canEdit ? '还没有分类，点右上角 + 新建' : '还没有分类') + '</div>';
       return;
     }
+    const canReorder = canEdit && !navLocked() && !isMobileDevice();
     refs.catList.innerHTML = cats.map(function (c) {
       const on = state.view === 'cat' && state.cat === c.id;
-      return '<div class="cat-item' + (on ? ' active' : '') + '" data-cat="' + c.id + '" style="--cc:' + c.color + '">' +
-        '<i class="bullet"></i><span>' + esc(c.name) + '</span>' +
+      return '<div class="cat-item' + (on ? ' active' : '') + '" data-cat="' + c.id + '"' +
+        (canReorder ? ' draggable="true"' : '') + ' style="--cc:' + c.color + '">' +
+        '<i class="bullet"></i><span class="cat-name">' + esc(c.name) + '</span>' +
         '<span class="count">' + L.catCount(c.id) + '</span>' +
         (canEdit ? '<button class="cat-edit" data-act="edit-cat" data-id="' + c.id + '">' + icon('edit') + '</button>' : '') + '</div>';
     }).join('');
@@ -3399,26 +3402,69 @@
       closeDrawer();
     });
     refs.catList.addEventListener('click', function (e) {
+      if (catDragId) return;
       const edit = e.target.closest('[data-act="edit-cat"]');
       if (edit) { editCat(edit.dataset.id); return; }
       const item = e.target.closest('.cat-item');
       if (item) { go('#/cat/' + item.dataset.cat); closeDrawer(); }
     });
 
-    /* 拖拽归类 */
+    refs.catList.addEventListener('dragstart', function (e) {
+      const item = e.target.closest('.cat-item');
+      if (!item || !canManageLib() || navLocked() || isMobileDevice()) { e.preventDefault(); return; }
+      catDragId = item.dataset.cat;
+      item.classList.add('dragging');
+      try {
+        e.dataTransfer.setData('application/x-fm-cat', catDragId);
+        e.dataTransfer.effectAllowed = 'move';
+      } catch (err) {}
+    });
+    refs.catList.addEventListener('dragend', function () {
+      catDragId = null;
+      U.$$('.cat-item').forEach(function (item) {
+        item.classList.remove('dragging', 'drop-before', 'drop-after');
+      });
+    });
+
+    /* 分类排序与专辑归类使用不同的数据类型，避免拖拽目标混淆 */
     refs.catList.addEventListener('dragover', function (e) {
       const item = e.target.closest('.cat-item');
-      if (!item || !dragId) return;
-      e.preventDefault();
-      item.classList.add('drop-target');
+      if (!item) return;
+      if (catDragId && catDragId !== item.dataset.cat) {
+        e.preventDefault();
+        const rect = item.getBoundingClientRect();
+        item.classList.toggle('drop-before', e.clientY < rect.top + rect.height / 2);
+        item.classList.toggle('drop-after', e.clientY >= rect.top + rect.height / 2);
+        return;
+      }
+      if (!catDragId && dragId) {
+        e.preventDefault();
+        item.classList.add('drop-target');
+      }
     });
     refs.catList.addEventListener('dragleave', function (e) {
       const item = e.target.closest('.cat-item');
-      if (item) item.classList.remove('drop-target');
+      if (item && !item.contains(e.relatedTarget)) item.classList.remove('drop-target', 'drop-before', 'drop-after');
     });
     refs.catList.addEventListener('drop', function (e) {
       const item = e.target.closest('.cat-item');
       if (!item) return;
+      const type = e.dataTransfer.types && Array.from(e.dataTransfer.types);
+      if (catDragId || (type && type.indexOf('application/x-fm-cat') >= 0)) {
+        e.preventDefault();
+        const source = catDragId || e.dataTransfer.getData('application/x-fm-cat');
+        const ids = L.cats().map(function (c) { return c.id; });
+        const from = ids.indexOf(source), target = ids.indexOf(item.dataset.cat);
+        if (from >= 0 && target >= 0 && from !== target) {
+          const rect = item.getBoundingClientRect();
+          const insertAfter = e.clientY >= rect.top + rect.height / 2;
+          ids.splice(from, 1);
+          ids.splice(target + (insertAfter ? 1 : 0) - (from < target ? 1 : 0), 0, source);
+          if (L.reorderCats(ids)) { renderCats(); renderMain(); }
+        }
+        U.$$('.cat-item').forEach(function (el) { el.classList.remove('drop-before', 'drop-after'); });
+        return;
+      }
       e.preventDefault();
       item.classList.remove('drop-target');
       const id = e.dataTransfer.getData('text/plain') || dragId;

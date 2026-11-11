@@ -913,6 +913,16 @@ function setDroppedDirCats(db, root, list) {
   setSetting(db, 'dirCatDropped:' + key, JSON.stringify(arr));
   return arr.length;
 }
+function manualCatOrder(db, root) {
+  const key = libRootKey(root);
+  return !!(key && getSetting(db, 'catsManual:' + key) === '1');
+}
+function setManualCatOrder(db, root, value) {
+  const key = libRootKey(root);
+  if (!key || value === undefined || value === null) return false;
+  setSetting(db, 'catsManual:' + key, value ? '1' : '0');
+  return true;
+}
 
 /* ── 整份读取 / 增量写入（HTTP 与 IPC 都走这两个，保证口径一致） ──
    uid：收听类数据（进度 / 队列 / 偏好）按用户存。老调用方不传时兜底到管理员，
@@ -930,7 +940,7 @@ function metaSnapshot(db, root, uid) {
   if (!key) {
     return {
       v: META_VERSION, root: r, cats: [], albumMeta: {}, progress: {}, durations: {},
-      dirCatDropped: [], queue: { tracks: [], position: 0 }, prefs: {}
+      dirCatDropped: [], catsManual: false, queue: { tracks: [], position: 0 }, prefs: {}
     };
   }
   return {
@@ -941,6 +951,7 @@ function metaSnapshot(db, root, uid) {
     progress: userProgressMap(db, u, r),
     durations: durationMap(db, r),
     dirCatDropped: droppedDirCats(db, r),
+    catsManual: manualCatOrder(db, r),
     queue: userQueueGet(db, u, r),
     prefs: userPrefsGet(db, u)
   };
@@ -959,6 +970,7 @@ function metaApply(db, root, patch, uid) {
     if (patch.durations && typeof patch.durations === 'object') counts.durations = durationWrite(db, key, patch.durations);
     /* 黑名单 / 队列 / 偏好不进 counts：它们只是设置项，别让既有调用方（服务端 counts 回包）多出字段 */
     if (Array.isArray(patch.dirCatDropped)) setDroppedDirCats(db, key, patch.dirCatDropped);
+    if (patch.catsManual !== undefined) setManualCatOrder(db, root, patch.catsManual);
     if (patch.queue && typeof patch.queue === 'object') {
       userQueueSet(db, u, key, patch.queue.tracks, patch.queue.position);
     }

@@ -62,6 +62,7 @@
       const root = String(lib.path || '');
       if (!root) continue;
       const snap = { v: 2, libId: lib.id, root: root, albumMeta: {}, progress: {}, durations: {} };
+      if (FM.store.read('catsManual:' + lib.id, false)) snap.catsManual = true;
       /* 分类各自写各自的；这个库还没初始化过（null）就别写字段，免得拿空值盖掉别人写的 */
       const own = FM.db.catsFor(lib.id);
       if (own !== null) snap.cats = own;
