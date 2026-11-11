@@ -170,6 +170,7 @@ fm/
 ├─ js/                 util · store · media · fs · covers · library · viz · player · ui · app
 ├─ cover-fetch.js      抓封面（扫描到新专辑时自动跑，也可命令行单跑）
 ├─ tools/              serve.js · tunnel.js · bump-version.js（fetch-covers.js 是兼容入口）
+├─ supervisor/         supervisord.conf + ctl.sh + agent.sh + README.md（后台常驻跑 tunnel.js）
 ├─ main.js             Electron 主进程（选目录、扫描、读文件、自定义协议）
 ├─ preload.js          暴露给页面的原生能力
 ├─ build/              应用图标与启动图
@@ -199,7 +200,9 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 
 - **源码包**：`dist/XinghaiFM-<版本>-src.zip`，解压后 `npm install && npm start`
 - **出安装包**：解压后双击 `打包-macOS.command`，或 `npm run dist:mac` → `dist/` 里的 dmg / zip
-- **公网隧道**：双击 `启动-公网.bat`，先 `node tools/init-db.js` 初始化用户 / 密码
+- **公网隧道**：双击 `启动-公网.command`，先 `node tools/init-db.js` 初始化用户 / 密码
+- **后台常驻**：`supervisor/ctl.sh start|stop|restart|status|log`（supervisord 崩了会自动拉起 `tools/tunnel.js`；首次先去 `python3 -m venv ~/.supervisor/venv && ~/.supervisor/venv/bin/pip install -i https://pypi.org/simple supervisor`）
+- **开机自启**：`supervisor/agent.sh install|uninstall|status`，装的是 `~/Library/LaunchAgents/com.xinghai.fm.supervisord.plist`（登录后由 launchd 拉起 supervisord，KeepAlive）；`status` 逐项体检 launchd / supervisord / 进程 / 本地端口 / 隧道 / 公网，有异常退出码为 1
 - 已配好图标 `build/icon.icns`、分类 `public.app-category.music`、应用菜单、最低系统 macOS 12.7.6
 - 无开发者证书时走 ad-hoc 签名，首次打开需「右键 → 打开」
 
