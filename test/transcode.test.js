@@ -30,7 +30,7 @@ function ffmpeg(args) {
   execFileSync(FFMPEG, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y'].concat(args), { stdio: 'pipe' });
 }
 
-/* 1 秒的 flv（h264 + aac）：体积很小，重封装不到 1 秒 */
+/* 1 秒的 flv（h264 + aac）：体积很小，重封装不到 1 秒；1 秒的 wma 用来测音频转码 */
 function makeSamples(dir) {
   const flv = path.join(dir, 'a.flv');
   ffmpeg([
@@ -41,16 +41,26 @@ function makeSamples(dir) {
   return { flv: flv };
 }
 
-test('格式表：只有 flv → mp4；ape/wv/wma 一律不转码', () => {
-  ['wma', 'ape', 'wv'].forEach(function (e) {
+function makeWma(dir) {
+  const wma = path.join(dir, 'a.wma');
+  ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+    '-ac', '1', '-ar', '44100', '-c:a', 'wmav2', '-b:a', '32k', wma]);
+  return wma;
+}
+
+test('格式表：flv → mp4、wma → mp3；ape/wv 一律不转码', () => {
+  ['ape', 'wv'].forEach(function (e) {
     assert.equal(TC.outExt(e), '', e + ' 不再走转码');
     assert.equal(TC.needs(e), false, e + ' 不该触发转码');
   });
   assert.equal(TC.outExt('.APE'), '');
   assert.equal(TC.outExt('flv'), 'mp4');
+  assert.equal(TC.outExt('wma'), 'mp3', 'wma 交给 ffmpeg 转成真 mp3 文件');
+  assert.equal(TC.outExt('WMA'), 'mp3');
   assert.equal(TC.outExt('mp3'), '');
   assert.equal(TC.needs('mp4'), false);
   assert.equal(TC.needs('FLV'), true);
+  assert.equal(TC.needs('wma'), true);
 });
 
 test('缓存文件名：40 位 sha1 + 目标扩展名，size/mtime 变了 key 跟着变', () => {
@@ -67,7 +77,7 @@ test('缓存文件名：40 位 sha1 + 目标扩展名，size/mtime 变了 key �
   assert.match(name, TC.NAME_RE);
 });
 
-test('前端白名单：flv 算视频要转码，ape/wv/wma 归为不支持，但仍能扫进库', () => {
+test('前端白名单：flv / wma 要转码，ape/wv 归为不支持，但仍能扫进库', () => {
   global.window = global.window || {};
   global.window.FM = global.window.FM || {};
   require('../js/media.js');
@@ -82,16 +92,17 @@ test('前端白名单：flv 算视频要转码，ape/wv/wma 归为不支持，�
     assert.equal(M.unsupported(e), true, e + ' 要落到「不支持格式」上');
     assert.equal(M.AUDIO[e], 1, e + ' 仍要扫进库');
   });
-  assert.equal(M.needsTranscode('wma'), false, 'wma 不转码');
-  assert.equal(M.unsupported('wma'), true, 'wma 要落到「不支持格式」上');
+  assert.equal(M.needsTranscode('wma'), true, 'wma 要转成 mp3 才能播');
+  assert.equal(M.clientTranscode('wma'), true, '没 ffmpeg 时还能退到浏览器内解码');
+  assert.equal(M.unsupported('wma'), false, 'wma 有解，不该归到不支持');
   assert.equal(M.unsupported('mp3'), false);
   ['mp3', 'mp4', 'm4a', 'webm'].forEach(function (e) {
     assert.equal(M.needsTranscode(e), false, e + ' 不该触发转码');
   });
   assert.equal(M.needsTranscode('FLV'), true, '扩展名大小写不敏感');
+  assert.equal(M.needsTranscode('WMA'), true);
   assert.equal(M.unsupported('WV'), true, '不支持的判断也不区分大小写');
   assert.equal(M.unsupported('APE'), true);
-  assert.equal(M.unsupported('WMA'), true);
 });
 
 /* 只在本机完全没有 ffmpeg 时才成立：FM_FFMPEG 指向不存在的路径后仍然找得到 PATH 上的 */
@@ -112,8 +123,8 @@ test('没有 ffmpeg 时：findFfmpeg 返回空，prepare 抛 no-ffmpeg', { skip:
 
 /* ape / wv 改成「直接提示不支持」后，后端也不该再接受它们：前端一拦，这里就不该有调用；
    万一有旧页面或手工请求进来，明确报 bad-format 比偷偷转一分钟更清楚 */
-test('ape / wv / wma 不再转码：prepare 直接抛 bad-format', async () => {
-  for (const ext of ['ape', 'wv', 'wma']) {
+test('ape / wv 不再转码：prepare 直接抛 bad-format', async () => {
+  for (const ext of ['ape', 'wv']) {
     await assert.rejects(
       () => TC.prepare({ file: 'x.' + ext, rel: 'x.' + ext, stat: { size: 1, mtimeMs: 1 }, cacheDir: os.tmpdir() }),
       function (e) { return e.code === 'bad-format'; },
@@ -143,6 +154,30 @@ test('flv → mp4：默认走重封装（copy），产物时长正确且第二�
 
   const r2 = await TC.prepare(opt);
   assert.equal(r2.cached, true);
+});
+
+test('wma → mp3：原生 LAME 转成真文件，时长正确且第二次命中缓存', { skip: NO_FFMPEG && '本机没有 ffmpeg' }, async function (t) {
+  const dir = workDir();
+  const cacheDir = path.join(dir, 'cache');
+  let f = '';
+  try { f = makeWma(dir); } catch (e) { return t.skip('本机 ffmpeg 不支持 wmav2 编码'); }
+  const st = fs.statSync(f);
+  const opt = { file: f, rel: 'a.wma', stat: { size: st.size, mtimeMs: st.mtimeMs }, cacheDir: cacheDir };
+
+  const r1 = await TC.prepare(opt);
+  assert.equal(r1.ext, 'mp3', 'wma 的产物必须是 mp3');
+  assert.equal(r1.cached, false);
+  assert.match(path.basename(r1.file), TC.NAME_RE, '产物文件名要能过 __tc 通道的白名单');
+
+  /* 单声道走 48k：2 秒约 12KB，给一倍容差，能挡住「其实没转/转成空文件」 */
+  const out = fs.statSync(r1.file);
+  assert.ok(out.size > 4000 && out.size < 30000, 'mp3 体积应约 12KB，实际 ' + out.size);
+
+  const dur = await TC.probeDuration(r1.file);
+  assert.ok(Math.abs(dur - 2) < 0.4, '转出来的 mp3 时长应约 2 秒，实际 ' + dur);
+
+  const r2 = await TC.prepare(opt);
+  assert.equal(r2.cached, true, '第二次必须直接命中缓存');
 });
 
 test('取消：转码中 abort 立刻收场，不留半成品', { skip: NO_FFMPEG && '本机没有 ffmpeg' }, async function (t) {

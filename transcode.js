@@ -1,16 +1,19 @@
 /* ── transcode.js · 按需转码（桌面端主进程与服务端共用）───────────────
  *
- * Chromium 啃不动 FLV 容器（ape / wv / wma 干脆没有解码器，已在
- * js/media.js 里归为「不支持」，不走这里）。FLV 先交给系统 ffmpeg
- * 重封装成 mp4 落到缓存目录，再由 main.js 的 fm://app/__tc/<key>.<ext>
+ * Chromium 啃不动 FLV 容器，也根本没有 WMA 解码器（ape / wv 同样没有，已在
+ * js/media.js 里归为「不支持」，不走这里）。这里交给系统 ffmpeg 转成带索引的
+ * 真文件落到缓存目录：FLV → mp4（重封装，几乎不耗 CPU），WMA → mp3（LAME 原生
+ * 编码，一小时音频几秒）。产物再由 main.js 的 fm://app/__tc/<key>.<ext>
  * 或 tools/serve.js 的 /api/tc/<key>.<ext> 走已有的 Range 直读通道播放。
- * 转码结果是有索引的真文件，拖动、倍速、续播点、时长探测都和普通文件
- * 完全一样，不需要额外的流式逻辑。
+ * 转码结果是有索引的真文件，拖动、倍速、续播点、时长探测都和普通文件完全一样，
+ * 不需要额外的流式逻辑 —— 这也是 wma 优先走这里的理由：浏览器里用 WASM 解码 +
+ * MediaSource 边转边播很啰嗦（配额、seek、时间轴都是一堆坑），只作没 ffmpeg 时的兜底
+ * （见 js/wma.js）。
  *
  * ffmpeg 不在包里：按 FM_FFMPEG → 项目 bin/ → PATH（含 macOS 常见安装位置）
  * 依次查找，找不到就返回空字符串，由调用方给用户明确的提示。
  *
- * 缓存：<cacheDir>/<sha1(rel|size|mtime)>.<mp4>
+ * 缓存：<cacheDir>/<sha1(rel|size|mtime)>.<mp3|mp4>
  *   key 里带 rel + size + mtime，文件被替换或重扫后自动失效，不需要额外的
  *   失效逻辑；删库换库也不会误用旧缓存。体积由 sweep() 兜底。
  */
@@ -22,11 +25,13 @@ const crypto = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
 
 /* 需要转码的扩展名 → 目标容器。
-   ape / wv / wma 不在这里：转一份要几十秒，等待体验太差，改成前端直接提示不支持
-   （见 js/media.js 的 UNSUPPORTED），文件仍会被扫描、时长仍能探测。 */
-const NEEDS = { flv: 'mp4' };
+   ape / wv 不在这里：没有成熟的解码路径，改成前端直接提示不支持
+   （见 js/media.js 的 UNSUPPORTED），文件仍会被扫描、时长仍能探测。
+   wma → mp3：原生 LAME 一小时音频只要几秒，产物是真 mp3 文件，播放/拖动/
+   缓存全都走普通文件那条路，比浏览器里 WASM 边转边播省心得多。 */
+const NEEDS = { flv: 'mp4', wma: 'mp3' };
 /* 缓存文件名：40 位 sha1 + 目标扩展名，两个入口都按这个正则白名单校验。
-   mp3 是历史遗留：早期 ape / wv 会转成 mp3，留着才能被 sweep() 清掉。 */
+   mp3 是 wma 的产物（早期 ape / wv 也转过 mp3，旧缓存同样能被 sweep() 清掉）。 */
 const NAME_RE = /^[a-f0-9]{40}\.(mp3|mp4)$/;
 const DEFAULT_MAX = 2 * 1024 * 1024 * 1024;   // 2GB，超了按 mtime 从旧到新清到 80%
 const RUN_TIMEOUT = 30 * 60 * 1000;           // 单个任务最多跑 30 分钟（超长视频兜底）
@@ -136,12 +141,24 @@ function parseDuration(text) {
   return isFinite(v) && v > 0 ? v : 0;
 }
 
+/* 声道数：ffmpeg -i 的 stderr 里有「Audio: wmav2 ..., 44100 Hz, mono, 32 kb/s」。
+   音频转码按声道定码率（单声道 48k / 立体声 80k），和浏览器里那条 WASM 路线一致，
+   语音类课不至于白占一倍空间。 */
+function parseChannels(text) {
+  const m = /Audio:[^\n]*?\b(mono|stereo|[1-9]\d* channels)\b/i.exec(String(text || ''));
+  if (!m) return 0;
+  const v = m[1].toLowerCase();
+  if (v === 'mono') return 1;
+  if (v === 'stereo') return 2;
+  return parseInt(v, 10) || 0;
+}
+
 /* 探测走缓存：同一集在「专辑页探一次 + 播放时 prepare 再探一次」很常见，
    而且 /api/duration 是 GET 接口，没有缓存就等于每人每次刷新都起一遍 ffmpeg。
    只缓存成功结果，失败的下次还值得再试。 */
-const durCache = new Map();   // file -> { v: {duration}, t }
+const durCache = new Map();   // file -> { v: {duration, channels}, t }
 const DUR_TTL = 10 * 60 * 1000;
-const NO_INFO = { duration: 0 };
+const NO_INFO = { duration: 0, channels: 0 };
 
 function probeInfo(file) {
   const bin = findFfmpeg();
@@ -169,7 +186,7 @@ function probeInfo(file) {
     /* ffmpeg 不带输出文件时一定以非 0 退出，这里不看退出码，只解析 stderr */
     p.on('close', function () {
       clearTimeout(timer);
-      const info = { duration: parseDuration(err) };
+      const info = { duration: parseDuration(err), channels: parseChannels(err) };
       if (info.duration > 0) {
         if (durCache.size > 1000) durCache.clear();
         durCache.set(file, { v: info, t: Date.now() });
@@ -227,7 +244,15 @@ function pickEncoder(bin) {
   return encPick;
 }
 
-/* 目标容器固定是 mp4（只有 flv 走这条路）。
+/* 纯音频（wma）→ mp3：不需要视频那套「重封装 / 只转音频 / 全重编码」的三级降级，
+   原生 LAME 一小时音频也就几秒，一次转到底。码率按声道定，语音课单声道 48k 够用，
+   一小时约 21MB；立体声（音乐类）给 80k，糊成一片更难受。 */
+function audioArgs(file, out, bitrate) {
+  return baseArgs(file, out, 'mp3', ['-vn', '-map', '0:a:0',
+    '-c:a', 'libmp3lame', '-b:a', bitrate]);
+}
+
+/* 目标容器是 mp4（flv 走这里）。
    mode：copy（音视频都直接搬）｜copyv（视频搬、音频转 aac）｜encode（全重编码） */
 function argsFor(file, out, mode, enc) {
   /* -map 带 ? 允许缺轨：只有音频的 flv 也能转出可播的 mp4 */
@@ -351,7 +376,7 @@ function tcWait(entry, signal) {
  * 确保某个文件有可播放的缓存。
  * @param {{file:string, rel:string, stat:{size:number,mtimeMs:number}, cacheDir:string,
  *          onProgress?:(pct:number)=>void, signal?:AbortSignal}} opts
- * @returns {Promise<{file:string, ext:'mp4', cached:boolean}>}
+ * @returns {Promise<{file:string, ext:'mp3'|'mp4', cached:boolean}>}
  */
 function prepare(opts) {
   const o = opts || {};
@@ -396,7 +421,8 @@ function prepare(opts) {
              ffmpeg -i 只读文件头，百毫秒级，比转码本身便宜得多 */
           .then(function () {
             if (ctrl.signal.aborted) throw tcError('aborted', '已取消');
-            if (!o.onProgress) return NO_INFO;
+            /* 音频要声道数定码率，所以即使调用方不要百分比也得探一次（百毫秒级） */
+            if (!o.onProgress && ext !== 'mp3') return NO_INFO;
             return probeInfo(o.file);
           })
           .then(function (info) {
@@ -408,6 +434,13 @@ function prepare(opts) {
               else how = '重编码(' + (enc || SOFT_ENC).name + ')';
               return run(bin, argsFor(o.file, part, mode, enc || SOFT_ENC), total, report, ctrl.signal);
             };
+            /* 纯音频没有「先试重封装」那一说：直接 LAME 编一遍就完事 */
+            if (ext === 'mp3') {
+              const bitrate = info && info.channels === 1 ? '48k'
+                : info && info.channels > 1 ? '80k' : '64k';
+              how = '音频转码 libmp3lame ' + bitrate;
+              return run(bin, audioArgs(o.file, part, bitrate), total, report, ctrl.signal);
+            }
             const enc = pickEncoder(bin);
             /* 三级降级：整体重封装（1~2 秒）→ 只重编音频（几秒）→ 全重编码（硬件优先）。
                取消和超时都不升级，否则等于把等待时间再翻一倍。 */

@@ -1674,29 +1674,10 @@
      opts.signal 用来取消：用户切到别的集时，上一个文件就别再转了。 */
   let tcSeq = 0;
 
-  async function prepare(rel, opts) {
-    if (!FM.media.needsTranscode(extOf(rel))) return null;
+  /* 主进程（IPC）/ 服务端（HTTP）的 ffmpeg 转码：产物是带索引的真文件，播放器拿到的
+     就是普通 mp3/mp4 地址，拖动、倍速、续播、时长探测全走通用逻辑。 */
+  async function hostPrepare(rel, opts) {
     const signal = opts && opts.signal;
-    if (signal && signal.aborted) throw tcError('aborted');
-
-    /* 客户端转码（目前是 wma → mp3，走 MSE 边转边播）：解码和编码都在浏览器里做，
-       服务器只按 Range 发原始字节，不占 CPU 也不落转码文件。 */
-    if (FM.wma && FM.media.clientTranscode && FM.media.clientTranscode(extOf(rel))) {
-      try {
-        return await FM.wma.ensure(rel, {
-          signal: signal,
-          onProgress: opts && opts.onProgress
-        });
-      } catch (e) {
-        if (e && e.code === 'aborted') throw e;
-        /* 这一类格式只有客户端这条路（transcode.js 的 NEEDS 只有 flv，ffmpeg 那边
-           对 wma 直接 reject bad-format）。继续往下走只会多等一轮、报同一句
-           「播放失败」，还把真正的原因丢掉 —— 所以这里直接把原因带出去。 */
-        console.warn('[wma] 客户端转码失败：' + ((e && e.message) || e));
-        throw tcError('client-tc-failed',
-          '这个文件浏览器转不了（' + ((e && e.message) || '未知原因') + '）');
-      }
-    }
     if (mode === 'desktop' && window.fmNative && window.fmNative.prepare) {
       /* IPC 本身没法取消，只能带个 id 过去：切集时再发一条 cancel 让主进程停掉 ffmpeg */
       const id = 'tc' + (++tcSeq);
@@ -1741,7 +1722,52 @@
       /* <audio>/<video> 带不了请求头：桌面远程模式要靠票据挂在 query 上 */
       return { url: await signedUrl(data.url), ext: data.ext, cached: !!data.cached };
     }
-    /* 走到这里说明确实需要转码，但当前是纯浏览器目录（files / handle）——没有 ffmpeg。
+    throw tcError('no-encoder');
+  }
+
+  /* 浏览器里解（目前只有 wma：WASM 解码 + MP3 编码 + MSE 边转边播，见 js/wma.js）。
+     首块不到一秒就能出声，代价是 MSE 那套限制都得自己兜（配额、seek、时间轴）。 */
+  async function clientPrepare(rel, opts) {
+    const signal = opts && opts.signal;
+    try {
+      return await FM.wma.ensure(rel, {
+        signal: signal,
+        onProgress: opts && opts.onProgress
+      });
+    } catch (e) {
+      if (e && e.code === 'aborted') throw e;
+      console.warn('[wma] 浏览器内转码失败：' + ((e && e.message) || e));
+      throw tcError('client-tc-failed',
+        '这个文件浏览器转不了（' + ((e && e.message) || '未知原因') + '）');
+    }
+  }
+
+  async function prepare(rel, opts) {
+    if (!FM.media.needsTranscode(extOf(rel))) return null;
+    const signal = opts && opts.signal;
+    if (signal && signal.aborted) throw tcError('aborted');
+
+    const ext = extOf(rel);
+    const clientOk = !!(FM.wma && FM.media.clientTranscode && FM.media.clientTranscode(ext));
+    const hostOk = (mode === 'desktop' && window.fmNative && window.fmNative.prepare) || mode === 'server';
+
+    /* 优先 ffmpeg：原生编码比浏览器里跑 WASM 快一个数量级，产物还是带索引的真文件，
+       拖动/续播/时长都不用特殊照顾。只有这台机器上没有 ffmpeg（或它压根转不动这个
+       文件）时，才退到浏览器内解码 —— 纯浏览器目录（files / handle）没有 ffmpeg，
+       直接从下面那条路走。 */
+    if (hostOk) {
+      try {
+        return await hostPrepare(rel, opts);
+      } catch (e) {
+        const code = (e && e.code) || '';
+        /* 取消 / 服务端忙：换条路重来一遍只会更糟，原样往上抛 */
+        if (code === 'aborted' || code === 'busy' || !clientOk) throw e;
+        console.warn('[wma] ffmpeg 这条路走不通（' + code + '：' + ((e && e.message) || e) +
+          '），改用浏览器内 WASM：' + rel);
+      }
+    }
+    if (clientOk) return clientPrepare(rel, opts);
+    /* 走到这里说明确实需要转码，但既没有 ffmpeg 也没有客户端方案。
        给个能指向出路的错误，别让它一路走到 <audio> 才报「播放失败」。 */
     throw tcError('no-encoder');
   }

@@ -5320,7 +5320,7 @@
       if (code === 'aborted') return;
       /* 媒体加载失败：文案由 player 按 el.error.code 区分（编码不支持 / 直链失效） */
       if (code === 'media') { toast(m || '媒体加载失败，请重试或重新扫描', 'warn'); return; }
-      /* 明确不支持的格式（ape / wv / wma）：不走转码（一份要转几十秒），直接告诉用户换文件 */
+      /* 明确不支持的格式（ape / wv）：没有解码路径，直接告诉用户换文件 */
       if (code === 'unsupported') {
         const ext = (e && e.ext) ? String(e.ext).toUpperCase() : '';
         toast('不支持' + (ext ? ' ' + ext + ' ' : '该') + '格式，请先转成 mp3 再放进资源库', 'warn');
@@ -5337,7 +5337,7 @@
       if (code === 'busy') { toast('服务端正忙，请稍后重试', 'warn'); return; }
       if (code === 'no-encoder') { toast('该格式需要转换成 mp3/mp4 才能播，请用桌面端或服务器模式', 'warn'); return; }
       if (code === 'ffmpeg-failed' || code === 'bad-format') { toast('转换失败，文件可能已损坏', 'warn'); return; }
-      /* 浏览器端转码失败（wma 这类只有客户端这条路）：把具体原因带出来，
+      /* 浏览器内 WASM 转码失败（没有 ffmpeg 时的兜底那条路）：把具体原因带出来，
          否则用户只看到「播放失败」，分不清是超时、卡住还是文件不对 */
       if (code === 'client-tc-failed') { toast(m || '这个文件转不了，请先转成 mp3', 'warn'); return; }
       const offline = (typeof navigator !== 'undefined' && navigator.onLine === false) ||

@@ -265,7 +265,7 @@
     ev.emit('loading', true);
     ev.emit('track', track, { restored: !!o.restored });
     updateSession(track);
-    /* 明确不支持的格式（ape / wv / wma）：直接给结论。别放它走到 <audio> 才报
+    /* 明确不支持的格式（ape / wv）：直接给结论。别放它走到 <audio> 才报
        「播放失败」，更别去转码 —— 转一份要几十秒，等完还不如告诉用户换个文件。 */
     if (FM.media.unsupported(track.ext)) {
       const err = new Error('不支持的文件格式');
