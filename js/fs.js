@@ -1716,6 +1716,13 @@
         /* 501 = 服务器上没装 ffmpeg；429 = 切集太快被限流（一秒 5 次）。
            这两种都不是「文件坏了」，文案要分开，别让用户去查文件 */
         if (res.status === 429) throw tcError('busy', txt);
+        /* 网盘库 502：凭据失效 / 没配置 / 直链拿不到。这类错误不能退到 WASM 再失败
+           一遍（它同样要取直链），直接把网盘那边的结论抛给界面 */
+        if (res.status === 502) {
+          let msg = '';
+          try { msg = ((JSON.parse(txt) || {}).error || {}).message || ''; } catch (e) {}
+          throw tcError('alist-failed', msg || '网盘取链失败');
+        }
         throw tcError(res.status === 501 ? 'no-ffmpeg' : (/^(ffmpeg-failed|bad-format)$/.test(txt) ? txt : 'ffmpeg-failed'), txt);
       }
       const data = await res.json();
@@ -1760,8 +1767,8 @@
         return await hostPrepare(rel, opts);
       } catch (e) {
         const code = (e && e.code) || '';
-        /* 取消 / 服务端忙：换条路重来一遍只会更糟，原样往上抛 */
-        if (code === 'aborted' || code === 'busy' || !clientOk) throw e;
+        /* 取消 / 服务端忙 / 网盘取链失败：换条路重来一遍只会更糟，原样往上抛 */
+        if (code === 'aborted' || code === 'busy' || code === 'alist-failed' || !clientOk) throw e;
         console.warn('[wma] ffmpeg 这条路走不通（' + code + '：' + ((e && e.message) || e) +
           '），改用浏览器内 WASM：' + rel);
       }
@@ -1791,8 +1798,10 @@
   async function src(rel, opts) {
     const isAlist = mode === 'server' && !!(activeLib && activeLib.type === 'alist');
     /* 需要转码的格式只在显式要求时才转：ui.js 的时长探测也会调 src()，
-       默认转码会让「打开一张 wma 专辑」并发转几十集。网盘库没有本地文件可转，直接拦掉。 */
-    if (!isAlist && opts && opts.prepare) {
+       默认转码会让「打开一张 wma 专辑」并发转几十集。
+       网盘库也能转：服务端拿 AList 直链直接喂 ffmpeg（见 serve.js 的 /api/prepare），
+       没有 ffmpeg 时再退到浏览器内 WASM。 */
+    if (opts && opts.prepare) {
       const tc = await prepare(rel, { signal: opts.signal, onProgress: opts.onProgress });
       /* mse 标记要透传：MediaSource 的地址不能被元素二次 load，播放器得区别对待 */
       if (tc && tc.url) return { url: tc.url, revoke: null, transcoded: true, mse: !!tc.mse };
@@ -1806,10 +1815,11 @@
     }
     if (isAlist) {
       const ext = extOf(rel);
-      /* flv 等需转码 / wma 等浏览器不认的格式：点播前给结论，别发起直链 */
-      if (FM.media && (FM.media.needsTranscode(ext) || FM.media.unsupported(ext))) {
-        const err = new Error('该格式暂不支持网盘播放');
-        err.code = 'alist-unsupported';
+      /* 真正没有解码路径的格式（ape / wv）：点播前给结论，别发起直链。
+         需要转码的（wma / flv）上面已经走完 prepare 了，走到这里说明本来是直链就能播的格式。 */
+      if (FM.media && FM.media.unsupported(ext)) {
+        const err = new Error('不支持的文件格式');
+        err.code = 'unsupported';
         err.ext = ext;
         throw err;
       }

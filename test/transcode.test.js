@@ -180,6 +180,53 @@ test('wma → mp3：原生 LAME 转成真文件，时长正确且第二次命中
   assert.equal(r2.cached, true, '第二次必须直接命中缓存');
 });
 
+test('网盘直链：input 是 http 地址也能转出 mp3，且换一条签名仍命中同一份缓存',
+  { skip: NO_FFMPEG && '本机没有 ffmpeg' }, async function (t) {
+    const dir = workDir();
+    const cacheDir = path.join(dir, 'cache');
+    let f = '';
+    try { f = makeWma(dir); } catch (e) { return t.skip('本机 ffmpeg 不支持 wmav2 编码'); }
+    /* 网盘直链本质就是「带临时签名的静态文件」，本地照这个形状起一个就够了 */
+    const http = require('node:http');
+    const data = fs.readFileSync(f);
+    const srv = http.createServer(function (req, res) {
+      const m = /bytes=(\d*)-(\d*)/.exec(String(req.headers.range || ''));
+      if (!m) {
+        return res.writeHead(200, { 'content-length': data.length, 'accept-ranges': 'bytes' }).end(data);
+      }
+      const s = m[1] === '' ? Math.max(0, data.length - Number(m[2])) : Number(m[1]);
+      const e = m[2] === '' ? data.length - 1 : Math.min(Number(m[2]), data.length - 1);
+      res.writeHead(206, {
+        'content-length': e - s + 1,
+        'content-range': 'bytes ' + s + '-' + e + '/' + data.length,
+        'accept-ranges': 'bytes'
+      }).end(data.subarray(s, e + 1));
+    });
+    await new Promise(function (r) { srv.listen(0, '127.0.0.1', r); });
+    const url = 'http://127.0.0.1:' + srv.address().port + '/a.wma?sign=tmp';
+    const opt = { input: url, rel: 'net/a.wma', stat: { size: data.length, mtimeMs: 1000 }, cacheDir: cacheDir };
+    try {
+      const r1 = await TC.prepare(opt);
+      assert.equal(r1.ext, 'mp3', '直链输入也要转成 mp3');
+      assert.equal(r1.cached, false);
+      assert.match(path.basename(r1.file), TC.NAME_RE);
+      const out = fs.statSync(r1.file);
+      assert.ok(out.size > 4000 && out.size < 30000, 'mp3 体积应约 12KB，实际 ' + out.size);
+
+      /* 直链里的签名每次都变：缓存只认 rel+size+mtime，换一条链接也必须命中 */
+      const r2 = await TC.prepare(Object.assign({}, opt, { input: url + '&sign=new' }));
+      assert.equal(r2.cached, true, '换签名后必须仍命中同一个产物');
+
+      /* 时长探测同理：临时签名不能进缓存键，否则每刷新一次就多探一遍 */
+      const d = await TC.probeDuration(url, 'alist:lib|net/a.wma');
+      assert.ok(Math.abs(d - 2) < 0.4, '直链探测时长应约 2 秒，实际 ' + d);
+      assert.equal(await TC.probeDuration('http://127.0.0.1:1/none.wma', 'alist:lib|none'), 0,
+        '取不到的直链返回 0，不抛错');
+    } finally {
+      srv.close();
+    }
+  });
+
 test('取消：转码中 abort 立刻收场，不留半成品', { skip: NO_FFMPEG && '本机没有 ffmpeg' }, async function (t) {
   const dir = workDir();
   const cacheDir = path.join(dir, 'cache');

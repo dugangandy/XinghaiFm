@@ -20,7 +20,7 @@
  *   GET  /api/covers            封面索引（.fm-covers/covers.json）
  *   GET  /api/cover/<file>      封面图片
  *   GET  /api/media/<rel>       音频流，支持 Range（拖动进度条）
- *   POST /api/prepare           把 flv 重封装成 mp4，返回可播地址
+ *   POST /api/prepare           把 flv 重封装成 mp4 / wma 转成 mp3（本地库与网盘库都支持）
  *   GET  /api/tc/<file>         转码缓存流，支持 Range
  *   GET  /api/duration?rel=     只读文件头取时长（不转码）
  *
@@ -839,22 +839,32 @@ async function alistWalkAndCache(lib, onProgress) {
 }
 
 /* 播放取链：校验 rel 在扫描快照内 → 用服务端 token 换 raw_url。
-   浏览器拿到的只有 raw_url 里的临时 sign，不接触 OpenList 凭据。 */
-async function alistRawUrl(lib, rel) {
+   浏览器拿到的只有 raw_url 里的临时 sign，不接触 OpenList 凭据。
+   顺带把 size/mtime 带回来：转码缓存 key 要它，直链里的临时签名不能进 key。 */
+async function alistResolve(lib, rel) {
   const cfg = ALIST.readConfig(db, alistOwnerId(lib));
   if (!cfg) throw ALIST.alistError('ALIST_UNCONFIGURED', '网盘库未配置连接', 502);
   const safe = ALIST.normalizeRel(rel);
   const snap = readScanCache(lib.path);
   /* 快照缺失也要拒绝：只靠 normalizeRel 挡不干净，否则未扫描 / 缓存被清时
      可以拿任意网盘路径让服务端换直链（绕过「必须在扫描结果中」） */
-  if (!snap || !Array.isArray(snap.files) || !snap.files.some(function (f) { return f.rel === safe; })) {
-    throw ALIST.alistError('NOT_FOUND', '文件不在扫描结果中，请先扫描资源库', 404);
-  }
+  const entry = snap && Array.isArray(snap.files)
+    ? snap.files.find(function (f) { return f.rel === safe; })
+    : null;
+  if (!entry) throw ALIST.alistError('NOT_FOUND', '文件不在扫描结果中，请先扫描资源库', 404);
   const base = String(cfg.base || lib.basePath || '/');
   const r = await ALIST.withToken(cfg, {}, function (token) {
     return ALIST.getFile(cfg, token, ALIST.joinPath(base, safe), {});
   });
-  return r.rawUrl;
+  return {
+    url: r.rawUrl,
+    size: Number(r.size) || Number(entry.size) || 0,
+    mtime: Number(entry.mtime) || 0
+  };
+}
+async function alistRawUrl(lib, rel) {
+  const r = await alistResolve(lib, rel);
+  return r.url;
 }
 const ALIST_ERR_TEXT = {
   ALIST_UNCONFIGURED: '网盘库未配置连接',
@@ -2076,9 +2086,11 @@ const server = http.createServer(async function (req, res) {
     return serveMedia(req, res, rel, lib.path);
   }
 
-  /* ── 转码：Chromium 认不全的 flv 容器先重封装成 mp4 再播 ──
+  /* ── 转码：Chromium 认不全的 flv 容器先重封装成 mp4、wma 转成 mp3 再播 ──
      转换是 CPU 活，长视频可能要几十秒，所以先让前端拿一个「准备好了」的应答，
-     再自己去 /api/tc/<name> 拉流；请求期间保持连接，前端只显示「正在转换」。 */
+     再自己去 /api/tc/<name> 拉流；请求期间保持连接，前端只显示「正在转换」。
+     网盘库没有本地文件：用 AList 换到的直链直接喂 ffmpeg（顺序读流，不用先落临时文件），
+     缓存 key 取扫描快照里的 size/mtime，同一集反复播才会命中同一个产物。 */
   if (p === '/api/prepare') {
     if (req.method !== 'POST') return send(res, 405, 'POST only');
     const lib = reqLib(uid, req, u);
@@ -2095,11 +2107,20 @@ const server = http.createServer(async function (req, res) {
     if (!rel) return send(res, 400, 'missing rel');
     const ext = path.extname(rel).slice(1).toLowerCase();
     if (!TC.needs(ext) || !MEDIA_EXT.has(ext)) return send(res, 400, 'bad format');
-    let file;
-    try { file = inside(root, rel); } catch (e) { return send(res, 403, 'forbidden'); }
-    let st;
-    try { st = await fsp.stat(file); } catch (e) { return send(res, 404, 'not found'); }
-    if (!st.isFile()) return send(res, 404, 'not found');
+    let input = '';   // 交给 ffmpeg 的输入：本地路径 / 网盘直链
+    let st = null;
+    let cacheKey = '';
+    if (lib.type === 'alist') {
+      let hit;
+      try { hit = await alistResolve(lib, rel); } catch (e) { return sendAlistError(res, e); }
+      input = hit.url;
+      st = { size: hit.size, mtimeMs: hit.mtime };
+      cacheKey = 'alist:' + alistOwnerId(lib) + '|' + rel;
+    } else {
+      try { input = inside(root, rel); } catch (e) { return send(res, 403, 'forbidden'); }
+      try { st = await fsp.stat(input); } catch (e) { return send(res, 404, 'not found'); }
+      if (!st.isFile()) return send(res, 404, 'not found');
+    }
     /* 客户端切走了就没人要这个文件：连接一断就把请求当成取消信号，转码内核会把
        排队中/正在跑的任务一起停掉。不这么做的话，一个 40 集的 flv 专辑连点几集，
        会排出一长串没人要的转码任务，还白占 HTTP 连接（同域只有 6 条）。 */
@@ -2110,7 +2131,10 @@ const server = http.createServer(async function (req, res) {
     const onGone = function () { if (!res.writableEnded) ctrl.abort(); };
     res.on('close', onGone);
     try {
-      const r = await TC.prepare({ file: file, rel: rel, stat: st, cacheDir: tcDir(), signal: ctrl.signal });
+      const r = await TC.prepare({
+        input: input, rel: rel, stat: st, cacheKey: cacheKey,
+        cacheDir: tcDir(), signal: ctrl.signal
+      });
       return json(res, { url: '/api/tc/' + path.basename(r.file), ext: r.ext, cached: r.cached });
     } catch (err) {
       /* 连接已经断了（或者就是被我们取消的）：没人在等这个响应 */
@@ -2125,13 +2149,26 @@ const server = http.createServer(async function (req, res) {
 
   if (p.indexOf('/api/tc/') === 0) return serveTc(req, res, p.slice('/api/tc/'.length));
 
-  /* 时长探测：只读文件头不转码，前端给 wma/flv 这类曲目算时长用 */
+  /* 时长探测：只读文件头不转码，前端给 wma/flv 这类曲目算时长用。
+     网盘库同样能探：直链丢给 ffmpeg 读头部（不会把整集拉下来），
+     缓存按库+rel 记，避免每次刷新都把整张专辑重新探一遍。 */
   if (p === '/api/duration') {
     const lib = reqLib(uid, req, u);
     if (!lib) return send(res, 404, 'server mode off');
     const root = lib.path;
     const rel = u.searchParams.get('rel') || '';
     if (!rel) return send(res, 400, 'missing rel');
+    if (lib.type === 'alist') {
+      try {
+        const hit = await alistResolve(lib, rel);
+        return json(res, {
+          d: await TC.probeDuration(hit.url, 'alist:' + alistOwnerId(lib) + '|' + rel)
+        });
+      } catch (e) {
+        /* 取链失败（未配置/凭据失效/不在快照里）不当作错误：前端只是没时长显示 */
+        return json(res, { d: 0 });
+      }
+    }
     let file;
     try { file = inside(root, rel); } catch (e) { return send(res, 403, 'forbidden'); }
     return json(res, { d: await TC.probeDuration(file) });

@@ -5336,6 +5336,12 @@
       }
       if (code === 'busy') { toast('服务端正忙，请稍后重试', 'warn'); return; }
       if (code === 'no-encoder') { toast('该格式需要转换成 mp3/mp4 才能播，请用桌面端或服务器模式', 'warn'); return; }
+      /* 网盘库取直链/转码失败（未配置、凭据失效、文件不在扫描结果里）：
+         服务端给的原话就是结论，别吞成「播放失败」 */
+      if (code === 'alist-failed' || code === 'alist-unsupported') {
+        toast(m || '网盘播放失败，请检查连接设置后重试', 'warn');
+        return;
+      }
       if (code === 'ffmpeg-failed' || code === 'bad-format') { toast('转换失败，文件可能已损坏', 'warn'); return; }
       /* 浏览器内 WASM 转码失败（没有 ffmpeg 时的兜底那条路）：把具体原因带出来，
          否则用户只看到「播放失败」，分不清是超时、卡住还是文件不对 */

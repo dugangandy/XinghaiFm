@@ -160,10 +160,13 @@ const durCache = new Map();   // file -> { v: {duration, channels}, t }
 const DUR_TTL = 10 * 60 * 1000;
 const NO_INFO = { duration: 0, channels: 0 };
 
-function probeInfo(file) {
+function probeInfo(input, cacheKey) {
   const bin = findFfmpeg();
   if (!bin) return Promise.resolve(NO_INFO);
-  const hit = durCache.get(file);
+  /* 网盘直链每次都带新的临时签名，拿地址当缓存键等于永远不命中、还会把 Map 撑大；
+     调用方给一个稳定的键（库 id + rel）就按它存。 */
+  const ck = String(cacheKey || input || '');
+  const hit = durCache.get(ck);
   if (hit && Date.now() - hit.t < DUR_TTL) return Promise.resolve(hit.v);
   return new Promise(function (res) {
     let err = '';
@@ -175,7 +178,7 @@ function probeInfo(file) {
     };
     let p;
     try {
-      p = spawn(bin, ['-nostdin', '-hide_banner', '-i', file], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+      p = spawn(bin, ['-nostdin', '-hide_banner'].concat(inputArgs(input)), { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
     } catch (e) { return finish(NO_INFO); }
     const timer = setTimeout(function () { try { p.kill('SIGKILL'); } catch (e) {} finish(NO_INFO); }, PROBE_TIMEOUT);
     p.stderr.on('data', function (d) {
@@ -189,22 +192,34 @@ function probeInfo(file) {
       const info = { duration: parseDuration(err), channels: parseChannels(err) };
       if (info.duration > 0) {
         if (durCache.size > 1000) durCache.clear();
-        durCache.set(file, { v: info, t: Date.now() });
+        durCache.set(ck, { v: info, t: Date.now() });
       }
       finish(info);
     });
   });
 }
 
-function probeDuration(file) {
-  return probeInfo(file).then(function (i) { return i.duration; });
+function probeDuration(input, cacheKey) {
+  return probeInfo(input, cacheKey).then(function (i) { return i.duration; });
 }
 
 /* ── 转码参数 ──
    输出文件带 .part 后缀（写一半被打断也不至于被当成缓存），ffmpeg 认不出扩展名，
-   所以容器一律用 -f 显式指定。 */
+   所以容器一律用 -f 显式指定。
+   输入除了本地文件，还可能是网盘直链（见 serve.js 的 /api/prepare 的 alist 分支）：
+   ffmpeg 自己走 http 顺序读流，不用先落一份临时文件。部分网盘 CDN 会拒绝非浏览器
+   UA（默认是 Lavf/xx），统一带一个常见的。 */
+function inputArgs(input) {
+  const s = String(input || '');
+  const a = [];
+  if (/^https?:\/\//i.test(s)) a.push('-user_agent', 'Mozilla/5.0');
+  a.push('-i', s);
+  return a;
+}
+
 function baseArgs(file, out, fmt, extra) {
-  return ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', file]
+  return ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y']
+    .concat(inputArgs(file))
     .concat(extra)
     .concat(['-f', fmt, '-progress', 'pipe:1', '-nostats', out]);
 }
@@ -374,15 +389,21 @@ function tcWait(entry, signal) {
 
 /**
  * 确保某个文件有可播放的缓存。
- * @param {{file:string, rel:string, stat:{size:number,mtimeMs:number}, cacheDir:string,
+ * @param {{file?:string, input?:string, rel:string, stat:{size:number,mtimeMs:number},
+ *          cacheDir:string, cacheKey?:string,
  *          onProgress?:(pct:number)=>void, signal?:AbortSignal}} opts
+ *   file  本地文件路径（桌面端 / 本地库）
+ *   input 交给 ffmpeg 的输入，可以是本地路径，也可以是网盘直链（http/https）
  * @returns {Promise<{file:string, ext:'mp3'|'mp4', cached:boolean}>}
  */
 function prepare(opts) {
   const o = opts || {};
-  const ext = outExt(path.extname(o.file || o.rel).slice(1));
+  const input = o.input || o.file || '';
+  /* 扩展名认 rel：网盘直链末尾不一定带 .wma，靠地址猜格式会翻车 */
+  const ext = outExt(path.extname(o.rel || o.file || o.input || '').slice(1));
   if (!ext) return Promise.reject(tcError('bad-format', '该格式不需要转码'));
   if (!o.cacheDir) return Promise.reject(tcError('ffmpeg-failed', '缺少缓存目录'));
+  if (!input) return Promise.reject(tcError('ffmpeg-failed', '缺少输入源'));
 
   const k = key(o.rel, o.stat);
   const target = path.join(o.cacheDir, k + '.' + ext);
@@ -423,7 +444,7 @@ function prepare(opts) {
             if (ctrl.signal.aborted) throw tcError('aborted', '已取消');
             /* 音频要声道数定码率，所以即使调用方不要百分比也得探一次（百毫秒级） */
             if (!o.onProgress && ext !== 'mp3') return NO_INFO;
-            return probeInfo(o.file);
+            return probeInfo(input, o.cacheKey);
           })
           .then(function (info) {
             const total = (info && info.duration) || 0;
@@ -432,14 +453,14 @@ function prepare(opts) {
               if (mode === 'copy') how = '重封装';
               else if (mode === 'copyv') how = '视频搬+音频转码';
               else how = '重编码(' + (enc || SOFT_ENC).name + ')';
-              return run(bin, argsFor(o.file, part, mode, enc || SOFT_ENC), total, report, ctrl.signal);
+              return run(bin, argsFor(input, part, mode, enc || SOFT_ENC), total, report, ctrl.signal);
             };
             /* 纯音频没有「先试重封装」那一说：直接 LAME 编一遍就完事 */
             if (ext === 'mp3') {
               const bitrate = info && info.channels === 1 ? '48k'
                 : info && info.channels > 1 ? '80k' : '64k';
               how = '音频转码 libmp3lame ' + bitrate;
-              return run(bin, audioArgs(o.file, part, bitrate), total, report, ctrl.signal);
+              return run(bin, audioArgs(input, part, bitrate), total, report, ctrl.signal);
             }
             const enc = pickEncoder(bin);
             /* 三级降级：整体重封装（1~2 秒）→ 只重编音频（几秒）→ 全重编码（硬件优先）。
