@@ -51,12 +51,10 @@
     return !!SUPPORT[String(ext || '').toLowerCase()];
   }
 
-  function idbKey(rel) {
-    /* 缓存 key 必须带库标识：不同库里有大量同名相对路径（极客时间按方向拆了
-       一堆库，满地都是「01 xxx.wma」），只认 rel 会把 A 库转出来的音频
-       当成 B 库的放出去。fs 暴露的是 activeId，没有 libKey */
+  function idbKey(rel, version) {
+    /* 缓存 key 必须带库标识和文件版本：同一路径被替换后不能继续播放旧 MP3。 */
     const lib = (FM.fs && FM.fs.activeId) || '';
-    return lib + '|' + rel;
+    return lib + '|' + rel + '|' + String(version || '');
   }
 
   /* mse: true 表示这是 MediaSource 的地址 —— 同一个地址不能被元素二次 load
@@ -441,8 +439,8 @@
     try { URL.revokeObjectURL(st.url); } catch (e) {}
   }
 
-  function transcodeStream(rel, key, job) {
-    return FM.fs.src(rel).then(function (s) {
+  function transcodeStream(rel, key, job, source) {
+    return Promise.resolve(source || FM.fs.src(rel, { raw: true })).then(function (s) {
       if (job.cancelled) throw abortErr();
       if (!s || !s.url) throw new Error('拿不到媒体地址');
       const srcUrl = s.url;
@@ -590,7 +588,7 @@
       };
 
       w.postMessage({
-        type: 'start', mode: 'stream', url: srcUrl, size: 0,
+        type: 'start', mode: 'stream', url: srcUrl, size: Number(s.size) || 0,
         targetRate: TARGET_RATE, bitrate: BITRATE
       });
 
@@ -599,8 +597,8 @@
   }
 
   /* ── 整段转（MSE 不可用 / 流式失败的降级路）：wma → ogg ── */
-  function transcodeBlob(rel, key, job) {
-    return FM.fs.src(rel).then(function (s) {
+  function transcodeBlob(rel, key, job, source) {
+    return Promise.resolve(source || FM.fs.src(rel, { raw: true })).then(function (s) {
       if (job.cancelled) throw abortErr();
       if (!s || !s.url) throw new Error('拿不到媒体地址');
       const srcUrl = s.url;
@@ -678,23 +676,23 @@
           reject(new Error((e && e.message) || '转码线程出错'));
         };
         w.postMessage({
-          type: 'start', mode: 'blob', url: srcUrl, size: 0,
+          type: 'start', mode: 'blob', url: srcUrl, size: Number(s.size) || 0,
           targetRate: TARGET_RATE, quality: QUALITY
         });
       });
     });
   }
 
-  function transcode(rel, key, job) {
-    if (!STREAM_OK) return transcodeBlob(rel, key, job);
-    return transcodeStream(rel, key, job).catch(function (e) {
+  function transcode(rel, key, job, source) {
+    if (!STREAM_OK) return transcodeBlob(rel, key, job, source);
+    return transcodeStream(rel, key, job, source).catch(function (e) {
       if (job.cancelled || (e && e.code === 'aborted')) throw e;
       console.warn('[wma] 边转边播没起来，退回整段转码：' + ((e && e.message) || e));
-      return transcodeBlob(rel, key, job);
+      return transcodeBlob(rel, key, job, source);
     });
   }
 
-  function run(rel, key, job) {
+  function run(rel, key, job, source) {
     return cacheGet(key).then(function (rec) {
       if (job.cancelled) throw abortErr();
       if (rec && rec.blob) {
@@ -704,7 +702,7 @@
         if (job.cb) job.cb(1, 'cached');
         return result(u, true);
       }
-      return transcode(rel, key, job);
+      return transcode(rel, key, job, source);
     });
   }
 
@@ -716,7 +714,7 @@
    */
   function ensure(rel, opts) {
     opts = opts || {};
-    const key = idbKey(rel);
+    const key = idbKey(rel, opts.version);
     if (urls.has(key)) return Promise.resolve(result(urls.get(key), true));
 
     /* 同一集可能被请求两次（重挂数据源、恢复进度）：复用同一条转码链，别开两份 worker */
@@ -738,9 +736,15 @@
 
     function release() {
       if (jobs.get(key) === job) jobs.delete(key);
+      if (job.sourceRevoke) {
+        const revoke = job.sourceRevoke;
+        job.sourceRevoke = null;
+        revoke();
+      }
     }
 
-    const inner = run(rel, key, job).then(function (r) {
+    job.sourceRevoke = opts.source && opts.source.revoke;
+    const inner = run(rel, key, job, opts.source).then(function (r) {
       /* 流式时这里只是「首块到了」，worker 还在转：等 tail 收尾再释放，
          否则同一集马上再请求一次会重复开一份转码 */
       if (job.tail) job.tail.then(release, release);

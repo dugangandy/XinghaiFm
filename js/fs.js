@@ -834,10 +834,18 @@
   function applyMeta(data) {
     if (!data || data.empty) return false;
     let touched = false;
-    if (data.catsManual !== undefined && activeId) {
+    if (activeId) {
       const manualKey = 'catsManual:' + activeId;
       const manual = !!FM.store.read(manualKey, false);
-      const incoming = !!data.catsManual;
+      let incoming = data.catsManual === undefined ? manual : !!data.catsManual;
+      /* Older servers return ordered cats but don't include catsManual yet. A non-alphabetical
+         snapshot is evidence that the saved positions are intentional, not creation order. */
+      if (data.catsManual === undefined && Array.isArray(data.cats) && data.cats.length > 1) {
+        const byName = data.cats.slice().sort(function (a, b) {
+          return U.naturalCompare(a.name || '', b.name || '') || (Number(a.order) || 0) - (Number(b.order) || 0);
+        });
+        incoming = incoming || data.cats.some(function (c, i) { return c.id !== byName[i].id; });
+      }
       if (incoming !== manual) {
         FM.store.write(manualKey, incoming);
         FM.store.touch(manualKey);
@@ -1749,7 +1757,11 @@
   async function clientPrepare(rel, opts) {
     const signal = opts && opts.signal;
     try {
+      /* 先拿原始源：本地 Blob URL 没有 Content-Range，必须把 File 元信息传给 Worker。 */
+      const source = await src(rel, { raw: true });
       return await FM.wma.ensure(rel, {
+        source: source,
+        version: source && source.version,
         signal: signal,
         onProgress: opts && opts.onProgress
       });
@@ -1768,6 +1780,10 @@
 
     const ext = extOf(rel);
     const clientOk = !!(FM.wma && FM.media.clientTranscode && FM.media.clientTranscode(ext));
+    const isAlist = mode === 'server' && !!(activeLib && activeLib.type === 'alist');
+    /* 网盘直链通常没有 ACAO。浏览器 Worker 的 fetch 会在重定向后被 CORS
+       拦截，所以服务端转码失败时不能再退到客户端 WASM。 */
+    const clientFallback = clientOk && !isAlist;
     const hostOk = (mode === 'desktop' && window.fmNative && window.fmNative.prepare) || mode === 'server';
 
     /* 优先 ffmpeg：原生编码比浏览器里跑 WASM 快一个数量级，产物还是带索引的真文件，
@@ -1780,12 +1796,12 @@
       } catch (e) {
         const code = (e && e.code) || '';
         /* 取消 / 服务端忙 / 网盘取链失败：换条路重来一遍只会更糟，原样往上抛 */
-        if (code === 'aborted' || code === 'busy' || code === 'alist-failed' || !clientOk) throw e;
+        if (code === 'aborted' || code === 'busy' || code === 'alist-failed' || !clientFallback) throw e;
         console.warn('[wma] ffmpeg 这条路走不通（' + code + '：' + ((e && e.message) || e) +
           '），改用浏览器内 WASM：' + rel);
       }
     }
-    if (clientOk) return clientPrepare(rel, opts);
+    if (clientFallback) return clientPrepare(rel, opts);
     /* 走到这里说明确实需要转码，但既没有 ffmpeg 也没有客户端方案。
        给个能指向出路的错误，别让它一路走到 <audio> 才报「播放失败」。 */
     throw tcError('no-encoder');
@@ -1842,7 +1858,12 @@
     if (mode === 'desktop') return { url: mediaUrl(rel), revoke: null };
     const file = await getFile(rel);
     const url = URL.createObjectURL(file);
-    return { url: url, revoke: function () { URL.revokeObjectURL(url); } };
+    return {
+      url: url,
+      size: Number(file.size) || 0,
+      version: String(Number(file.size) || 0) + '|' + String(Number(file.lastModified) || 0),
+      revoke: function () { URL.revokeObjectURL(url); }
+    };
   }
 
   async function getFile(rel) {

@@ -124,13 +124,16 @@ function tcError(code, message) {
 }
 
 /* ── 缓存 key ── */
-function key(rel, stat) {
+function key(rel, stat, scope) {
   const s = (stat && stat.size) || 0;
   const m = (stat && (stat.mtimeMs || stat.mtime)) || 0;
-  return crypto.createHash('sha1').update(String(rel) + '|' + s + '|' + m).digest('hex');
+  const identity = String(rel) + '|' + s + '|' + m;
+  /* Local callers retain the old key for cache compatibility; remote libraries
+     must include a stable namespace to avoid collisions on identical rel/stat. */
+  return crypto.createHash('sha1').update(scope ? String(scope) + '|' + identity : identity).digest('hex');
 }
-function fileName(rel, stat, ext) {
-  return key(rel, stat) + '.' + ext;
+function fileName(rel, stat, ext, scope) {
+  return key(rel, stat, scope) + '.' + ext;
 }
 
 /* ── 时长探测：只读文件头，不转码 ── */
@@ -405,7 +408,7 @@ function prepare(opts) {
   if (!o.cacheDir) return Promise.reject(tcError('ffmpeg-failed', '缺少缓存目录'));
   if (!input) return Promise.reject(tcError('ffmpeg-failed', '缺少输入源'));
 
-  const k = key(o.rel, o.stat);
+  const k = key(o.rel, o.stat, o.cacheKey);
   const target = path.join(o.cacheDir, k + '.' + ext);
   const hit = inflight.get(k);
   if (hit) return tcWait(hit, o.signal);

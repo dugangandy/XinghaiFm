@@ -2161,8 +2161,11 @@ const server = http.createServer(async function (req, res) {
     if (lib.type === 'alist') {
       try {
         const hit = await alistResolve(lib, rel);
+        /* 直链签名会变化，但文件版本由扫描快照的 size/mtime 标识。
+           把版本放进缓存键，避免同一路径替换文件后 10 分钟内仍显示旧时长。 */
+        const version = String(hit.size || 0) + '|' + String(hit.mtime || 0);
         return json(res, {
-          d: await TC.probeDuration(hit.url, 'alist:' + alistOwnerId(lib) + '|' + rel)
+          d: await TC.probeDuration(hit.url, 'alist:' + alistOwnerId(lib) + '|' + rel + '|' + version)
         });
       } catch (e) {
         /* 取链失败（未配置/凭据失效/不在快照里）不当作错误：前端只是没时长显示 */

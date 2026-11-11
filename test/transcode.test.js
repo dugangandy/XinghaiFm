@@ -72,9 +72,12 @@ test('缓存文件名：40 位 sha1 + 目标扩展名，size/mtime 变了 key �
   assert.notEqual(a, b);
   assert.notEqual(a, c);
   assert.equal(TC.key('书/第01集.wma', { size: 100, mtimeMs: 1000 }), a, '同样的输入必须稳定');
-  const name = TC.fileName('x.flv', { size: 1, mtimeMs: 2 }, 'mp4');
-  assert.equal(name, TC.key('x.flv', { size: 1, mtimeMs: 2 }) + '.mp4');
-  assert.match(name, TC.NAME_RE);
+  const l1 = TC.key('书/第01集.wma', { size: 100, mtimeMs: 1000 }, 'alist:l1|书/第01集.wma');
+  const l2 = TC.key('书/第01集.wma', { size: 100, mtimeMs: 1000 }, 'alist:l2|书/第01集.wma');
+  assert.notEqual(l1, l2, '不同网盘库即使 rel/size/mtime 相同也不能共用缓存');
+  assert.equal(TC.fileName('x.flv', { size: 1, mtimeMs: 2 }, 'mp4'),
+    TC.key('x.flv', { size: 1, mtimeMs: 2 }) + '.mp4');
+  assert.match(TC.fileName('x.flv', { size: 1, mtimeMs: 2 }, 'mp4'), TC.NAME_RE);
 });
 
 test('前端白名单：flv / wma 要转码，ape/wv 归为不支持，但仍能扫进库', () => {
@@ -216,6 +219,13 @@ test('网盘直链：input 是 http 地址也能转出 mp3，且换一条签名�
       /* 直链里的签名每次都变：缓存只认 rel+size+mtime，换一条链接也必须命中 */
       const r2 = await TC.prepare(Object.assign({}, opt, { input: url + '&sign=new' }));
       assert.equal(r2.cached, true, '换签名后必须仍命中同一个产物');
+
+      /* 不同网盘库恰好有同名同大小同 mtime 文件时，不能复用另一库的音频 */
+      const otherLib = await TC.prepare(Object.assign({}, opt, {
+        input: url + '&other-lib=1', cacheKey: 'alist:other-lib|net/a.wma'
+      }));
+      assert.equal(otherLib.cached, false, '库作用域不同必须生成隔离缓存');
+      assert.notEqual(otherLib.file, r1.file);
 
       /* 时长探测同理：临时签名不能进缓存键，否则每刷新一次就多探一遍 */
       const d = await TC.probeDuration(url, 'alist:lib|net/a.wma');
