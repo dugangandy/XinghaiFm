@@ -28,6 +28,16 @@
 .play-btn.huge{width:70px;height:70px;box-shadow:0 16px 46px -14px rgba(34,211,238,.95),0 0 0 1px rgba(255,255,255,.18) inset}
 .play-btn.huge .i{width:32px;height:32px}
 
+/* 取直链 / 等首包：按钮图标换成转圈，别让用户以为点了没反应 */
+.play-btn.is-loading{pointer-events:none}
+.play-btn.is-loading .i{display:none}
+.play-btn.is-loading::after{
+  content:"";width:18px;height:18px;border-radius:50%;
+  border:2px solid rgba(4,7,13,.25);border-top-color:currentColor;
+  animation:spin .9s linear infinite;
+}
+.play-btn.huge.is-loading::after{width:30px;height:30px;border-width:3px}
+
 .chip{
   display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:99px;
   border:1px solid var(--line);background:rgba(255,255,255,.035);

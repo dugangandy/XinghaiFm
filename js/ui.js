@@ -5135,6 +5135,32 @@
     paintBuffer();
   }
 
+  /* 取直链 / 等首包时的加载过渡：250ms 后才亮，快速加载不闪一下。
+     这段等待在网盘库最明显（换链 + 302 + CDN 首包），之前界面完全没有反馈。 */
+  let loadTimer = 0;
+  function paintLoading(on) {
+    if (loadTimer) { clearTimeout(loadTimer); loadTimer = 0; }
+    if (on) {
+      loadTimer = setTimeout(function () {
+        loadTimer = 0;
+        refs.sheet.classList.add('is-loading');
+        refs.btnPlay.classList.add('is-loading');
+        refs.shPlay.classList.add('is-loading');
+        refs.vPlay.classList.add('is-loading');
+        refs.vBigPlay.classList.add('is-loading');
+        if (P.kind === 'video') refs.vLoading.hidden = false;
+      }, 250);
+      return;
+    }
+    refs.sheet.classList.remove('is-loading');
+    refs.btnPlay.classList.remove('is-loading');
+    refs.shPlay.classList.remove('is-loading');
+    refs.vPlay.classList.remove('is-loading');
+    refs.vBigPlay.classList.remove('is-loading');
+    /* 不判 kind：切集瞬间 P.kind 可能还是旧值，残留的转圈层会盖在新画面上 */
+    refs.vLoading.hidden = !!P.playing || !P.media.src;
+  }
+
   function paintState(playing) {
     const ic = icon(playing ? 'pause' : 'play');
     const isVideo = P.kind === 'video';
@@ -5230,6 +5256,8 @@
     P.on('volume', paintVolume);
     P.on('loop', paintLoop);
     P.on('sleep', paintSleep);
+    /* 取直链 / 等首包的过渡：按钮转圈 + 封面呼吸，避免「点了没反应」 */
+    P.on('loading', paintLoading);
     /* flv 首次播放要先重封装：盖一层过渡层，转完自动收 */
     P.on('preparing', function (track) { if (track) showTc(track.title); else hideTc(); });
     P.on('tcProgress', function (info) { if (info && info.pct) setTcPct(info.pct); });

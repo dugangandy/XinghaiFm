@@ -577,6 +577,13 @@ body.is-server #libSwitch .lib-caret{display:none}
 .sheet:not(.playing) .sc-ring{animation-play-state:paused;opacity:.28}
 @keyframes spin{to{transform:rotate(360deg)}}
 
+/* 网盘取直链较慢：加载时封面轻微呼吸、光晕转快，给一个「在动」的反馈 */
+.sheet.is-loading .sheet-cover{animation:load-breathe 2.2s ease-in-out infinite}
+.sheet.is-loading .sc-ring{animation-play-state:running;animation-duration:2.6s;opacity:.95}
+.sheet.is-loading .sheet-art-img{filter:blur(3px) brightness(.82);transform:scale(1.04)}
+.sheet.is-loading .viz{opacity:.28}
+@keyframes load-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.012)}}
+
 /* ── 无封面：黑胶唱片（仅移动端、仅封面区叠加，不占流式高度） ── */
 .sheet-disc{
   display:none;position:relative;width:clamp(180px,26vh,300px);aspect-ratio:1;

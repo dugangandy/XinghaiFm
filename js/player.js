@@ -258,6 +258,8 @@
     }
     /* restored 决定界面要不要为视频自动展开播放页。setAudioOnly 触发的重载是
        在收起播放页时发生的，不能再让界面把它拉回来。 */
+    /* 取直链 + 等 CDN 首包可能有 1~3 秒：先告诉界面进入加载态，别让点了像没反应 */
+    ev.emit('loading', true);
     ev.emit('track', track, { restored: !!o.restored });
     updateSession(track);
     /* 明确不支持的格式（ape / wv / wma）：直接给结论。别放它走到 <audio> 才报
@@ -328,6 +330,7 @@
       el.load();
       await once(el, 'loadedmetadata');
       if (my !== loadToken) return;
+      ev.emit('loading', false);
       /* 扩展名说是视频、实际只有音轨（或者反过来）时以真实轨道为准。
          asAudio 时用的一定是 <audio>，videoWidth 恒为 0，别拿它把 kind 改掉。 */
       if (!asAudio) setKind(el.videoWidth > 0 ? 'video' : 'audio');
@@ -347,6 +350,7 @@
       } else ev.emit('state', false);
     } catch (e) {
       if (my !== loadToken) return;
+      ev.emit('loading', false);
       /* 取消（切集 / 收起播放页）不是播放失败，不弹提示 */
       if (e && e.code === 'aborted') return;
       ev.emit('error', e);
@@ -388,6 +392,7 @@
     queue = [];
     index = -1;
     cur = null;
+    ev.emit('loading', false);
     ev.emit('stop');
     ev.emit('queue', queue, index);
   }
