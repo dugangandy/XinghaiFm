@@ -288,7 +288,7 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
 /* ── 新版全屏播放页：竖屏手机 + 横屏手机共用（横屏靠「矮」识别，宽度常 >760）
    横屏那一支必须限定 orientation:landscape。安卓壳是 adjustResize，软键盘弹出时视口高度会掉到
    560 以下，竖屏点一下搜索框就误命中横屏这套紧凑布局，页面元素集体缩一号、来回抖。 ── */
-@media (max-width:760px), (max-height:560px) and (max-width:980px) and (orientation:landscape){
+@media (max-width:760px), (max-height:560px) and (max-width:979.98px) and (orientation:landscape){
   .sheet{
     --art-h:clamp(160px,36vh,330px);
     background:radial-gradient(120% 80% at 50% 0%,#0c1526,#05070e 70%);
@@ -439,7 +439,7 @@ button,a,.card,.track,.cat-item,.nav-item,.chip,.lib-row{touch-action:manipulati
    同样必须限定 orientation:landscape，理由同上：软键盘把视口压矮时不能算横屏。
    这里只对主页面生效的是 .album-hero / .hero-cover（118 → 96），漏掉 landscape 就是
    「点搜索栏 → 专辑页标题和封面缩一号」的那个抖动。 ── */
-@media (max-height:560px) and (max-width:980px) and (orientation:landscape){
+@media (max-height:560px) and (max-width:979.98px) and (orientation:landscape){
   .sheet .viz{display:none}
   .sheet-inner{
     display:grid;max-width:none;justify-content:center;
