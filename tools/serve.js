@@ -20,7 +20,7 @@
  *   GET  /api/covers            封面索引（.fm-covers/covers.json）
  *   GET  /api/cover/<file>      封面图片
  *   GET  /api/media/<rel>       音频流，支持 Range（拖动进度条）
- *   POST /api/prepare           把 flv 重封装成 mp4，返回可播地址
+ *   POST /api/prepare           把 flv 重封装成 mp4 / wma 转成 mp3（本地库与网盘库都支持）
  *   GET  /api/tc/<file>         转码缓存流，支持 Range
  *   GET  /api/duration?rel=     只读文件头取时长（不转码）
  *
@@ -39,6 +39,7 @@
 })();
 
 const http = require('node:http');
+const net = require('node:net');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -53,6 +54,8 @@ const TC = require('../transcode');
 const { escHtml, safeNext } = require('./safe');
 /* 目录自动监听：和桌面主进程共用同一份实现 */
 const { createWatcher } = require('../watch');
+/* Alist/OpenList 网盘对接：只做元数据与直链解析，不代理媒体字节 */
+const ALIST = require('./alist');
 /* 版本号：打包前已把 package.json 的 version 自增，这里读出来给远程页面显示 */
 const APP_VERSION = (function () {
   try { return String(JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || ''); }
@@ -145,18 +148,89 @@ function reqLib(uid, req, u) {
   if (id) return userLibs(uid).find(function (l) { return l.id === id; }) || null;
   return userActiveLib(uid);
 }
+/* 共享副本（id = sh<源库id><uid>）的配置与封面都挂在源库 id 下。
+   不这样归一，副本永远读不到 alist:<源id>:*，表现为「未配置」、扫描/播放全 502。 */
+function alistOwnerId(lib) {
+  return String((lib && (lib.shared_id || lib.id)) || '');
+}
 /* fixed = 前端不给改（没开 --allow-lib-edit，或者是别人共享来的只读库） */
 function libView(l) {
-  return {
-    id: l.id, name: l.name, missing: !fs.existsSync(l.path),
+  const type = l.type === 'alist' ? 'alist' : 'local';
+  /* 网盘库不以本地路径判存在：没配置连接凭据才算 missing */
+  const missing = type === 'alist'
+    ? !DB.getSetting(db, 'alist:' + alistOwnerId(l) + ':cred', '')
+    : !fs.existsSync(l.path);
+  const out = {
+    id: l.id, name: l.name,
+    missing: missing,
     fixed: !ALLOW_LIB_EDIT || !!l.shared_id,
     shared: !!l.shared_id,
     /* 目录结构三档：flat / cat / auto；dirGroup 是老字段，只为兼容旧客户端 */
     dirMode: DB.libDirMode(db, l.path),
     dirGroup: DB.libDirGroup(db, l.path),
-    watch: !!l.watch
+    watch: !!l.watch,
+    type: type,
+    basePath: l.basePath || '/'
   };
+  /* 只回布尔，不泄露 host / 凭据；本地库目录暂时不可用不代表「未配置」，所以只给网盘库 */
+  if (type === 'alist') out.configured = !missing;
+  return out;
 }
+
+/* 封面读写分离：Alist 库绝不写网盘（那是虚拟路径，也不该往共享盘塞辅助文件），
+   统一落到服务端本地数据目录 covers/alist/<源库id>/；本地库仍是 <root>/.fm-covers。 */
+function coverDirForLib(lib) {
+  if (!lib || !lib.path) return null;
+  if (lib.type !== 'alist') return path.join(path.resolve(lib.path), COVER_DIR);
+  const id = alistOwnerId(lib);
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return null;   /* 拼目录前先锁死 libId */
+  return path.join(path.dirname(dataFilePath()), 'covers', 'alist', id);
+}
+
+/* 配置接口只认自己名下、非共享副本的网盘库：共享用户不能看 host / 凭据 */
+function alistOwnLib(uid, id) {
+  const l = DB.getLib(db, uid, id);
+  return (l && !l.shared_id && l.type === 'alist') ? l : null;
+}
+
+/* 保存前的输入校验。真正的 SSRF/DNS pin 在 tools/alist.js 的出站请求里再做一次，
+   这里只把明显非法的配置挡在落库之前。 */
+function normalizeAlistHost(raw) {
+  const s = String(raw || '').trim().replace(/\/+$/, '');
+  if (!s || s.length > 300) return null;
+  let u;
+  try { u = new URL(s); } catch (e) { return null; }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.username || u.password || u.search || u.hash) return null;
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (!host || /(^localhost$)|(\.local$)|(\.internal$)|(\.localhost$)/i.test(host)) return null;
+  /* isBlockedIp 还会按 fc/fd/fe80 前缀判断 IPv6 内网；只对 IP 调用，
+     否则 fc2.com / fdic.gov 这类域名会被误拒（真正的域名校验在 resolvePublicTarget） */
+  if (net.isIP(host) && ALIST.isBlockedIp(host)) return null;
+  /* 允许部署在子路径下（requestJson 是 base + /api/... 拼接），但段名必须干净 */
+  const segs = u.pathname.split('/').filter(Boolean);
+  if (segs.some(function (x) { return !/^[A-Za-z0-9._~-]+$/.test(x) || x === '.' || x === '..'; })) return null;
+  return s;
+}
+function normalizeAlistBase(raw) {
+  let s = String(raw == null ? '' : raw).trim();
+  if (!s) return '/';
+  if (s.length > 512 || s[0] !== '/' || s.indexOf('\\') >= 0 || s.indexOf('//') >= 0 || s.indexOf('\0') >= 0) return null;
+  const parts = s.split('/');
+  if (parts.some(function (x, i) { return i > 0 && (x === '.' || x === '..' || /[\x00-\x1f]/.test(x)); })) return null;
+  return s.replace(/\/+$/, '') || '/';
+}
+function normalizeAlistCdn(raw) {
+  if (raw === undefined || raw === null) return ALIST.DEFAULT_CDN.slice();
+  if (!Array.isArray(raw) || raw.length > 20) return null;
+  const out = [];
+  for (const x of raw) {
+    const s = String(x || '').trim().toLowerCase();
+    if (!s || s.length > 128 || !/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(s)) return null;
+    if (out.indexOf(s) < 0) out.push(s);
+  }
+  return out.length ? out : ALIST.DEFAULT_CDN.slice();
+}
+
 /* 库列表响应：管理员看自己可编辑的库时附带共享配置（供弹窗预填） */
 function libsView(uid, isAdmin) {
   return userLibs(uid).map(function (l) {
@@ -189,7 +263,10 @@ function ensureMetaMigrated(lib) {
 function newLibId() { return 'l' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
 function mutateLibs(uid, body) {
-  const libs = DB.listLibs(db, uid).map(function (l) { return { id: l.id, name: l.name, path: l.path, addedAt: l.addedAt }; });
+  /* 整份替换会删后插：把 type/basePath 带上，避免改名/切库时把网盘库抹成本地库 */
+  const libs = DB.listLibs(db, uid).map(function (l) {
+    return { id: l.id, name: l.name, path: l.path, addedAt: l.addedAt, watch: l.watch, type: l.type, basePath: l.basePath };
+  });
   const act = String(body.action || '');
 
   if (act === 'add') {
@@ -227,6 +304,17 @@ function mutateLibs(uid, body) {
     /* 元数据、扫描缓存都按库目录存：库移除时顺手清掉，别留孤儿行 */
     if (lib.path) { try { DB.clearLibMeta(db, lib.path); } catch (e) {} }
     dropScanCache(lib.path);
+    scanProgress.delete(lib.path);
+    /* 网盘库：连带清加密凭据与服务端本地封面目录。
+       共享副本的 shared_id 没被带进 libs 映射，这里回查一次，别让收件人删副本时清掉源库配置 */
+    const realLib = DB.getLib(db, uid, id);
+    if (lib.type === 'alist' && realLib && !realLib.shared_id) {
+      const oldCfg = ALIST.readConfig(db, id);
+      ALIST.deleteConfig(db, id);
+      invalidateAlistConfig('', oldCfg && oldCfg.host);
+      const cd = coverDirForLib(realLib);
+      if (cd) { try { fs.rmSync(cd, { recursive: true, force: true }); } catch (e) {} }
+    }
     /* 源库被删：连带撤掉共享关系和别人手里的只读副本 */
     DB.removeLibShare(db, id);
     libs.splice(libs.findIndex(l => l.id === id), 1);
@@ -301,7 +389,7 @@ function readSession(token) {
 /* 短期票据：带 uid，只能读该用户自己的库（<audio>/<img> 带不了请求头）。
    按用途分范围、不同寿命：封面图 10 分钟就够；媒体要覆盖单集时长——整本一个文件的有声书
    可能一两个小时，签太短会让中途拖动进度条直接 403。 */
-const TICKET_TTL = { cover: 10 * 60, media: 2 * 3600 };
+const TICKET_TTL = { cover: 10 * 60, media: 2 * 3600, alist: 2 * 3600 };
 function makeTicket(uid, scope, ver) {
   const exp = Math.floor(Date.now() / 1000) + (TICKET_TTL[scope] || TICKET_TTL.media);
   const payload = 't.' + exp + '.' + uid + '.' + scope + '.' + (Number(ver) || 0);
@@ -330,6 +418,32 @@ function readTicket(t, scope) {
   if ((Number(u.token_version) || 0) !== ver) return null;
   return { uid: uid, exp: exp, scope: scope };
 }
+/* Alist 直链票据：除 uid/exp/ver 外再绑定 libId + rel，一张票只能换一集。
+   rel 含中文/斜杠/点，不能塞进点分段的旧票据格式，用 base64url(JSON) + HMAC。 */
+function makeAlistTicket(uid, libId, rel, ver) {
+  const exp = Math.floor(Date.now() / 1000) + TICKET_TTL.alist;
+  const payload = Buffer.from(JSON.stringify({
+    v: 1, uid: String(uid || ''), exp: exp,
+    libId: String(libId || ''), rel: String(rel || ''), ver: Number(ver) || 0
+  }), 'utf8').toString('base64url');
+  return payload + '.' + sign(payload, DB.secret(db));
+}
+function readAlistTicket(t, libId, rel) {
+  if (!t) return null;
+  const parts = String(t).split('.');
+  if (parts.length !== 2) return null;
+  const want = Buffer.from(sign(parts[0], DB.secret(db)));
+  const got = Buffer.from(parts[1]);
+  if (want.length !== got.length || !crypto.timingSafeEqual(want, got)) return null;
+  let j = null;
+  try { j = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8')); } catch (e) { return null; }
+  if (!j || j.v !== 1 || j.libId !== String(libId || '') || j.rel !== String(rel || '')) return null;
+  if (Math.floor(Date.now() / 1000) > j.exp) return null;
+  const u = DB.getUser(db, j.uid);
+  if (!u || u.disabled || (Number(u.token_version) || 0) !== (Number(j.ver) || 0)) return null;
+  return { uid: j.uid, exp: j.exp, scope: 'alist' };
+}
+
 function bearerOf(req) {
   const h = req.headers.authorization || '';
   return h.indexOf('Bearer ') === 0 ? h.slice(7).trim() : '';
@@ -392,6 +506,7 @@ const MIME = {
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  '.wasm': 'application/wasm',
   '.mp3': 'audio/mpeg',
   '.m4a': 'audio/mp4',
   '.m4b': 'audio/mp4',
@@ -440,17 +555,65 @@ function gzipOf(buf) {
    图片额外放行 data/blob 与封面候选的外链，媒体放行 blob 和 APK 里的本机 127.0.0.1 */
 const CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  /* wasm-unsafe-eval：客户端转码要编译 wma/ogg 的 WebAssembly 模块。
+     只放开 wasm，不动 'unsafe-eval' 本身。 */
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https: http:",
   "media-src 'self' blob: data: http://127.0.0.1:*",
   "connect-src 'self' http://127.0.0.1:*",
+  "worker-src 'self'",
   "font-src 'self'",
   "object-src 'none'",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'"
 ].join('; ');
+
+/* Alist 直链是跨源媒体（OpenList 自身 /p/… 或 *.drive.quark.cn），
+   固定 CSP 的 media-src 会把它拦掉。只把管理员已配置的 host 与 CDN 域名
+   追加进 media-src，不放宽到任意 http(s)；配置变更后最多 60s 生效。 */
+let alistCsp = { at: 0, extra: '' };
+function alistCspExtra() {
+  if (Date.now() - alistCsp.at < 60000) return alistCsp.extra;
+  const set = new Set();
+  try {
+    const rows = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'alist:%:host' OR key LIKE 'alist:%:cdn'").all();
+    rows.forEach(function (r) {
+      const v = String(r.value || '').trim();
+      if (!v) return;
+      if (/:host$/.test(r.key)) {
+        try { set.add(new URL(v).origin); } catch (e) {}
+      } else if (/:cdn$/.test(r.key)) {
+        let arr = [];
+        try { arr = JSON.parse(v); } catch (e) {}
+        (arr || []).forEach(function (p) {
+          const s = String(p || '').trim();
+          if (!s) return;
+          set.add('https://' + s);
+          set.add('http://' + s);
+        });
+      }
+    });
+  } catch (e) {}
+  alistCsp = { at: Date.now(), extra: Array.from(set).join(' ') };
+  return alistCsp.extra;
+}
+function cspFor() {
+  const extra = alistCspExtra();
+  if (!extra) return CSP;
+  return CSP.replace("media-src 'self' blob: data: http://127.0.0.1:*",
+    "media-src 'self' blob: data: http://127.0.0.1:* " + extra);
+}
+
+/* 配置 / host / CDN 变更后：内存 token、扫描快照、CSP 白名单立即失效，
+   不用等 alistCspExtra() 的 60s 缓存到期（设计 §8.1 / T12）。 */
+function invalidateAlistConfig(root, host) {
+  /* 只清这个 host 的 token：改一个库不该把其它库的会话一起踢掉 */
+  ALIST.clearTokenCache(host);
+  if (root) dropScanCache(root);
+  alistCsp = { at: 0, extra: '' };
+}
 
 /* 登录类请求体上限。这两个入口未认证可达，其它接口都有自己的上限，
    这里不设的话，公网上一个超大 body 就能把进程内存吃光。 */
@@ -481,7 +644,7 @@ function send(res, code, body, headers) {
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',     /* 媒体票据在 query 里，别随 Referer 漏出去 */
     'x-frame-options': 'DENY',
-    'content-security-policy': CSP
+    'content-security-policy': cspFor()
   }, headers || {});
   const type = String(h['content-type'] || '');
   const buf = Buffer.isBuffer(body) ? body : (typeof body === 'string' ? Buffer.from(body) : null);
@@ -658,10 +821,75 @@ async function walkAndCache(root) {
   return data;
 }
 
+/* 网盘库：递归调 /api/fs/list，产出与本地扫描同结构的快照。
+   root 用 libs.path（alist:<libId>），所以缓存键 / 元数据键与本地库天然隔离。
+   失败时不写缓存，交给 scanFolder 回退到旧快照（stale）。 */
+async function alistWalkAndCache(lib, onProgress) {
+  /* 共享副本用源库 id 取凭据，否则副本永远报未配置 */
+  const cfg = ALIST.readConfig(db, alistOwnerId(lib));
+  if (!cfg) throw ALIST.alistError('ALIST_UNCONFIGURED', '网盘库未配置连接', 502);
+  const data = await ALIST.scanFolderAlist(lib, cfg, {
+    mediaExt: MEDIA_EXT, skipDir: SKIP_DIR,
+    /* 网盘目录层级比本地深：至少放到 8 层，向上一层一层的「分类/年份/专辑/CD」 */
+    maxDepth: Math.max(Number(MAX_DEPTH) || 6, 8),
+    onProgress: onProgress
+  });
+  writeScanCache(lib.path, data);
+  return data;
+}
+
+/* 播放取链：校验 rel 在扫描快照内 → 用服务端 token 换 raw_url。
+   浏览器拿到的只有 raw_url 里的临时 sign，不接触 OpenList 凭据。
+   顺带把 size/mtime 带回来：转码缓存 key 要它，直链里的临时签名不能进 key。 */
+async function alistResolve(lib, rel) {
+  const cfg = ALIST.readConfig(db, alistOwnerId(lib));
+  if (!cfg) throw ALIST.alistError('ALIST_UNCONFIGURED', '网盘库未配置连接', 502);
+  const safe = ALIST.normalizeRel(rel);
+  const snap = readScanCache(lib.path);
+  /* 快照缺失也要拒绝：只靠 normalizeRel 挡不干净，否则未扫描 / 缓存被清时
+     可以拿任意网盘路径让服务端换直链（绕过「必须在扫描结果中」） */
+  const entry = snap && Array.isArray(snap.files)
+    ? snap.files.find(function (f) { return f.rel === safe; })
+    : null;
+  if (!entry) throw ALIST.alistError('NOT_FOUND', '文件不在扫描结果中，请先扫描资源库', 404);
+  const base = String(cfg.base || lib.basePath || '/');
+  const r = await ALIST.withToken(cfg, {}, function (token) {
+    return ALIST.getFile(cfg, token, ALIST.joinPath(base, safe), {});
+  });
+  return {
+    url: r.rawUrl,
+    size: Number(r.size) || Number(entry.size) || 0,
+    mtime: Number(entry.mtime) || 0
+  };
+}
+async function alistRawUrl(lib, rel) {
+  const r = await alistResolve(lib, rel);
+  return r.url;
+}
+const ALIST_ERR_TEXT = {
+  ALIST_UNCONFIGURED: '网盘库未配置连接',
+  ALIST_UNREACHABLE: '网盘暂时不可用',
+  ALIST_AUTH_FAILED: '网盘凭据已失效',
+  ALIST_TIMEOUT: '网盘响应超时',
+  BAD_ENCODING: '网盘路径编码异常',
+  NOT_FOUND: '文件不在扫描结果中，请重新扫描',
+  NO_DIRECT_LINK: '上游未返回直链',
+  BAD_RAW_HOST: '直链域名不在白名单',
+  BAD_PATH: '文件路径非法'
+};
+function sendAlistError(res, e) {
+  const code = (e && e.code) || 'ALIST_UNREACHABLE';
+  console.warn('[alist] ' + code);
+  return send(res, (e && e.status) || 502,
+    JSON.stringify({ error: { code: code, message: ALIST_ERR_TEXT[code] || '网盘播放失败' } }),
+    { 'content-type': 'application/json; charset=utf-8' });
+}
+
 /* 等别人那次 walk 最多等这么久：NAS 掉线、目录卡死时不能让后来的请求一起挂死。
    超时先把手里的旧缓存回给客户端，后台那次 walk 跑完仍然会落盘。
-   120 秒：第一次扫大库（几万文件、外接盘）一分半未必够，超过就先用旧数据顶上 */
-const SCAN_WAIT_MS = 120000;
+   10 分钟：网盘库逐层列目录很慢，几万文件扫半小时也正常；前端会轮询
+   /api/scan/progress 显示进度，用户不会以为卡死。 */
+const SCAN_WAIT_MS = 600000;
 
 function withTimeout(p, ms) {
   return new Promise(function (resolve, reject) {
@@ -676,12 +904,24 @@ function withTimeout(p, ms) {
    否则手动「重新扫描」也会永远挂在那个永远不结束的 Promise 上 */
 const SCAN_STALE_MS = 5 * 60 * 1000;
 
+/* 网盘扫描进度：/api/scan 是一次长请求，前端并发轮询这个内存表画进度。
+   每个库一条；扫描结束后只把 running 置 false，保留最后一次数字。 */
+const scanProgress = new Map();
+function setScanProgress(root, patch) {
+  const cur = scanProgress.get(root) || { running: false, dirs: 0, files: 0, startedAt: 0, at: 0 };
+  scanProgress.set(root, Object.assign(cur, patch, { at: Date.now() }));
+}
+function readScanProgress(root) {
+  return scanProgress.get(root) || { running: false, dirs: 0, files: 0, startedAt: 0, at: 0 };
+}
+
 /* opts.refresh = true 时跳过缓存重新走盘（前端「重新扫描」） */
 async function scanFolder(root, opts) {
   const o = opts || {};
   const cached = readScanCache(root);
   if (!o.refresh && cached) return cached;
   const k = scanKey(root);
+  const isAlist = !!(o.lib && o.lib.type === 'alist');
   let rec = scanInflight.get(k);
   if (rec && Date.now() - rec.at > SCAN_STALE_MS) {
     console.log('[scan] 上一次扫描卡住超过 5 分钟，丢弃重来');
@@ -690,22 +930,43 @@ async function scanFolder(root, opts) {
   }
   if (!rec) {
     const entry = { at: Date.now(), p: null };
-    entry.p = walkAndCache(root).finally(function () {
+    const walker = isAlist
+      ? alistWalkAndCache(o.lib, function (p) {
+        setScanProgress(root, { running: true, dirs: p.dirs, files: p.files });
+      })
+      : walkAndCache(root);
+    entry.p = walker.then(function (data) {
+      setScanProgress(root, { running: false, dirs: data.dirs || 0, files: (data.files || []).length });
+      return data;
+    }, function (err) {
+      const cur = readScanProgress(root);
+      setScanProgress(root, { running: false, dirs: cur.dirs, files: cur.files });
+      throw err;
+    }).finally(function () {
       /* 只清自己这一条：被判定卡死而替换掉的旧 walk 结束时不能把新的删掉 */
       if (scanInflight.get(k) === entry) scanInflight.delete(k);
     });
     scanInflight.set(k, entry);
+    if (isAlist) setScanProgress(root, { running: true, dirs: 0, files: 0, startedAt: Date.now() });
     rec = entry;
   }
   try {
     return await withTimeout(rec.p, SCAN_WAIT_MS);
   } catch (err) {
-    /* 超时 / 这次 walk 失败：有旧缓存就先给旧的，别让请求一直挂着 */
+    const timedOut = !!(err && err.code === 'ETIMEDOUT');
+    /* 超时 / 这次 walk 失败：有旧缓存就先给旧的，别让请求一直挂着。
+       失败要单独标出来：后台已经挂了，界面不能把它当成「扫描完成」。 */
     if (cached) {
-      console.log('[scan] 扫描超过 ' + Math.round(SCAN_WAIT_MS / 1000) + ' 秒，先回上次结果；后台扫完会自动落盘');
-      return Object.assign({}, cached, { stale: true });
+      console.log('[scan] ' + (timedOut
+        ? '扫描超过 ' + Math.round(SCAN_WAIT_MS / 1000) + ' 秒，先回上次结果；后台扫完会自动落盘'
+        : '扫描失败（' + ((err && err.code) || (err && err.message) || 'unknown') + '），先回上次结果'));
+      return Object.assign({}, cached, {
+        stale: true,
+        failed: !timedOut,
+        error: timedOut ? '' : String((err && err.code) || 'SCAN_FAILED')
+      });
     }
-    if (err && err.code === 'ETIMEDOUT') {
+    if (timedOut) {
       /* 连缓存都没有（第一次扫这么大的库）：不能说「扫描失败」，
          后台那次 walk 还在跑，扫完会落盘，再问一次就读到了 */
       const e2 = new Error('库太大，第一次扫描还没跑完；它会在后台继续，稍后再点「重新扫描」就能看到结果');
@@ -1074,8 +1335,11 @@ const server = http.createServer(async function (req, res) {
       /* 转码缓存也是媒体，用同一张 media 票据（<audio>/<video> 带不了 Authorization 头） */
       const scope = (p.indexOf('/api/media/') === 0 || p.indexOf('/api/tc/') === 0)
         ? 'media'
-        : (p.indexOf('/api/cover/') === 0 ? 'cover' : '');
-      if (scope) ticket = readTicket(u.searchParams.get('t'), scope);
+        : (p.indexOf('/api/cover/') === 0 ? 'cover' : (p === '/api/alist/raw' ? 'alist' : ''));
+      if (scope === 'alist') {
+        /* Alist 票据额外绑定 libId + rel：一张票只能换一集 */
+        ticket = readAlistTicket(u.searchParams.get('t'), u.searchParams.get('libId'), u.searchParams.get('rel'));
+      } else if (scope) ticket = readTicket(u.searchParams.get('t'), scope);
     }
   }
   /* --no-auth：免密，但必须有用户（取第一个用户） */
@@ -1110,8 +1374,14 @@ const server = http.createServer(async function (req, res) {
     /* 浏览器/APK 有会话 cookie：<audio>/<img> 同源请求会自带 cookie，URL 里不必挂票据；
        只有桌面端（fm://app + Bearer，没有 cookie）才需要换票据 */
     if (NO_AUTH || viaCookie) return json(res, { t: '', exp: 0, cookie: true });
-    const scope = u.searchParams.get('scope') === 'cover' ? 'cover' : 'media';
-    return json(res, { t: makeTicket(uid, scope, me ? me.token_version : 0), exp: Math.floor(Date.now() / 1000) + TICKET_TTL[scope], scope: scope });
+    const want = u.searchParams.get('scope');
+    const scope = want === 'cover' ? 'cover' : (want === 'alist' ? 'alist' : 'media');
+    const exp = Math.floor(Date.now() / 1000) + TICKET_TTL[scope];
+    if (scope === 'alist') {
+      const t = makeAlistTicket(uid, u.searchParams.get('libId'), u.searchParams.get('rel'), me ? me.token_version : 0);
+      return json(res, { t: t, exp: exp, scope: scope });
+    }
+    return json(res, { t: makeTicket(uid, scope, me ? me.token_version : 0), exp: exp, scope: scope });
   }
   if (p === '/api/users') {
     /* 用户管理：仅管理员可见 / 可改；--no-auth 免密模式下没有真实身份，直接关掉 */
@@ -1208,6 +1478,139 @@ const server = http.createServer(async function (req, res) {
 
     return send(res, 400, 'unknown action');
   }
+  /* Alist/OpenList 连接测试：只读（登录/列目录/取直链），不落库、不写网盘 */
+  if (p === '/api/alist/test' && req.method === 'POST') {
+    if (NO_AUTH) return send(res, 403, '--no-auth 免密模式不支持 Alist 配置');
+    if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以配置 Alist');
+    if (!writeAllowed(ip, 5, 'alist')) return send(res, 429, 'too many writes');
+    const body = await readBody(req, 8192);
+    if (body === null) { req.destroy(); return; }
+    let payload = null;
+    try { payload = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
+    const cfg = {
+      host: String((payload && payload.host) || '').trim().replace(/\/+$/, ''),
+      username: String((payload && payload.username) || ''),
+      password: String((payload && payload.password) || ''),
+      token: String((payload && payload.token) || ''),
+      dirPassword: String((payload && payload.dirPassword) || ''),
+      base: String((payload && payload.base) || '/'),
+      cdn: normalizeAlistCdn(payload && payload.cdn) || ALIST.DEFAULT_CDN.slice()
+    };
+    if (!cfg.host) return send(res, 400, 'bad host');
+    try {
+      const out = await ALIST.probe(cfg);
+      return json(res, out);
+    } catch (e) {
+      /* 日志只记错误码，绝不打印 token / sign / 密码 */
+      return sendAlistError(res, e);
+    }
+  }
+  /* 播放取链：服务端用 token 换 raw_url 再 302，媒体字节不经过 fm */
+  if (p === '/api/alist/raw') {
+    const lib = reqLib(uid, req, u);
+    if (!lib || lib.type !== 'alist') return send(res, 404, 'not found');
+    try {
+      const raw = await alistRawUrl(lib, u.searchParams.get('rel') || '');
+      return send(res, 302, '', { location: raw, 'cache-control': 'no-store' });
+    } catch (e) { return sendAlistError(res, e); }
+  }
+  /* Alist/OpenList 连接配置：admin-only。凭据只进加密 settings，
+     响应永远不回传 password/token 明文或密文，只给布尔与类型。 */
+  if (p === '/api/alist/config') {
+    if (NO_AUTH) return send(res, 403, '--no-auth 免密模式不支持 Alist 配置');
+    if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以配置 Alist');
+    const qId = String(u.searchParams.get('libId') || '');
+
+    if (req.method === 'GET') {
+      const l = alistOwnLib(uid, qId);
+      if (!l) return send(res, 403, '网盘库不存在或不可查看');
+      const pre = 'alist:' + l.id + ':';
+      const cfg = ALIST.readConfig(db, l.id);
+      let cdnHosts = ALIST.DEFAULT_CDN.slice();
+      try {
+        const arr = JSON.parse(DB.getSetting(db, pre + 'cdn', '[]') || '[]');
+        if (arr && arr.length) cdnHosts = arr;
+      } catch (e) {}
+      const credType = cfg ? (cfg.token ? 'token' : (cfg.password ? 'password' : '')) : '';
+      return json(res, {
+        id: l.id, name: l.name, type: 'alist', basePath: l.basePath || '/',
+        host: String(DB.getSetting(db, pre + 'host', '') || ''),
+        username: String(DB.getSetting(db, pre + 'user', '') || ''),
+        base: String(DB.getSetting(db, pre + 'base', '/') || '/'),
+        hasCredential: !!credType, credentialType: credType, configured: !!credType,
+        cdnHosts: cdnHosts,
+        /* 是否已连通由 /api/alist/test 现场探测，这里不缓存一个可能过期的结论 */
+        status: { ok: !!credType, lastCheckAt: 0 }
+      });
+    }
+
+    if (req.method === 'DELETE') {
+      if (!writeAllowed(ip, 5, 'alist')) return send(res, 429, 'too many writes');
+      const l = alistOwnLib(uid, qId);
+      if (!l) return send(res, 403, '网盘库不存在或不可编辑');
+      /* 只清凭据：库行保留，libView 会转成 missing，等管理员重新配置 */
+      const oldCfg = ALIST.readConfig(db, l.id);
+      ALIST.deleteConfig(db, l.id);
+      invalidateAlistConfig(l.path, oldCfg && oldCfg.host);
+      return json(res, { ok: true, view: libView(DB.getLib(db, uid, l.id)) });
+    }
+
+    if (req.method !== 'PUT') return send(res, 405, 'GET / PUT / DELETE only');
+    if (!writeAllowed(ip, 5, 'alist')) return send(res, 429, 'too many writes');
+    const bodyText = await readBody(req, 8192);
+    if (bodyText === null) { req.destroy(); return; }
+    let b = null;
+    try { b = JSON.parse(bodyText); } catch (e) { return send(res, 400, 'bad json'); }
+    if (!b || typeof b !== 'object') return send(res, 400, 'bad json');
+
+    const id = String(b.libId || '').trim();
+    const lib = id ? alistOwnLib(uid, id) : null;
+    if (id && !lib) return send(res, 403, '网盘库不存在或不可编辑');
+    const host = normalizeAlistHost(b.host);
+    const base = normalizeAlistBase(b.base);
+    const cdn = normalizeAlistCdn(b.cdn);
+    if (!host) return send(res, 400, 'bad host');
+    if (base === null) return send(res, 400, 'bad base');
+    if (cdn === null) return send(res, 400, 'bad cdn');
+
+    const old = lib ? ALIST.readConfig(db, lib.id) : null;
+    /* 显式填了哪一侧就切到该模式，并清掉另一侧的旧值：否则 token 模式改密码后
+       login() 仍优先用旧 token，新密码永远不生效。两侧都留空 = 沿用原值。 */
+    const rawPw = String(b.password || '');
+    const rawTk = String(b.token || '');
+    const oldPw = old ? String(old.password || '') : '';
+    const oldTk = old ? String(old.token || '') : '';
+    const cfg = {
+      host: host,
+      username: b.username !== undefined ? String(b.username || '') : (old ? old.username : ''),
+      password: rawPw || (rawTk ? '' : oldPw),
+      token: rawTk || (rawPw ? '' : oldTk),
+      dirPassword: String(b.dirPassword || '') || (old ? String(old.dirPassword || '') : ''),
+      base: base, cdn: cdn
+    };
+    if (!cfg.token && !(cfg.username && cfg.password)) return send(res, 400, '缺少凭据：请填用户名密码或 token');
+
+    const name = String(b.name || '').trim().slice(0, 40) || (lib ? lib.name : '网盘资源库');
+    const libId = lib ? lib.id : newLibId();
+    if (lib) {
+      /* 定点更新：不删表重插，避免并发写互相覆盖，也不动共享副本的活动标记 */
+      DB.setLibMeta(db, uid, libId, { name: name, path: 'alist:' + libId, type: 'alist', basePath: base, watch: 0 });
+    } else {
+      /* 只有新建才整份替换；共享副本非本人所有，不能当自己的库重插一遍 */
+      const libs = DB.listLibs(db, uid).filter(function (l) { return !l.shared_id; }).map(function (l) {
+        return { id: l.id, name: l.name, path: l.path, addedAt: l.addedAt, watch: l.watch, type: l.type, basePath: l.basePath };
+      });
+      libs.push({ id: libId, name: name, path: 'alist:' + libId, addedAt: Date.now(), watch: 0, type: 'alist', basePath: base });
+      DB.replaceLibs(db, uid, libs, libId);
+    }
+    ALIST.saveConfig(db, libId, cfg);
+    /* host 换了的话，旧 host 的内存 token 也要一起清 */
+    if (old && old.host && old.host !== host) ALIST.clearTokenCache(old.host);
+    invalidateAlistConfig('alist:' + libId, host);
+    syncWatchers();
+    console.log('[alist] ' + (lib ? '更新' : '新增') + '网盘库：' + name);
+    return json(res, { ok: true, view: libView(DB.getLib(db, uid, libId)) });
+  }
   if (p === '/api/config') {
     const libs = userLibs(uid);
     const lib = reqLib(uid, req, u);
@@ -1258,7 +1661,7 @@ const server = http.createServer(async function (req, res) {
     /* 分类与专辑整理是整库共享的编辑操作：普通用户只能写自己的进度/时长，不能改归类 */
     if (!me || me.role !== 'admin') {
       if (patch.cats !== undefined || patch.catsDeleted !== undefined || patch.albumMeta !== undefined ||
-          patch.dirCatDropped !== undefined) {
+          patch.dirCatDropped !== undefined || patch.catsManual !== undefined) {
         return send(res, 403, '只有管理员可以编辑分类与整理');
       }
     }
@@ -1413,8 +1816,18 @@ const server = http.createServer(async function (req, res) {
       if (!lib) return send(res, 403, 'unknown lib');
       root = lib.path;
     }
-    try { return json(res, { ok: true, rows: DB.albumListenTop(db, uid, root, limit) }); }
-    catch (e) { console.warn('[listen] 榜查询失败：' + e.message); return json(res, { ok: false, rows: [] }); }
+    try {
+      const rows = DB.albumListenTop(db, uid, root, limit);
+      /* 补 libId：前端要靠它去读「别的资源库」的封面索引。
+         /api/libs 出于安全不下发 path，前端没法自己从 libRoot 反查库 id */
+      const byRoot = new Map();
+      userLibs(uid).forEach(function (l) {
+        const key = DB.libRootKey(l.path);
+        if (key && !byRoot.has(key)) byRoot.set(key, l.id);
+      });
+      rows.forEach(function (r) { r.libId = byRoot.get(String(r.libRoot || '')) || ''; });
+      return json(res, { ok: true, rows: rows });
+    } catch (e) { console.warn('[listen] 榜查询失败：' + e.message); return json(res, { ok: false, rows: [] }); }
   }
   if (p === '/api/favs') {
     const own = function (id) { return userLibs(uid).some(function (l) { return l.id === id; }); };
@@ -1533,6 +1946,13 @@ const server = http.createServer(async function (req, res) {
     try { at = Number(DB.getSetting(db, scanKey(root) + ':at', '0')) || 0; } catch (e) {}
     return json(res, { scannedAt: at });
   }
+  /* 网盘扫描进度：前端在 /api/scan 长请求期间并发轮询这个接口。
+     本地库不会写进度，返回 running:false 即可，前端也不会轮询。 */
+  if (p === '/api/scan/progress') {
+    const lib = reqLib(uid, req, u);
+    if (!lib) return send(res, 404, 'server mode off');
+    return json(res, readScanProgress(lib.path));
+  }
   if (p === '/api/scan') {
     const lib = reqLib(uid, req, u);
     if (!lib) return send(res, 404, 'server mode off');
@@ -1541,7 +1961,8 @@ const server = http.createServer(async function (req, res) {
       /* refresh=1 只有前端「重新扫描」会带；平时一律读缓存，别让每台设备每个用户各扫一遍 */
       const refresh = u.searchParams.get('refresh') === '1';
       /* 拷一份再往上加字段：缓存里的对象别被改动 */
-      const data = Object.assign({}, await scanFolder(root, { refresh: refresh }));
+      /* 传 lib 让 scanFolder 按库类型分派：alist 库走 /api/fs/list，不碰本地磁盘 */
+      const data = Object.assign({}, await scanFolder(root, { refresh: refresh, lib: lib }));
       data.libId = lib.id;
       /* 目录结构跟着扫描结果一起下发，前端不用再单独取一次 */
       data.dirMode = DB.libDirMode(db, root);
@@ -1550,23 +1971,40 @@ const server = http.createServer(async function (req, res) {
       return json(res, data);
     } catch (e) {
       /* 别把 e.message 原样回给客户端：里面常带磁盘绝对路径 */
-      console.log('[scan] 扫描失败：' + e.message);
+      const code = (e && e.code) || '';
+      console.log('[scan] 扫描失败：' + (code || e.message));
+      if (code.indexOf('ALIST_') === 0 || code === 'BAD_ENCODING' || code === 'NOT_FOUND') {
+        const msg = {
+          ALIST_UNCONFIGURED: '网盘库未配置连接',
+          ALIST_UNREACHABLE: '网盘暂时不可用',
+          ALIST_AUTH_FAILED: '网盘凭据已失效',
+          ALIST_TIMEOUT: '网盘响应超时',
+          ALIST_SCAN_TOO_BIG: '网盘目录过大，请缩小库根路径',
+          BAD_ENCODING: '网盘路径编码异常',
+          NOT_FOUND: '网盘目录不存在'
+        }[code] || '网盘扫描失败';
+        return send(res, (e && e.status) || 502,
+          JSON.stringify({ error: { code: code, message: msg } }),
+          { 'content-type': 'application/json; charset=utf-8' });
+      }
       return send(res, 500, 'scan failed');
     }
   }
   if (p === '/api/covers') {
     const lib = reqLib(uid, req, u);
     if (!lib) return send(res, 404, 'server mode off');
-    const root = lib.path;
-    try { return json(res, JSON.parse(await fsp.readFile(path.join(root, COVER_DIR, 'covers.json'), 'utf8'))); }
+    const coverDir = coverDirForLib(lib);
+    if (!coverDir) return json(res, {});
+    try { return json(res, JSON.parse(await fsp.readFile(path.join(coverDir, 'covers.json'), 'utf8'))); }
     catch (e) { return json(res, {}); }
   }
   if (p.indexOf('/api/cover/') === 0) {
     const lib = reqLib(uid, req, u);
     if (!lib) return send(res, 404, 'server mode off');
-    const root = lib.path;
+    const coverDir = coverDirForLib(lib);
+    if (!coverDir) return send(res, 404, 'not found');
     try {
-      const file = inside(path.join(root, COVER_DIR), p.slice('/api/cover/'.length));
+      const file = inside(coverDir, p.slice('/api/cover/'.length));
       const buf = await fsp.readFile(file);
       return send(res, 200, buf, { 'content-type': MIME[path.extname(file).toLowerCase()] || 'image/jpeg', 'cache-control': 'max-age=86400' });
     } catch (e) { return send(res, 404, 'not found'); }
@@ -1587,7 +2025,8 @@ const server = http.createServer(async function (req, res) {
   if (p === '/api/cover' && req.method === 'POST') {
     const lib = reqLib(uid, req, u);
     if (!lib) return send(res, 404, 'server mode off');
-    const root = lib.path;
+    const coverDir = coverDirForLib(lib);
+    if (!coverDir) return send(res, 400, 'bad lib');
     if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以编辑封面');
     if (!writeAllowed(ip, 10, 'cover')) return send(res, 429, 'too many writes');
     /* 上传的图片走 dataUrl，2MB 的图 base64 之后约 2.8MB，留点余量卡在 4MB */
@@ -1601,7 +2040,9 @@ const server = http.createServer(async function (req, res) {
     try { payload = JSON.parse(body); } catch (e) { return send(res, 400, 'bad json'); }
     if (!payload || !payload.dirName) return send(res, 400, 'missing dirName');
     try {
-      const entry = await covers.saveCoverForDir(root, payload.dirName, payload.payload || {});
+      /* coverDir 由服务端决定并放在最后：客户端不能在 payload 里塞一个自己的路径 */
+      const opt = Object.assign({}, payload.payload || {}, { coverDir: coverDir });
+      const entry = await covers.saveCoverForDir(lib.path, payload.dirName, opt);
       return json(res, { ok: true, entry: entry });
     } catch (e) {
       /* 把原因回传给界面：权限类错误（EACCES）光看「保存失败」根本没法排查 */
@@ -1614,7 +2055,8 @@ const server = http.createServer(async function (req, res) {
   if (p === '/api/cover' && req.method === 'DELETE') {
     const lib = reqLib(uid, req, u);
     if (!lib) return send(res, 404, 'server mode off');
-    const root = lib.path;
+    const coverDir = coverDirForLib(lib);
+    if (!coverDir) return send(res, 400, 'bad lib');
     if (!me || me.role !== 'admin') return send(res, 403, '只有管理员可以编辑封面');
     let dir = u.searchParams.get('dir') || '';
     if (!dir && req.method === 'POST') {
@@ -1626,19 +2068,29 @@ const server = http.createServer(async function (req, res) {
       try { dir = (JSON.parse(b2) || {}).dirName || ''; } catch (e) {}
     }
     if (!dir) return send(res, 400, 'missing dir');
-    await covers.removeCover(root, dir);
+    await covers.removeCover(lib.path, dir, { coverDir: coverDir });
     return json(res, { ok: true });
   }
 
   if (p.indexOf('/api/media/') === 0) {
     const lib = reqLib(uid, req, u);
     if (!lib) return send(res, 404, 'server mode off');
-    return serveMedia(req, res, p.slice('/api/media/'.length), lib.path);
+    const rel = p.slice('/api/media/'.length);
+    /* 旧客户端 / 桌面端仍打 /api/media：就地解析直链 302，media 票据无需换 scope */
+    if (lib.type === 'alist') {
+      try {
+        const raw = await alistRawUrl(lib, rel);
+        return send(res, 302, '', { location: raw, 'cache-control': 'no-store' });
+      } catch (e) { return sendAlistError(res, e); }
+    }
+    return serveMedia(req, res, rel, lib.path);
   }
 
-  /* ── 转码：Chromium 认不全的 flv 容器先重封装成 mp4 再播 ──
+  /* ── 转码：Chromium 认不全的 flv 容器先重封装成 mp4、wma 转成 mp3 再播 ──
      转换是 CPU 活，长视频可能要几十秒，所以先让前端拿一个「准备好了」的应答，
-     再自己去 /api/tc/<name> 拉流；请求期间保持连接，前端只显示「正在转换」。 */
+     再自己去 /api/tc/<name> 拉流；请求期间保持连接，前端只显示「正在转换」。
+     网盘库没有本地文件：用 AList 换到的直链直接喂 ffmpeg（顺序读流，不用先落临时文件），
+     缓存 key 取扫描快照里的 size/mtime，同一集反复播才会命中同一个产物。 */
   if (p === '/api/prepare') {
     if (req.method !== 'POST') return send(res, 405, 'POST only');
     const lib = reqLib(uid, req, u);
@@ -1655,11 +2107,20 @@ const server = http.createServer(async function (req, res) {
     if (!rel) return send(res, 400, 'missing rel');
     const ext = path.extname(rel).slice(1).toLowerCase();
     if (!TC.needs(ext) || !MEDIA_EXT.has(ext)) return send(res, 400, 'bad format');
-    let file;
-    try { file = inside(root, rel); } catch (e) { return send(res, 403, 'forbidden'); }
-    let st;
-    try { st = await fsp.stat(file); } catch (e) { return send(res, 404, 'not found'); }
-    if (!st.isFile()) return send(res, 404, 'not found');
+    let input = '';   // 交给 ffmpeg 的输入：本地路径 / 网盘直链
+    let st = null;
+    let cacheKey = '';
+    if (lib.type === 'alist') {
+      let hit;
+      try { hit = await alistResolve(lib, rel); } catch (e) { return sendAlistError(res, e); }
+      input = hit.url;
+      st = { size: hit.size, mtimeMs: hit.mtime };
+      cacheKey = 'alist:' + alistOwnerId(lib) + '|' + rel;
+    } else {
+      try { input = inside(root, rel); } catch (e) { return send(res, 403, 'forbidden'); }
+      try { st = await fsp.stat(input); } catch (e) { return send(res, 404, 'not found'); }
+      if (!st.isFile()) return send(res, 404, 'not found');
+    }
     /* 客户端切走了就没人要这个文件：连接一断就把请求当成取消信号，转码内核会把
        排队中/正在跑的任务一起停掉。不这么做的话，一个 40 集的 flv 专辑连点几集，
        会排出一长串没人要的转码任务，还白占 HTTP 连接（同域只有 6 条）。 */
@@ -1670,7 +2131,10 @@ const server = http.createServer(async function (req, res) {
     const onGone = function () { if (!res.writableEnded) ctrl.abort(); };
     res.on('close', onGone);
     try {
-      const r = await TC.prepare({ file: file, rel: rel, stat: st, cacheDir: tcDir(), signal: ctrl.signal });
+      const r = await TC.prepare({
+        input: input, rel: rel, stat: st, cacheKey: cacheKey,
+        cacheDir: tcDir(), signal: ctrl.signal
+      });
       return json(res, { url: '/api/tc/' + path.basename(r.file), ext: r.ext, cached: r.cached });
     } catch (err) {
       /* 连接已经断了（或者就是被我们取消的）：没人在等这个响应 */
@@ -1685,13 +2149,29 @@ const server = http.createServer(async function (req, res) {
 
   if (p.indexOf('/api/tc/') === 0) return serveTc(req, res, p.slice('/api/tc/'.length));
 
-  /* 时长探测：只读文件头不转码，前端给 wma/flv 这类曲目算时长用 */
+  /* 时长探测：只读文件头不转码，前端给 wma/flv 这类曲目算时长用。
+     网盘库同样能探：直链丢给 ffmpeg 读头部（不会把整集拉下来），
+     缓存按库+rel 记，避免每次刷新都把整张专辑重新探一遍。 */
   if (p === '/api/duration') {
     const lib = reqLib(uid, req, u);
     if (!lib) return send(res, 404, 'server mode off');
     const root = lib.path;
     const rel = u.searchParams.get('rel') || '';
     if (!rel) return send(res, 400, 'missing rel');
+    if (lib.type === 'alist') {
+      try {
+        const hit = await alistResolve(lib, rel);
+        /* 直链签名会变化，但文件版本由扫描快照的 size/mtime 标识。
+           把版本放进缓存键，避免同一路径替换文件后 10 分钟内仍显示旧时长。 */
+        const version = String(hit.size || 0) + '|' + String(hit.mtime || 0);
+        return json(res, {
+          d: await TC.probeDuration(hit.url, 'alist:' + alistOwnerId(lib) + '|' + rel + '|' + version)
+        });
+      } catch (e) {
+        /* 取链失败（未配置/凭据失效/不在快照里）不当作错误：前端只是没时长显示 */
+        return json(res, { d: 0 });
+      }
+    }
     let file;
     try { file = inside(root, rel); } catch (e) { return send(res, 403, 'forbidden'); }
     return json(res, { d: await TC.probeDuration(file) });

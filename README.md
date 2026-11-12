@@ -24,7 +24,7 @@
 
 - **资源库**：一个目录一个库，可加多个（有声书 / 课程 / 广播剧…），侧栏一键切换
 - **目录即专辑**：每个顶层子目录自动成为专辑，按集号自然排序（第 2 集在第 10 集之前）
-- **专辑封面**：扫描到新专辑时自动去喜马拉雅按目录名搜同名专辑，下载封面到 `.fm-covers/`，搜不到才退回渐变封面
+- **专辑封面**：按目录名补封面，先帆书官方书目、再豆瓣、最后喜马拉雅，存到库根的 `.fm-covers/`，都搜不到才退回渐变封面
 - **自动去重**：同名文件只保留体积最大的一个
 - **智能分类**：首次扫描按关键词归入历史军事 / 文学小说 / 心理成长 / 国学经典 / 影视原声，可增删改
 - **分类管理**：新建、换色、重命名、删除；专辑卡片可直接拖到左侧分类，一个专辑可属多个分类
@@ -35,7 +35,7 @@
 - **睡眠定时**：分钟倒计时或「本集播完停止」，最后 10 秒音量淡出；可设每晚 22:00–07:00 播放时自动定时 30 分钟
 - **全屏播放页**：实时频谱、大封面、15 秒快进快退、播放队列
 - **视频播放**：mp4 / webm 直接看，flv 自动重封装，B 站式画面 + 浮层控件
-- **格式兼容**：flv 由系统 ffmpeg 重封装后播放；ape / wv / wma 不做播放支持，点开会明确提示「不支持的文件格式」（见「需要 ffmpeg 的格式」）
+- **格式兼容**：flv 由系统 ffmpeg 重封装成 mp4、wma 由 ffmpeg 转成 mp3 后播放（都走缓存）；ape / wv 不做播放支持，点开会明确提示「不支持的文件格式」（见「需要 ffmpeg 的格式」）
 - **系统媒体键**：支持键盘媒体键与锁屏信息
 
 ## 资源库
@@ -68,13 +68,24 @@ ffmpeg -i 某剧集.mkv -c copy 某剧集.mp4     # 只换容器，几秒钟
 
 ## 需要 ffmpeg 的格式
 
-Chromium 认不全 `flv` 容器，所以播放前会重封装成 `mp4`：
-转好的文件缓存在用户数据目录的 `tc/` 下（桌面端 `%APPDATA%\星海FM\tc`，服务端与 `fm.db` 同目录），
-同一文件第二次播放直接命中缓存，不占额外等待。
+Chromium 认不全 `flv` 容器，也没有 WMA 解码器，所以播放前会先转一份：
 
-**`ape / wv / wma` 不在支持范围内**：它们只能靠 ffmpeg 解码成 mp3，但一张整轨 ape 要转近一分钟、
-一集 wma 有声书也要几十秒，等起来比报错更难受。这些文件仍会被扫描进库、时长照常显示，
-点播放会提示「不支持 APE 格式，请先转成 mp3」。批量转换：
+- `flv` → `mp4`（重封装，几乎不耗 CPU，1~3 秒）
+- `wma` → `mp3`（LAME 原生编码，单声道 48k / 立体声 80k，10 分钟约 4 秒）
+
+转好的文件缓存在用户数据目录的 `tc/` 下（桌面端 `%APPDATA%\星海FM\tc`，服务端与 `fm.db` 同目录），
+同一文件第二次播放直接命中缓存，不占额外等待。产物是带索引的真文件，拖动、倍速、续播点、
+时长探测和普通 mp3/mp4 完全一样。
+
+没有 ffmpeg 时，`wma` 还会退到浏览器里用 WASM 边解码边编码（MSE 边转边播，首块不到 1 秒出声，
+见 `js/wma.js`）；这条路只作兜底，因为没有 ffmpeg 的机器本来就转不了别的格式。
+
+网盘库（Alist/OpenList）里的 `wma` / `flv` 同样会转：服务端用换到的直链直接喂 ffmpeg
+（顺序读流，不先落临时文件），缓存 key 只取 `库+rel+size+mtime`，直链里的临时签名不参与，
+所以同一集反复播只转一次。
+
+**`ape / wv` 不在支持范围内**：一张整轨 ape 要转近一分钟，等起来比报错更难受。这些文件仍会被
+扫描进库、时长照常显示，点播放会提示「不支持 APE 格式，请先转成 mp3」。批量转换：
 
 ```bash
 ffmpeg -i 某集.ape -c:a libmp3lame -q:a 4 某集.mp3
@@ -107,7 +118,7 @@ FM_FFMPEG="D:/tools/ffmpeg/bin/ffmpeg.exe" npm start   # 手动指定 ffmpeg
 
 封面由脚本先抓到本地，播放器只读本地文件。
 
-扫描资源库时如果发现有目录还没有封面，主进程会在后台自动去喜马拉雅搜一张回来（搜的是同名专辑，按标题相似度挑），抓完界面自动换上，不用手动跑命令。服务端模式同理，由服务端那台机器去抓。
+取图链路与 `fm-covers` 技能一致：先查帆书官方书目（按年份拉书单，书名相似度 ≥0.86 直接采信；名字差一点但目录日期 MMDD 和官方发布日期对得上也认），再试豆瓣大图，最后才去喜马拉雅按同名专辑搜。官方偶尔只给 168×224 的小图，脚本会量尺寸后换豆瓣。服务端模式同理，由服务端那台机器去抓。
 
 命令行保留下来，方便单独处理某个目录：
 
@@ -118,7 +129,8 @@ node tools/fetch-covers.js --only 三体            # 只补某几本
 node tools/fetch-covers.js --force               # 全部重抓
 ```
 
-- 结果放在音频目录的 `.fm-covers/`：图片 + `covers.json`（目录名 → 图片、匹配到的专辑标题、相似度）
+- 结果放在库根目录的 `.fm-covers/`：图片 + `covers.json`（目录名 → 图片、匹配到的专辑标题、相似度、来源）
+- 樊登/帆书这种「2020年/专辑」两层库会自动下钻年份目录，索引键仍是专辑目录名（不带年份）
 - 已抓过的自动跳过，新加几本书再跑一次即可
 - 播放器按目录名精确匹配，再按相似度（≥0.8）复用
 
@@ -162,12 +174,13 @@ fm/
 ├─ js/                 util · store · media · fs · covers · library · viz · player · ui · app
 ├─ cover-fetch.js      抓封面（扫描到新专辑时自动跑，也可命令行单跑）
 ├─ tools/              serve.js · tunnel.js · bump-version.js（fetch-covers.js 是兼容入口）
+├─ supervisor/         supervisord.conf + ctl.sh + agent.sh + README.md（后台常驻跑 tunnel.js）
 ├─ main.js             Electron 主进程（选目录、扫描、读文件、自定义协议）
 ├─ preload.js          暴露给页面的原生能力
 ├─ build/              应用图标与启动图
 ├─ dist/               打包产物
 ├─ 启动.bat            浏览器模式的本地服务器
-├─ 启动-公网.bat        服务器模式 + SSH 反向隧道（读 .tunnel.json）
+├─ 启动-公网.command   服务器模式 + SSH 反向隧道（读 .tunnel.json）
 └─ README.md
 ```
 
@@ -191,7 +204,9 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 
 - **源码包**：`dist/XinghaiFM-<版本>-src.zip`，解压后 `npm install && npm start`
 - **出安装包**：解压后双击 `打包-macOS.command`，或 `npm run dist:mac` → `dist/` 里的 dmg / zip
-- **公网隧道**：双击 `启动-公网.bat`，先 `node tools/init-db.js` 初始化用户 / 密码
+- **公网隧道**：双击 `启动-公网.command`，先 `node tools/init-db.js` 初始化用户 / 密码
+- **后台常驻**：`supervisor/ctl.sh start|stop|restart|status|log`（supervisord 崩了会自动拉起 `tools/tunnel.js`；首次先去 `python3 -m venv ~/.supervisor/venv && ~/.supervisor/venv/bin/pip install -i https://pypi.org/simple supervisor`）
+- **开机自启**：`supervisor/agent.sh install|uninstall|status`，装的是 `~/Library/LaunchAgents/com.xinghai.fm.supervisord.plist`（登录后由 launchd 拉起 supervisord，KeepAlive）；`status` 逐项体检 launchd / supervisord / 进程 / 本地端口 / 隧道 / 公网，有异常退出码为 1
 - 已配好图标 `build/icon.icns`、分类 `public.app-category.music`、应用菜单、最低系统 macOS 12.7.6
 - 无开发者证书时走 ad-hoc 签名，首次打开需「右键 → 打开」
 
@@ -227,7 +242,7 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 
    打开 `http://127.0.0.1:8080/`，用用户名 + 密码登录后进资源库。
 
-3. **挂到公网**：把 `.tunnel.example.json` 复制成 `.tunnel.json`，填 `ssh.host`（`ssh.key` 留空用 `~/.ssh/id_rsa`），双击 `启动-公网.bat`：
+3. **挂到公网**：把 `.tunnel.example.json` 复制成 `.tunnel.json`，填 `ssh.host`（`ssh.key` 留空用 `~/.ssh/id_rsa`），双击 `启动-公网.command`：
 
    ```
    清理服务器上残留的 8889 监听…
@@ -316,7 +331,7 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 | `fm.db` | `%APPDATA%\星海FM\`（macOS：`~/Library/Application Support/星海FM/`） | SQLite：用户 / 资源库 / 远程配置 | 删了要重新 `node tools/init-db.js`（音频不受影响） |
 | `.fm-meta.json` | 每个资源库目录内 | 分类 / 改名 + 进度 / 时长 | 删了会重建，远程端暂时看不到分类 |
 | `.fm-covers/covers.json` | 每个资源库目录内 | 封面索引 | 删了只是没封面 |
-| `.tunnel.json` | 项目根目录 | 公网隧道配置 | 删了 `启动-公网.bat` 会提示缺配置 |
+| `.tunnel.json` | 项目根目录 | 公网隧道配置 | 删了 `启动-公网.command` 会提示缺配置 |
 
 桌面版 LocalStorage 在 `%APPDATA%\星海FM\Local Storage\leveldb`，是分类 / 进度 / 索引缓存的主副本，不用手工改；收藏在 `fm.db`。
 
@@ -356,7 +371,7 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 
 环境变量 `FM_DATA_FILE`：把数据库文件指到别处（默认 `%APPDATA%\星海FM\fm.db`），测试或多实例时用。
 
-`启动-公网.bat` 自动拼 `<localPort> --host 127.0.0.1 [--config <file>]`，再按 `.tunnel.json` 决定是否加 `--allow-lib-edit`。
+`启动-公网.command` 自动拼 `<localPort> --host 127.0.0.1 [--config <file>]`，再按 `.tunnel.json` 决定是否加 `--allow-lib-edit`。
 
 ### `tools/tunnel.js` 参数
 

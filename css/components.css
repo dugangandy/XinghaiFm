@@ -28,6 +28,16 @@
 .play-btn.huge{width:70px;height:70px;box-shadow:0 16px 46px -14px rgba(34,211,238,.95),0 0 0 1px rgba(255,255,255,.18) inset}
 .play-btn.huge .i{width:32px;height:32px}
 
+/* 取直链 / 等首包：按钮图标换成转圈，别让用户以为点了没反应 */
+.play-btn.is-loading{pointer-events:none}
+.play-btn.is-loading .i{display:none}
+.play-btn.is-loading::after{
+  content:"";width:18px;height:18px;border-radius:50%;
+  border:2px solid rgba(4,7,13,.25);border-top-color:currentColor;
+  animation:spin .9s linear infinite;
+}
+.play-btn.huge.is-loading::after{width:30px;height:30px;border-width:3px}
+
 .chip{
   display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:99px;
   border:1px solid var(--line);background:rgba(255,255,255,.035);
@@ -994,6 +1004,56 @@ body.has-player .view.am-view{padding-bottom:calc(var(--pb-h) + var(--sab,0px) +
 .confirm-txt{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;padding-top:1px}
 .confirm-msg{font-size:13.5px;color:var(--txt);line-height:1.65;word-break:break-word}
 .confirm-note{font-size:11.5px;color:var(--dim);line-height:1.75}
+/* ── 缓存管理弹窗（设置菜单）── */
+/* 用 vw 兜底而不是 100%：grid 弹窗容器是 auto 列，100% 在窄屏会被内容撑大 */
+.modal.cache-modal{width:min(480px,calc(100vw - 32px))}
+.cache-mgr{display:flex;flex-direction:column;gap:12px;padding:2px 0 4px}
+.cache-sum{font-size:11.5px;color:var(--dim)}
+.cache-list{display:flex;flex-direction:column;gap:8px}
+.cache-row{
+  display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:12px;
+  border:1px solid var(--line);background:rgba(255,255,255,.03);transition:.18s;
+}
+.cache-row:hover{border-color:var(--line-2);background:rgba(255,255,255,.055)}
+/* 没缓存的库弱化一档：它只是告诉你「这儿暂时没东西可清」 */
+.cache-row.is-empty{background:rgba(255,255,255,.015)}
+.cache-row.is-empty:hover{border-color:var(--line);background:rgba(255,255,255,.03)}
+.cache-row.is-empty .cache-lib{color:var(--dim)}
+.cache-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.cache-head{display:flex;align-items:center;gap:8px;min-width:0}
+.cache-lib{flex:0 1 auto;min-width:0;font-size:13.5px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cache-tag{
+  flex:none;padding:0 6px;border-radius:6px;font-size:10px;line-height:17px;
+  color:var(--cyan);border:1px solid rgba(34,211,238,.3);background:rgba(34,211,238,.12);
+}
+.cache-size{flex:none;margin-left:auto;font-size:12.5px;font-weight:600;color:var(--txt);font-variant-numeric:tabular-nums}
+.cache-size.none{color:var(--dim);font-weight:400;font-size:12px}
+/* 详情拆成一排小标签：更新时间 / 规模 / 目录口径各占一格，窄屏自动换行 */
+.cache-meta{display:flex;flex-wrap:wrap;gap:5px}
+.cache-chip{
+  padding:1px 7px;border-radius:7px;font-size:10.5px;line-height:16px;color:var(--dim);
+  border:1px solid var(--line);background:rgba(255,255,255,.03);font-variant-numeric:tabular-nums;
+}
+.cache-chip.warn{color:#fbbf24;border-color:rgba(251,191,36,.28);background:rgba(251,191,36,.09)}
+.cache-hint{font-size:11px;color:var(--dim);line-height:18px}
+.cache-btn{flex:none;height:30px;padding:0 13px;font-size:12px}
+/* ── 存储管理：标签页把索引 / 封面 / 下载分开放 ── */
+.store-mgr{display:flex;flex-direction:column;gap:12px;padding:2px 0 4px}
+.store-tabs{
+  display:flex;gap:4px;padding:3px;border-radius:12px;
+  border:1px solid var(--line);background:rgba(255,255,255,.03);
+}
+.store-tab{
+  flex:1;height:30px;border:0;border-radius:9px;background:transparent;cursor:pointer;
+  font-size:12.5px;color:var(--dim);transition:.16s;
+}
+.store-tab:hover{color:var(--txt)}
+.store-tab.on{color:var(--txt);background:rgba(34,211,238,.14);box-shadow:inset 0 0 0 1px rgba(34,211,238,.3)}
+.store-pane{display:flex;flex-direction:column;gap:10px;min-height:140px}
+.store-pane[hidden]{display:none}
+.store-foot{display:flex;justify-content:flex-end}
+.store-clear{height:30px;padding:0 13px;font-size:12px}
+.cache-btn:disabled,.store-clear:disabled{opacity:.45;cursor:not-allowed}
 .field{display:flex;flex-direction:column;gap:7px}
 .field label{font-size:11px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase}
 .input{
@@ -1140,31 +1200,7 @@ select.input option{background:#161d29;color:var(--txt)}
 .lib-drawer-foot{
   display:flex;gap:9px;padding:14px 16px 16px;border-top:1px solid var(--line);
 }
-.lib-remote-btn{
-  height:auto;min-height:44px;min-width:0;justify-content:flex-start;gap:10px;padding:7px 14px 7px 12px;
-  text-align:left;white-space:nowrap;
-}
-.lib-remote-btn .link-dot{
-  flex:none;width:7px;height:7px;border-radius:99px;background:#34d399;
-  box-shadow:0 0 0 3px rgba(52,211,153,.14);
-}
-.lib-remote-btn.warn .link-dot{background:#fbbf24;box-shadow:0 0 0 3px rgba(251,191,36,.14)}
-.lib-remote-btn .remote-txt{min-width:0;display:flex;flex-direction:column;gap:3px;line-height:1.1}
-.lib-remote-btn .remote-txt b{font-size:12.5px;font-weight:600;color:var(--txt-2)}
-.lib-remote-btn .remote-txt small{
-  font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;
-  font-variant-numeric:tabular-nums;letter-spacing:.01em;
-}
-.lib-remote-btn:hover .remote-txt b{color:var(--txt)}
-/* 只读态：资源库抽屉里的服务器地址仅作展示，不响应点击、不做 hover 位移 */
-.lib-remote-btn.is-ro{cursor:default}
-.lib-remote-btn.is-ro:hover{background:rgba(255,255,255,.02);border-color:var(--line);transform:none}
-.lib-remote-btn.is-ro:hover .remote-txt b{color:var(--txt-2)}
 .lib-drawer-foot .btn{flex:1}
-/* 服务器按钮内容多，给它多一点宽度，完成按钮收窄固定 */
-/* 两个按钮等宽等高：flex 的 basis 0 会被 padding 撑出差异，直接按 50% 分 */
-.lib-drawer-foot .lib-remote-btn,
-.lib-drawer-foot .lib-remote-btn + .btn{flex:1 1 calc(50% - 5px);height:44px}
 @media (max-width:979.98px){
   .lib-drawer-foot{padding-bottom:calc(16px + var(--pb-h))}
 }
@@ -1183,7 +1219,10 @@ select.input option{background:#161d29;color:var(--txt)}
 }
 .lib-ico .i{width:16px;height:16px}
 .lib-info{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}
+/* 库名一行：名字过长就省略，后面的类型胶囊（网盘）始终露在前面不被挤掉 */
+.lib-name{display:flex;align-items:center;gap:6px;min-width:0}
 .lib-info b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lib-name b{min-width:0}
 .lib-info small{font-size:11px;color:var(--dim);word-break:break-all;line-height:1.35}
 /* 每个库的规模（专辑 / 集数 / 占用）：首页头部收掉后信息挪到这里 */
 .lib-info .lib-stats{

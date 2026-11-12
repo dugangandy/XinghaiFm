@@ -59,4 +59,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     /* 在线更新：把私有目录里的 APK 交给系统安装器，需要 FileProvider */
     implementation("androidx.core:core:1.13.1")
+    /* 纯 JVM 单测（封面缓存键 / mime 判断），不影响 APK 产物 */
+    testImplementation("junit:junit:4.13.2")
 }

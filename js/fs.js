@@ -174,21 +174,33 @@
   /* <audio>/<img> 带不了请求头：能靠 cookie 的就靠 cookie（浏览器/APK，URL 上不挂票据），
      桌面端（fm://app + Bearer，没有 cookie）才换一张短期票据挂 query */
   let ticketCache = Object.create(null);     // scope -> { t, exp }
-  async function signedUrl(path, libId) {
+  async function signedUrl(path, libId, opts) {
     /* 封面/媒体的 <img>/<audio> 带不了请求头：把库挂在 query 上，服务端据此定位。
        libId 不给就用当前库；跨库搜索要按别的库取封面，见 covers.js 的 ensureLib */
     let p = path;
+    const o = opts || {};
     const lib = libId === undefined ? activeId : libId;
     if (lib) p += (p.indexOf('?') >= 0 ? '&' : '?') + 'libId=' + encodeURIComponent(lib);
     if (!REMOTE) return p;
-    const scope = p.indexOf('/api/cover/') === 0 ? 'cover' : 'media';
+    const scope = o.scope || (p.indexOf('/api/cover/') === 0 ? 'cover' : 'media');
+    /* Alist 票据绑定 libId + rel：每集一张，不能按 scope 共用缓存 */
+    const cacheKey = scope === 'alist'
+      ? 'alist|' + encodeURIComponent(lib || '') + '|' + encodeURIComponent(o.rel || '')
+      : scope;
     const now = Math.floor(Date.now() / 1000);
-    let c = ticketCache[scope];
+    let c = ticketCache[cacheKey];
     /* 票据按用途分开取：封面 10 分钟一轮，媒体要顶住单集时长，不能共用一份 */
     if (!c || (c.t && c.exp - now < 60)) {
-      const r = await apiFetch('/api/ticket?scope=' + scope, { cache: 'no-store' });
+      let q = '/api/ticket?scope=' + scope;
+      if (scope === 'alist') {
+        q += '&libId=' + encodeURIComponent(lib || '') + '&rel=' + encodeURIComponent(o.rel || '');
+      }
+      const r = await apiFetch(q, { cache: 'no-store' });
       if (!r.ok) throw new Error(r.status === 401 ? '登录已过期，请重新登录' : U.NET_FAIL);
-      c = ticketCache[scope] = await r.json();
+      c = ticketCache[cacheKey] = await r.json();
+      /* 每集一张 alist 票据，长播会一直堆；超上限按插入顺序丢最旧的 */
+      const keys = Object.keys(ticketCache);
+      if (keys.length > 64) delete ticketCache[keys[0]];
     }
     if (!c.t) return API_BASE + p;      // cookie 模式：同源请求自带会话 cookie
     return API_BASE + p + (p.indexOf('?') >= 0 ? '&' : '?') + 't=' + encodeURIComponent(c.t);
@@ -822,6 +834,16 @@
   function applyMeta(data) {
     if (!data || data.empty) return false;
     let touched = false;
+    if (data.catsManual !== undefined && activeId) {
+      const manualKey = 'catsManual:' + activeId;
+      const manual = !!FM.store.read(manualKey, false);
+      const incoming = !!data.catsManual;
+      if (incoming !== manual) {
+        FM.store.write(manualKey, incoming);
+        FM.store.touch(manualKey);
+        touched = true;
+      }
+    }
     if (Array.isArray(data.cats) && Number(data.v) >= 2 && activeId) {
       if (normCats(FM.db.catsFor(activeId)) !== normCats(data.cats)) {
         FM.db.setCatsFor(activeId, data.cats);
@@ -970,6 +992,7 @@
     if (add.durations) Object.assign(base.durations || (base.durations = {}), add.durations);
     /* 目录分类黑名单是整份名单，后推的覆盖先推的（都是本地当前完整列表） */
     if (add.dirCatDropped) base.dirCatDropped = add.dirCatDropped;
+    if (add.catsManual !== undefined) base.catsManual = add.catsManual;
     /* 上次收听那一集：按用户存（服务端 settings），不跟库共享。
        空串是有效值（清空队列时用来把服务端那条也清掉），不能用真值判断 */
     if (add.lastTrack !== undefined) base.lastTrack = add.lastTrack;
@@ -1103,6 +1126,7 @@
         if (patch.progress) one.progress = patch.progress;
         if (patch.durations) one.durations = patch.durations;
         if (patch.dirCatDropped) one.dirCatDropped = patch.dirCatDropped;
+        if (patch.catsManual !== undefined) one.catsManual = patch.catsManual;
         if (patch.lastTrack !== undefined) one.lastTrack = patch.lastTrack;
         if (patch.queue) one.queue = patch.queue;
         if (patch.prefs) one.prefs = patch.prefs;
@@ -1559,13 +1583,16 @@
         : (data.dirMode !== undefined ? normDirMode(data.dirMode)
           : (activeLib.dirMode === 'auto' ? 'auto' : normDirMode(data.dirGroup ? 'cat' : 'flat')));
       if (dirMode !== undefined) { activeLib.dirMode = dirMode; activeLib.dirGroup = dirMode !== 'flat'; }
-      /* stale：服务端等了 2 分钟还没扫完，先把上次的缓存给我们看，
-         它那边还在后台接着扫，扫完落盘后 scannedAt 会变，下次能同步到 */
+      /* stale：服务端等满扫描等待上限还没扫完，先把上次的缓存给我们看，
+         它那边还在后台接着扫，扫完落盘后 scannedAt 会变，下次能同步到。
+         failed：后台那次已经失败（不是超时），界面要明确告诉用户「这是旧结果」。 */
       return {
         libId, rootName: data.rootName || activeLib.name, root: data.root || 'server', mode,
         files: data.files, scannedAt: Number(data.scannedAt) || 0, dirMode,
         dirGroup: dirMode === undefined ? undefined : dirMode !== 'flat',
-        stale: !!data.stale
+        stale: !!data.stale,
+        failed: !!data.failed,
+        error: data.error || ''
       };
     }
 
@@ -1621,6 +1648,18 @@
     } catch (e) { return 0; }
   }
 
+  /* 网盘扫描进度（服务端模式）：/api/scan 是长请求，这里并发轮询进度。
+     拿不到就返回 null，调用方静默降级，别让进度接口影响扫描本身。 */
+  async function scanProgress(libId) {
+    if (mode !== 'server') return null;
+    try {
+      const q = libId ? '?libId=' + encodeURIComponent(libId) : '';
+      const res = await apiFetch('/api/scan/progress' + q, { cache: 'no-store' });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (e) { return null; }
+  }
+
   /* ── 取文件 ── */
   /* 桌面模式：直接给 fm:// 流式地址，由主进程按 Range 读盘，不整本读进内存 */
   function mediaUrl(rel) {
@@ -1647,10 +1686,10 @@
      opts.signal 用来取消：用户切到别的集时，上一个文件就别再转了。 */
   let tcSeq = 0;
 
-  async function prepare(rel, opts) {
-    if (!FM.media.needsTranscode(extOf(rel))) return null;
+  /* 主进程（IPC）/ 服务端（HTTP）的 ffmpeg 转码：产物是带索引的真文件，播放器拿到的
+     就是普通 mp3/mp4 地址，拖动、倍速、续播、时长探测全走通用逻辑。 */
+  async function hostPrepare(rel, opts) {
     const signal = opts && opts.signal;
-    if (signal && signal.aborted) throw tcError('aborted');
     if (mode === 'desktop' && window.fmNative && window.fmNative.prepare) {
       /* IPC 本身没法取消，只能带个 id 过去：切集时再发一条 cancel 让主进程停掉 ffmpeg */
       const id = 'tc' + (++tcSeq);
@@ -1686,6 +1725,14 @@
       if (!res.ok) {
         let txt = '';
         try { txt = (await res.text()).trim(); } catch (e) {}
+        let structured = null;
+        try { structured = JSON.parse(txt); } catch (e) {}
+        const alistError = structured && structured.error;
+        /* /api/prepare 的网盘取链失败是结构化错误；404 也可能表示扫描快照已过期。
+           这类错误不能退到浏览器 WASM：Worker 仍要 fetch 同一条无 CORS 直链。 */
+        if (alistError && alistError.code) {
+          throw tcError('alist-failed', alistError.message || '网盘播放失败');
+        }
         /* 501 = 服务器上没装 ffmpeg；429 = 切集太快被限流（一秒 5 次）。
            这两种都不是「文件坏了」，文案要分开，别让用户去查文件 */
         if (res.status === 429) throw tcError('busy', txt);
@@ -1695,7 +1742,60 @@
       /* <audio>/<video> 带不了请求头：桌面远程模式要靠票据挂在 query 上 */
       return { url: await signedUrl(data.url), ext: data.ext, cached: !!data.cached };
     }
-    /* 走到这里说明确实需要转码，但当前是纯浏览器目录（files / handle）——没有 ffmpeg。
+    throw tcError('no-encoder');
+  }
+
+  /* 浏览器里解（目前只有 wma：WASM 解码 + MP3 编码 + MSE 边转边播，见 js/wma.js）。
+     首块不到一秒就能出声，代价是 MSE 那套限制都得自己兜（配额、seek、时间轴）。 */
+  async function clientPrepare(rel, opts) {
+    const signal = opts && opts.signal;
+    try {
+      /* 先拿原始源：本地 Blob URL 没有 Content-Range，必须把 File 元信息传给 Worker。 */
+      const source = await src(rel, { raw: true });
+      return await FM.wma.ensure(rel, {
+        source: source,
+        version: source && source.version,
+        signal: signal,
+        onProgress: opts && opts.onProgress
+      });
+    } catch (e) {
+      if (e && e.code === 'aborted') throw e;
+      console.warn('[wma] 浏览器内转码失败：' + ((e && e.message) || e));
+      throw tcError('client-tc-failed',
+        '这个文件浏览器转不了（' + ((e && e.message) || '未知原因') + '）');
+    }
+  }
+
+  async function prepare(rel, opts) {
+    if (!FM.media.needsTranscode(extOf(rel))) return null;
+    const signal = opts && opts.signal;
+    if (signal && signal.aborted) throw tcError('aborted');
+
+    const ext = extOf(rel);
+    const clientOk = !!(FM.wma && FM.media.clientTranscode && FM.media.clientTranscode(ext));
+    const isAlist = mode === 'server' && !!(activeLib && activeLib.type === 'alist');
+    /* 网盘直链通常没有 ACAO。浏览器 Worker 的 fetch 会在重定向后被 CORS
+       拦截，所以服务端转码失败时不能再退到客户端 WASM。 */
+    const clientFallback = clientOk && !isAlist;
+    const hostOk = (mode === 'desktop' && window.fmNative && window.fmNative.prepare) || mode === 'server';
+
+    /* 优先 ffmpeg：原生编码比浏览器里跑 WASM 快一个数量级，产物还是带索引的真文件，
+       拖动/续播/时长都不用特殊照顾。只有这台机器上没有 ffmpeg（或它压根转不动这个
+       文件）时，才退到浏览器内解码 —— 纯浏览器目录（files / handle）没有 ffmpeg，
+       直接从下面那条路走。 */
+    if (hostOk) {
+      try {
+        return await hostPrepare(rel, opts);
+      } catch (e) {
+        const code = (e && e.code) || '';
+        /* 取消 / 服务端忙 / 网盘取链失败：换条路重来一遍只会更糟，原样往上抛 */
+        if (code === 'aborted' || code === 'busy' || code === 'alist-failed' || !clientFallback) throw e;
+        console.warn('[wma] ffmpeg 这条路走不通（' + code + '：' + ((e && e.message) || e) +
+          '），改用浏览器内 WASM：' + rel);
+      }
+    }
+    if (clientFallback) return clientPrepare(rel, opts);
+    /* 走到这里说明确实需要转码，但既没有 ffmpeg 也没有客户端方案。
        给个能指向出路的错误，别让它一路走到 <audio> 才报「播放失败」。 */
     throw tcError('no-encoder');
   }
@@ -1717,22 +1817,46 @@
   }
 
   async function src(rel, opts) {
+    const isAlist = mode === 'server' && !!(activeLib && activeLib.type === 'alist');
     /* 需要转码的格式只在显式要求时才转：ui.js 的时长探测也会调 src()，
-       默认转码会让「打开一张 wma 专辑」并发转几十集。 */
+       默认转码会让「打开一张 wma 专辑」并发转几十集。
+       网盘库也能转：服务端拿 AList 直链直接喂 ffmpeg（见 serve.js 的 /api/prepare），
+       没有 ffmpeg 时再退到浏览器内 WASM。 */
     if (opts && opts.prepare) {
-      const tc = await prepare(rel, { signal: opts.signal });
-      if (tc && tc.url) return { url: tc.url, revoke: null, transcoded: true };
+      const tc = await prepare(rel, { signal: opts.signal, onProgress: opts.onProgress });
+      /* mse 标记要透传：MediaSource 的地址不能被元素二次 load，播放器得区别对待 */
+      if (tc && tc.url) return { url: tc.url, revoke: null, transcoded: true, mse: !!tc.mse };
     }
-    /* 安卓壳：已下载的曲目优先播本机 127.0.0.1 文件，不直连服务器、不耗流量 */
+    /* 安卓壳：已下载的曲目优先播本机 127.0.0.1 文件，不直连服务器、不耗流量。
+       local 标记给播放器用：这个地址相对页面是跨源的，且小服务不返回 ACAO，
+       播放时不能声明 crossorigin，否则浏览器按 CORS 校验直接拒掉。 */
     if (APP && FM.android && FM.android.downloaded && FM.android.downloaded(rel)) {
       const local = FM.android.localUrl ? FM.android.localUrl(rel) : '';
-      if (local) return { url: local, revoke: null };
+      if (local) return { url: local, revoke: null, local: true };
+    }
+    if (isAlist) {
+      const ext = extOf(rel);
+      /* 真正没有解码路径的格式（ape / wv）：点播前给结论，别发起直链。
+         需要转码的（wma / flv）上面已经走完 prepare 了，走到这里说明本来是直链就能播的格式。 */
+      if (FM.media && FM.media.unsupported(ext)) {
+        const err = new Error('不支持的文件格式');
+        err.code = 'unsupported';
+        err.ext = ext;
+        throw err;
+      }
+      const q = '/api/alist/raw?rel=' + encodeURIComponent(rel);
+      return { url: await signedUrl(q, activeId, { scope: 'alist', rel: rel }), revoke: null, alist: true };
     }
     if (mode === 'server') return { url: await signedUrl('/api/media/' + rel.split('/').map(encodeURIComponent).join('/')), revoke: null };
     if (mode === 'desktop') return { url: mediaUrl(rel), revoke: null };
     const file = await getFile(rel);
     const url = URL.createObjectURL(file);
-    return { url: url, revoke: function () { URL.revokeObjectURL(url); } };
+    return {
+      url: url,
+      size: Number(file.size) || 0,
+      version: String(Number(file.size) || 0) + '|' + String(Number(file.lastModified) || 0),
+      revoke: function () { URL.revokeObjectURL(url); }
+    };
   }
 
   async function getFile(rel) {
@@ -1763,9 +1887,11 @@
     queueCache, prefsCache, applyPrefs, pickPrefs, PREFS_KEYS, clearLastTrack,
     setDirGroup, setDirMode, setWatch, share,
     get watchSupported() { return watchSupported; },
+    /* 当前库是不是网盘库：前端据此跳过「批量探时长」这类会重复换直链的操作 */
+    get isAlist() { return mode === 'server' && !!(activeLib && activeLib.type === 'alist'); },
     listUsers, createUser, setUserDisabled, resetUserPassword, deleteUser,
     loadFavs, setFav, setFavTrack,
-    scan, scanStamp, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
+    scan, scanStamp, scanProgress, getFile, src, prepare, duration, grant, adoptFiles, supportsPicker,
     apiFetch, signedUrl,
     libs: () => libs.slice(),
     active: () => activeLib,

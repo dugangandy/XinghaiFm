@@ -129,7 +129,8 @@ const MIME = {
   '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2'
+  '.woff2': 'font/woff2',
+  '.wasm': 'application/wasm'
 };
 
 /* ── 音频流：Range 直读磁盘，避免把整本有声书读进内存 ──
@@ -851,7 +852,15 @@ function bindIpc() {
       const id = libId === undefined ? cfg.active : libId;
       const lib = id ? (cfg.libs || []).find(function (l) { return l.id === id; }) : null;
       /* 传了库就用这个库的目录过滤，没传就是全库合并 */
-      return { ok: true, rows: DB.albumListenTop(getDb(), adminUid(), lib ? lib.path : '', limit) };
+      const rows = DB.albumListenTop(getDb(), adminUid(), lib ? lib.path : '', limit);
+      /* 补 libId：统计页的跨库条目要靠它读别的库的封面索引 */
+      const byRoot = new Map();
+      (cfg.libs || []).forEach(function (l) {
+        const key = DB.libRootKey(l.path);
+        if (key && !byRoot.has(key)) byRoot.set(key, l.id);
+      });
+      rows.forEach(function (r) { r.libId = byRoot.get(String(r.libRoot || '')) || ''; });
+      return { ok: true, rows: rows };
     } catch (err) { return { ok: false, rows: [] }; }
   });
 

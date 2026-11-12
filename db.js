@@ -51,6 +51,9 @@ function ensureSchema(db) {
     '  shared_id TEXT,',
     /* 目录自动监听：1 = 主机用 chokidar 监听该目录，变更后自动重扫（默认关） */
     '  watch INTEGER NOT NULL DEFAULT 0,',
+    /* 库类型：local = 本地磁盘；alist = Alist/OpenList 网盘（path 为虚拟根，base_path 为网盘子目录） */
+    "  type TEXT NOT NULL DEFAULT 'local',",
+    "  base_path TEXT NOT NULL DEFAULT '/',",
     '  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE',
     ');',
     'CREATE INDEX IF NOT EXISTS idx_libs_user ON libs(user_id, position);',
@@ -195,6 +198,13 @@ function ensureSchema(db) {
   if (!libCols.some(function (c) { return c.name === 'watch'; })) {
     db.exec('ALTER TABLE libs ADD COLUMN watch INTEGER NOT NULL DEFAULT 0');
   }
+  /* 旧库补列：Alist 网盘库类型与网盘子目录；默认值保证存量本地库行为不变 */
+  if (!libCols.some(function (c) { return c.name === 'type'; })) {
+    db.exec("ALTER TABLE libs ADD COLUMN type TEXT NOT NULL DEFAULT 'local'");
+  }
+  if (!libCols.some(function (c) { return c.name === 'base_path'; })) {
+    db.exec("ALTER TABLE libs ADD COLUMN base_path TEXT NOT NULL DEFAULT '/'");
+  }
   if (!getSetting(db, 'secret')) setSetting(db, 'secret', crypto.randomBytes(32).toString('base64'));
   /* v4：favs 的主键已经覆盖 (user_id, lib_id)，早期的冗余索引清掉 */
   const uv = (db.prepare('PRAGMA user_version').get() || {}).user_version || 0;
@@ -326,11 +336,11 @@ function touchLogin(db, id) { db.prepare('UPDATE users SET last_login_at = ? WHE
 
 /* ── libs（按用户） ── */
 function listLibs(db, uid) {
-  return db.prepare('SELECT id, name, path, added_at AS addedAt, active, shared_id, watch FROM libs WHERE user_id = ? ORDER BY position, added_at').all(uid);
+  return db.prepare('SELECT id, name, path, added_at AS addedAt, active, shared_id, watch, type, base_path AS basePath FROM libs WHERE user_id = ? ORDER BY position, added_at').all(uid);
 }
 function activeLib(db, uid) {
-  return db.prepare('SELECT id, name, path, added_at AS addedAt, shared_id, watch FROM libs WHERE user_id = ? AND active = 1 LIMIT 1').get(uid)
-    || db.prepare('SELECT id, name, path, added_at AS addedAt, shared_id, watch FROM libs WHERE user_id = ? ORDER BY position, added_at LIMIT 1').get(uid)
+  return db.prepare('SELECT id, name, path, added_at AS addedAt, shared_id, watch, type, base_path AS basePath FROM libs WHERE user_id = ? AND active = 1 LIMIT 1').get(uid)
+    || db.prepare('SELECT id, name, path, added_at AS addedAt, shared_id, watch, type, base_path AS basePath FROM libs WHERE user_id = ? ORDER BY position, added_at LIMIT 1').get(uid)
     || null;
 }
 function replaceLibs(db, uid, libs, activeId) {
@@ -341,23 +351,32 @@ function replaceLibs(db, uid, libs, activeId) {
   try {
     /* 整份替换会先删后插：把现有的自动监听开关记下来，调用方没显式带 watch 时沿用，
        否则每次切库 / 改名都会把用户刚打开的监听悄悄关掉 */
-    const prevWatch = {};
-    db.prepare('SELECT id, watch FROM libs WHERE user_id = ? AND shared_id IS NULL').all(uid)
-      .forEach(function (r) { prevWatch[r.id] = r.watch; });
+    const prevWatch = {}, prevMeta = {};
+    db.prepare('SELECT id, watch, type, base_path FROM libs WHERE user_id = ? AND shared_id IS NULL').all(uid)
+      .forEach(function (r) {
+        prevWatch[r.id] = r.watch;
+        prevMeta[r.id] = { type: r.type, basePath: r.base_path };
+      });
     /* 只替换用户自己的库；共享来的只读副本（shared_id 非空）不归这里的增删逻辑管 */
     db.prepare('DELETE FROM libs WHERE user_id = ? AND shared_id IS NULL').run(uid);
-    const ins = db.prepare('INSERT INTO libs(id, user_id, name, path, added_at, active, position, watch) VALUES(?,?,?,?,?,?,?,?)');
+    const ins = db.prepare('INSERT INTO libs(id, user_id, name, path, added_at, active, position, watch, type, base_path) VALUES(?,?,?,?,?,?,?,?,?,?)');
     list.forEach(function (l, i) {
       const id = l.id || ('l' + Date.now().toString(36) + i);
       const watch = l.watch !== undefined ? (l.watch ? 1 : 0) : (prevWatch[id] ? 1 : 0);
-      ins.run(id, uid, l.name || path.basename(l.path) || '资源库', l.path, l.addedAt || Date.now(), id === active ? 1 : 0, i, watch);
+      /* 调用方（如 /api/lib 改名）没带 type/basePath 时沿用旧值，避免把网盘库抹成本地库 */
+      const meta = prevMeta[id] || {};
+      const type = l.type === undefined ? (meta.type || 'local') : (l.type === 'alist' ? 'alist' : 'local');
+      let basePath = meta.basePath || '/';
+      if (l.basePath !== undefined) basePath = String(l.basePath || '/');
+      else if (l.base_path !== undefined) basePath = String(l.base_path || '/');
+      ins.run(id, uid, l.name || path.basename(l.path) || '资源库', l.path, l.addedAt || Date.now(), id === active ? 1 : 0, i, watch, type, basePath);
     });
     db.exec('COMMIT');
     return { active: active };
   } catch (e) { try { db.exec('ROLLBACK'); } catch (e2) {} throw e; }
 }
 function getLib(db, uid, id) {
-  return db.prepare('SELECT id, name, path, added_at AS addedAt, active, shared_id, watch FROM libs WHERE user_id = ? AND id = ?')
+  return db.prepare('SELECT id, name, path, added_at AS addedAt, active, shared_id, watch, type, base_path AS basePath FROM libs WHERE user_id = ? AND id = ?')
     .get(String(uid || ''), String(id || '')) || null;
 }
 /* 元数据是按库目录共享的：只要这个用户登记过同一个目录，就认同一个库
@@ -365,6 +384,19 @@ function getLib(db, uid, id) {
 function libPath(db, id) {
   const r = db.prepare('SELECT path FROM libs WHERE id = ? ORDER BY added_at LIMIT 1').get(String(id || ''));
   return r && r.path ? r.path : null;
+}
+/* 单库定点更新：改名 / 路径 / 类型 / 网盘根目录 / 监听开关，不整份替换。
+   和 replaceLibs 的区别：不删行，避免并发写互相覆盖，也不会把共享副本的活动标记带跑。 */
+function setLibMeta(db, uid, id, patch) {
+  const cur = getLib(db, uid, id);
+  if (!cur) return false;
+  const p = patch || {};
+  const type = p.type === undefined ? cur.type : (p.type === 'alist' ? 'alist' : 'local');
+  const basePath = p.basePath === undefined ? (cur.basePath || '/') : String(p.basePath || '/');
+  const watch = p.watch === undefined ? (cur.watch ? 1 : 0) : (p.watch ? 1 : 0);
+  db.prepare('UPDATE libs SET name = ?, path = ?, type = ?, base_path = ?, watch = ? WHERE user_id = ? AND id = ?')
+    .run(String(p.name || cur.name), String(p.path || cur.path), type, basePath, watch, String(uid), String(id));
+  return true;
 }
 function setActiveLib(db, uid, id) {
   const has = db.prepare('SELECT 1 FROM libs WHERE user_id=? AND id=?').get(uid, id);
@@ -454,14 +486,15 @@ function syncUserSharedLibs(db, uid) {
 
   const keep = {};
   shared.forEach(function (libId) {
-    const src = db.prepare('SELECT id, user_id, name, path FROM libs WHERE id = ? AND shared_id IS NULL').get(libId);
+    const src = db.prepare('SELECT id, user_id, name, path, type, base_path FROM libs WHERE id = ? AND shared_id IS NULL').get(libId);
     if (!src) return;
     if (src.user_id === u) return;            /* 源库所有者本人：已有可编辑行，不再复制一份 */
     keep[libId] = true;
-    const row = db.prepare('SELECT id, name, path FROM libs WHERE user_id = ? AND shared_id = ? LIMIT 1').get(u, libId);
+    const row = db.prepare('SELECT id, name, path, type, base_path FROM libs WHERE user_id = ? AND shared_id = ? LIMIT 1').get(u, libId);
     if (row) {
-      if (row.name !== src.name || row.path !== src.path) {
-        db.prepare('UPDATE libs SET name = ?, path = ? WHERE id = ?').run(src.name, src.path, row.id);
+      if (row.name !== src.name || row.path !== src.path || row.type !== src.type || row.base_path !== src.base_path) {
+        db.prepare('UPDATE libs SET name = ?, path = ?, type = ?, base_path = ? WHERE id = ?')
+          .run(src.name, src.path, src.type, src.base_path, row.id);
       }
       return;
     }
@@ -469,8 +502,8 @@ function syncUserSharedLibs(db, uid) {
     const pos = (db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM libs WHERE user_id = ?').get(u) || {}).p || 0;
     const rid = 'sh' + libId + u;
     /* OR IGNORE：同一用户并发请求可能同时物化同一条，id 是确定的，靠主键去重即可 */
-    db.prepare('INSERT OR IGNORE INTO libs(id, user_id, name, path, added_at, active, position, shared_id) VALUES(?,?,?,?,?,?,?,?)')
-      .run(rid, u, src.name, src.path, Date.now(), anyActive ? 0 : 1, pos, libId);
+    db.prepare('INSERT OR IGNORE INTO libs(id, user_id, name, path, added_at, active, position, shared_id, type, base_path) VALUES(?,?,?,?,?,?,?,?,?,?)')
+      .run(rid, u, src.name, src.path, Date.now(), anyActive ? 0 : 1, pos, libId, src.type, src.base_path);
   });
 
   /* 撤销指派：删掉不再被指派、且非当前激活的副本（正在听的那条留到切走再清，别中途抽走） */
@@ -880,6 +913,16 @@ function setDroppedDirCats(db, root, list) {
   setSetting(db, 'dirCatDropped:' + key, JSON.stringify(arr));
   return arr.length;
 }
+function manualCatOrder(db, root) {
+  const key = libRootKey(root);
+  return !!(key && getSetting(db, 'catsManual:' + key) === '1');
+}
+function setManualCatOrder(db, root, value) {
+  const key = libRootKey(root);
+  if (!key || value === undefined || value === null) return false;
+  setSetting(db, 'catsManual:' + key, value ? '1' : '0');
+  return true;
+}
 
 /* ── 整份读取 / 增量写入（HTTP 与 IPC 都走这两个，保证口径一致） ──
    uid：收听类数据（进度 / 队列 / 偏好）按用户存。老调用方不传时兜底到管理员，
@@ -897,7 +940,7 @@ function metaSnapshot(db, root, uid) {
   if (!key) {
     return {
       v: META_VERSION, root: r, cats: [], albumMeta: {}, progress: {}, durations: {},
-      dirCatDropped: [], queue: { tracks: [], position: 0 }, prefs: {}
+      dirCatDropped: [], catsManual: false, queue: { tracks: [], position: 0 }, prefs: {}
     };
   }
   return {
@@ -908,6 +951,7 @@ function metaSnapshot(db, root, uid) {
     progress: userProgressMap(db, u, r),
     durations: durationMap(db, r),
     dirCatDropped: droppedDirCats(db, r),
+    catsManual: manualCatOrder(db, r),
     queue: userQueueGet(db, u, r),
     prefs: userPrefsGet(db, u)
   };
@@ -926,6 +970,7 @@ function metaApply(db, root, patch, uid) {
     if (patch.durations && typeof patch.durations === 'object') counts.durations = durationWrite(db, key, patch.durations);
     /* 黑名单 / 队列 / 偏好不进 counts：它们只是设置项，别让既有调用方（服务端 counts 回包）多出字段 */
     if (Array.isArray(patch.dirCatDropped)) setDroppedDirCats(db, key, patch.dirCatDropped);
+    if (patch.catsManual !== undefined) setManualCatOrder(db, root, patch.catsManual);
     if (patch.queue && typeof patch.queue === 'object') {
       userQueueSet(db, u, key, patch.queue.tracks, patch.queue.position);
     }
@@ -1136,7 +1181,7 @@ module.exports = {
   derive, makePassword, checkPassword, USERNAME_RE, usernameError, passwordError,
   listUsers, countUsers, findUser, getUser, adminUser, firstUserId, newUserId,
   addUser, setUserPassword, setUserDisabled, countEnabledAdmins, removeUser, touchLogin,
-  listLibs, activeLib, replaceLibs, setActiveLib, getLib, libPath,
+  listLibs, activeLib, replaceLibs, setActiveLib, setLibMeta, getLib, libPath,
   setLibWatch, listWatchLibs,
   listShares, setLibShare, addLibShareTarget, removeLibShare, syncUserSharedLibs,
   listFavs, setFav, clearFavs,

@@ -13,7 +13,8 @@
   }
   const LOOPS = ['all', 'one', 'shuffle', 'off'];
   const LOOP_LABEL = { all: '列表循环', one: '单集循环', shuffle: '随机播放', off: '顺序播放' };
-  const LOOP_ICON = { all: 'repeat', one: 'repeat1', shuffle: 'shuffle', off: 'repeat' };
+  /* off（顺序播放）不能复用 repeat：和列表循环同图标，用户看不出区别 */
+  const LOOP_ICON = { all: 'repeat', one: 'repeat1', shuffle: 'shuffle', off: 'order' };
 
   /* 音频走独立的 <audio>：安卓 WebView 里那个 <video> 藏在 display:none 的播放页里，
      暂停后再换源经常起不来（要杀掉 App 才能恢复），桌面 Chrome 没这毛病。
@@ -36,6 +37,9 @@
   let cur = null;
   let objectUrl = null;
   let objectRevoke = null;
+  /* 当前源是不是 MediaSource（客户端转码的 wma）：这种地址被元素 load 过一次之后
+     就不能再 load 了，Chrome 直接判 MEDIA_ERR_SRC_NOT_SUPPORTED */
+  let mediaMse = false;
   let kind = 'audio';          // 当前这一集是音频还是视频
   let loadToken = 0;
   let saveAt = 0;
@@ -46,8 +50,12 @@
   let prepareRel = '';    // 正在等的是哪条文件：同一集重载时复用它，别杀刚转了一半的任务
   let pausedAt = 0;       // 上次暂停的时刻，用来判断恢复时要不要回退
   let pausedTrackId = null;
-  /* 后台里暂停超过这么久，恢复播放前把数据源重挂一次：安卓 WebView 长时间空闲后
-     音频输出可能已经被系统拆掉，play() 照样推进进度却没有声音 */
+  /* 这次暂停发生时页面在不在前台：后台/失焦时的暂停基本都是被打断（来电、别的 App
+     抢音频焦点、拔耳机、锁屏），不是用户在界面上按的，恢复时要重建音频输出（见 needsRearm） */
+  let pausedAway = false;
+  /* 安卓壳里恢复播放前把数据源重挂一次：WebView 长时间空闲后音频输出可能已经被系统拆掉，
+     play() 照样推进进度却没有声音。这个阈值只留给桌面/浏览器——那边没这毛病，
+     不必每次恢复都白拉一遍源；壳里按「是否被打断」判断，不看停了几秒 */
   const REARM_AFTER = 5 * 60 * 1000;
   /* 回到前台后的这段时间内恢复也算：坏掉的是音频输出，用户往往是先切回 App 再点播放键 */
   const REARM_GRACE = 2 * 60 * 1000;
@@ -108,9 +116,32 @@
 
   function once(el, name) {
     return new Promise(function (res, rej) {
-      const on = () => { el.removeEventListener(name, on); res(); };
+      let done = false, timer = 0;
+      function cleanup() {
+        el.removeEventListener(name, on);
+        el.removeEventListener('error', onErr);
+        clearTimeout(timer);
+      }
+      function on() { if (done) return; done = true; cleanup(); res(); }
+      /* 直链过期 / 403 时立刻报错，别让用户干等超时。
+         网盘直链要 302 到 CDN，首包可能慢，兜底超时放宽到 15 秒。 */
+      function onErr() {
+        if (done) return;
+        done = true; cleanup();
+        const me = el.error || {};
+        const code = Number(me.code) || 0;
+        /* 4 = 编码/源不支持（视频常见于 H.265/HEVC）；2 = 网络中断（直链失效/上游拒绝） */
+        const msg = code === 4
+          ? '媒体源或编码不被浏览器支持（视频常见于 H.265），请转成 H.264 后再试'
+          : (code === 2 ? '直链加载失败，请重新扫描后再试' : '媒体加载失败，请重试或重新扫描');
+        const err = new Error(msg);
+        err.code = 'media';
+        err.mediaCode = code;
+        rej(err);
+      }
       el.addEventListener(name, on);
-      setTimeout(() => { el.removeEventListener(name, on); res(); }, 8000);
+      el.addEventListener('error', onErr);
+      timer = setTimeout(function () { if (done) return; done = true; cleanup(); res(); }, 15000);
     });
   }
 
@@ -181,7 +212,7 @@
     const my = ++loadToken;
     if (cur && cur.id !== track.id) saveProgress(true);   // 换集前先把旧集落盘
     mediaTrackId = null;                                   // 过渡期的 pause/emptied 一律不算
-    pausedAt = 0; pausedTrackId = null;                    // 换集不触发自动回退
+    pausedAt = 0; pausedTrackId = null; pausedAway = false; // 换集不触发自动回退
     cur = track;
     /* 壳内视频：整条队列交给原生播放器，网页不碰 <video> */
     if (track.kind === 'video' && FM.android) {
@@ -230,9 +261,11 @@
     }
     /* restored 决定界面要不要为视频自动展开播放页。setAudioOnly 触发的重载是
        在收起播放页时发生的，不能再让界面把它拉回来。 */
+    /* 取直链 + 等 CDN 首包可能有 1~3 秒：先告诉界面进入加载态，别让点了像没反应 */
+    ev.emit('loading', true);
     ev.emit('track', track, { restored: !!o.restored });
     updateSession(track);
-    /* 明确不支持的格式（ape / wv / wma）：直接给结论。别放它走到 <audio> 才报
+    /* 明确不支持的格式（ape / wv）：直接给结论。别放它走到 <audio> 才报
        「播放失败」，更别去转码 —— 转一份要几十秒，等完还不如告诉用户换个文件。 */
     if (FM.media.unsupported(track.ext)) {
       const err = new Error('不支持的文件格式');
@@ -257,7 +290,15 @@
         ev.emit('preparing', null);
       }
       try {
-        s = await FM.fs.src(track.rel, { prepare: true, signal: prepareCtrl ? prepareCtrl.signal : undefined });
+        s = await FM.fs.src(track.rel, {
+          prepare: true,
+          signal: prepareCtrl ? prepareCtrl.signal : undefined,
+          /* 客户端转码要几十秒：把进度喂给过渡层的百分比文案 */
+          onProgress: function (p) {
+            if (my !== loadToken) return;
+            ev.emit('tcProgress', { pct: Math.round((Number(p) || 0) * 100), track: track });
+          }
+        });
       } finally {
         /* 切集了就别再关别人的加载态：只有当前这次载入负责收尾 */
         if (needTc && my === loadToken) {
@@ -270,20 +311,48 @@
       /* 视频集在播放页收起时走 <audio>：同一个文件，只是不让它解码视频轨道。
          上面 emit('track') 之后界面可能自动展开播放页、把 audioOnly 改回来，所以这里再确认。 */
       const asAudio = audioOnly && track.kind === 'video';
-      const want = (track.kind === 'video' && !asAudio) ? videoEl : audioEl;
+      let want = (track.kind === 'video' && !asAudio) ? videoEl : audioEl;
+      /* 无 CORS 头、又是跨源的源：网盘直链，以及本机 127.0.0.1 的已下载文件（APK）。
+         这两种源播放时声明 crossorigin 会被浏览器按 CORS 校验拦掉（Chrome 报
+         MEDIA_ERR_SRC_NOT_SUPPORTED），表现就是转圈几秒后「播放失败」。 */
+      const noCors = !!s && (s.alist || s.local);
+      /* 音频元素一旦被 viz 接进 WebAudio 就退不出来，播这类源只会静音：
+         这种情况改用 <video> 播同一个文件，保留原生输出（频谱这部分降级）。 */
+      if (noCors && want === audioEl && FM.viz && FM.viz.taken && FM.viz.taken(audioEl)) want = videoEl;
       if (want !== el) { stopEl(el); media = el = want; }
-      if (objectRevoke) { objectRevoke(); objectRevoke = null; }
+      /* 同一个地址又来了（重复点同一集 / 恢复播放）：别再来一遍 src + load。
+         普通 URL 会被打断重新缓冲；MediaSource 的地址更严重 —— 同一个 MediaSource
+         二次 load 会被 Chrome 判 MEDIA_ERR_SRC_NOT_SUPPORTED。 */
+      const reuse = !!(objectUrl && objectUrl === s.url && el === media &&
+        el.readyState >= 1 && !el.error);
+      if (!reuse && objectRevoke) { objectRevoke(); objectRevoke = null; }
       objectUrl = s.url;
       objectRevoke = s.revoke;
-      /* 远程库的媒体是跨源的：不声明 CORS，WebAudio 的 MediaElementSource 会把采样全输出 0（进度条走、没声音） */
-      el.crossOrigin = FM.fs.remote ? 'anonymous' : null;
-      el.src = objectUrl;
-      el.playbackRate = rate;
-      el.volume = volume;
-      el.muted = muted;
-      el.load();
-      await once(el, 'loadedmetadata');
-      if (my !== loadToken) return;
+      mediaMse = !!s.mse;
+      if (!reuse) {
+        /* 远程库的媒体是跨源的：不声明 CORS，WebAudio 的 MediaElementSource 会把采样全输出 0（进度条走、没声音）。
+           noCors 的源（网盘直链、本机已下载文件）上游/小服务都没有 ACAO 头，声明 anonymous
+           会直接加载失败，这里强制不声明（null 是「移除属性」；空串反而是 anonymous）；
+           同时打标记，viz 接手前会跳过这个元素。 */
+        if (noCors) {
+          el.removeAttribute('crossorigin');
+          el.dataset.fmNoCors = '1';
+        } else {
+          el.crossOrigin = FM.fs.remote ? 'anonymous' : '';
+          delete el.dataset.fmNoCors;
+        }
+        el.src = objectUrl;
+        el.playbackRate = rate;
+        el.volume = volume;
+        el.muted = muted;
+        el.load();
+        /* 客户端转码的 wma 走 MSE 边转边播：SourceBuffer 装不下整段，得让转码那边
+           知道播放头在哪，才能只喂附近一段、把远处回收掉（见 js/wma.js 的 pump） */
+        if (mediaMse && FM.wma && FM.wma.bind) FM.wma.bind(el, objectUrl);
+        await once(el, 'loadedmetadata');
+        if (my !== loadToken) return;
+      }
+      ev.emit('loading', false);
       /* 扩展名说是视频、实际只有音轨（或者反过来）时以真实轨道为准。
          asAudio 时用的一定是 <audio>，videoWidth 恒为 0，别拿它把 kind 改掉。 */
       if (!asAudio) setKind(el.videoWidth > 0 ? 'video' : 'audio');
@@ -303,6 +372,7 @@
       } else ev.emit('state', false);
     } catch (e) {
       if (my !== loadToken) return;
+      ev.emit('loading', false);
       /* 取消（切集 / 收起播放页）不是播放失败，不弹提示 */
       if (e && e.code === 'aborted') return;
       ev.emit('error', e);
@@ -315,6 +385,9 @@
     setTimeout(function () {
       if (my !== loadToken || !cur) return;
       if (!el.paused || el.error || el.readyState >= 2) return;
+      /* MediaSource 的地址 load 一次就废了：这里重挂只会把刚建好的管线打坏，
+         慢网络下还不如让它继续等（首块 0.6 秒，真卡住用户会自己重试） */
+      if (mediaMse) return;
       try { el.load(); el.play(); } catch (e) {}
     }, 2000);
   }
@@ -339,46 +412,66 @@
     /* 切库/清空时把还在排队的转码也撤掉：资源库都换了，转出来的文件没人要 */
     if (prepareCtrl) { try { prepareCtrl.abort(); } catch (e) {} prepareCtrl = null; prepareRel = ''; }
     mediaTrackId = null;
-    pausedAt = 0; pausedTrackId = null;
+    pausedAt = 0; pausedTrackId = null; pausedAway = false;
     eachEl(stopEl);
     queue = [];
     index = -1;
     cur = null;
+    ev.emit('loading', false);
     ev.emit('stop');
     ev.emit('queue', queue, index);
   }
 
   /* ── 播放控制 ── */
-  /* 长时间后台暂停后恢复播放：安卓壳里 Chromium 可能已经把音频输出拆掉了，
+  /* 被打断之后恢复播放：安卓壳里 Chromium 的音频输出可能已经被拆掉了，
      play() 照样落地、进度照走、通知栏也显示在播，但一点声音都没有。
      网页层拿不到「是否真的出声」（壳里 WebAudio 是禁用的），只能先重挂一次数据源，
-     让解码/输出管线重建；短暂停不走这条路，不折腾。
-     返回 false 表示期间用户切了集 / 按了暂停，调用方别再硬起播。
-     重挂失败（源失效、拿不到元数据）不拦播放：返回 true，让原来的 play() 自己去报错。 */
+     让解码/输出管线重建。
+     返回 false = 这次别再由调用方起播：期间用户切了集 / 按了暂停，或者原地重挂失败、
+     已经改成整条重新载入（load 自己会接着播）。 */
   async function rearm(el, my, at) {
+    const pos = el.currentTime || 0;
+    const r0 = el.playbackRate;
+    let ok = false;
+    /* MediaSource 的地址 el.load() 之后就废了（Chrome 直接 error 4），只能整条
+       重新载入：这时 FM.fs.src 会命中刚转好的整段缓存，秒开且能任意 seek */
+    if (mediaMse) { reloadAt(pos); return false; }
     try {
-      const pos = el.currentTime || 0;
-      const r0 = el.playbackRate;
       el.load();
       await once(el, 'loadedmetadata');
-      if (my !== loadToken || el !== media || pausedAt !== at) return false;
-      /* 元数据没到（超时/源失效）：别硬 seek，也别改倍速，交给 play() */
-      if (el.readyState < 1) return true;
-      const d = el.duration;
-      const to = (isFinite(d) && d > 0) ? Math.min(pos, Math.max(0, d - 0.5)) : pos;
-      if (to > 0) { try { el.currentTime = to; } catch (e) {} }
-      el.playbackRate = r0;
-      ev.emit('time', el.currentTime, isFinite(d) ? d : 0);
-      return true;
+      ok = el.readyState >= 1;
     } catch (e) {
-      return true;
+      ok = false;
     }
+    /* 期间用户切了集 / 按了暂停：这次恢复作废，别再去拉源、也别硬起播 */
+    if (my !== loadToken || el !== media || pausedAt !== at) return false;
+    /* 元数据没到（超时/源失效）：别拿着死管线硬起播，改成完整重载一次 ——
+       顺便让 FM.fs.src 重新签一遍地址（后台停久了签名 URL 可能已经过期） */
+    if (!ok) { reloadAt(pos); return false; }
+    const d = el.duration;
+    const to = (isFinite(d) && d > 0) ? Math.min(pos, Math.max(0, d - 0.5)) : pos;
+    if (to > 0) { try { el.currentTime = to; } catch (e) {} }
+    el.playbackRate = r0;
+    ev.emit('time', el.currentTime, isFinite(d) ? d : 0);
+    return true;
   }
 
-  /* 这次恢复要不要重挂数据源：同一条内容、停够久，且「现在在后台」或「刚回到前台不久」
-     —— 坏掉的是音频输出，用户经常是先切回 App 再点播放键，只认 document.hidden 会漏掉这条 */
+  /* 原地重挂失败时的兜底：整条重新载入。会重新走一次 FM.fs.src（拿到新地址），
+     位置沿用重挂前的那一处；restored: true 让界面别把视频播放页又弹开 */
+  function reloadAt(pos) {
+    if (!cur) return;
+    load(cur, { seek: pos, autoplay: true, restored: true });
+  }
+
+  /* 这次恢复要不要重挂数据源。判据是「这次暂停是不是被打断的」，不是「停了多久」：
+     来电、别人放语音、拔耳机这类打断常常只有几秒到几十秒，用时间阈值只会把真正
+     要修的情况挡在外面（短打断后恢复 = 进度在走、一点声音都没有）。
+       页面还在后台时恢复：通知栏 / 锁屏 / 耳机键都在这个时候按下，一律重挂；
+       暂停发生在后台或失焦时：系统打断，切回 App 再点播放键同样要重挂。
+     桌面/浏览器没有这个毛病，仍按原来的长时间暂停判断，不白拉一遍源。 */
   function needsRearm() {
-    if (rearming || !pausedAt || !cur || pausedTrackId !== cur.id) return false;
+    if (rearming || !media.paused || !pausedAt || !cur || pausedTrackId !== cur.id) return false;
+    if (window.fmAndroid && (document.hidden || pausedAway)) return true;
     if (Date.now() - pausedAt < REARM_AFTER) return false;
     return document.hidden || (Date.now() - visibleAt < REARM_GRACE);
   }
@@ -435,7 +528,7 @@
     media.currentTime = U.clamp(t, 0, media.duration || 0);
     ev.emit('time', media.currentTime, media.duration);
     saveProgress(true, false);   // 拖动后立刻落盘；远程仍按 10 秒节流，别按一下推一次
-    pausedAt = 0; pausedTrackId = null;   // 用户自己选的位置，恢复时别再回退
+    pausedAt = 0; pausedTrackId = null; pausedAway = false;   // 用户自己选的位置，恢复时别再回退
   }
 
   function seekRatio(r) {
@@ -868,8 +961,12 @@
       if (el !== media) return;
       restoreVolume();
       pauseSleepClock();
-      ev.emit('state', false);
+      /* 暂停时页面已经不在前台（切后台 / 锁屏 / 来电盖上来）= 被打断，
+         恢复时音频输出可能已经没了，要重挂数据源（见 needsRearm）。
+         用户在界面上按的暂停有焦点，不会命中这条。 */
+      pausedAway = document.hidden || !document.hasFocus();
       pausedAt = Date.now(); pausedTrackId = cur ? cur.id : null;
+      ev.emit('state', false);
       saveProgress(true);
     });
     el.addEventListener('ended', function () {

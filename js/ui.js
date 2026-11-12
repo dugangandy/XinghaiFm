@@ -12,6 +12,7 @@
   const TRACK_END = '已经到底啦~';   // 手机端滚动加载到底时的收尾文案
   let refs = {};
   let dragId = null;
+  let catDragId = null;
   let queueOpen = false;
   let scrubbing = false;
   let menuEl = null;
@@ -96,6 +97,7 @@
       btnQueueClose: $('btnQueueClose'), btnQueueClear: $('btnQueueClear'), queueCount: $('queueCount'),
       modalRoot: $('modalRoot'), toastRoot: $('toastRoot'),
       main: $('main'), libLoading: $('libLoading'), libLoadingName: $('libLoadingName'), libLoadingHint: $('libLoadingHint'),
+      scanMask: $('scanMask'), scanMaskName: $('scanMaskName'), scanMaskHint: $('scanMaskHint'),
       tcLoading: $('tcLoading'), tcName: $('tcName'), tcHint: $('tcHint')
     };
     state.sortDesc = !!FM.db.state().sortDesc;
@@ -399,18 +401,357 @@
     return ok;
   }
 
-  /* 设置菜单里的「清除索引缓存…」：先把清什么、留什么说清楚，再动手。
-     没超配额时也允许主动清（换库前腾地方），所以不复用警告那条文案 */
-  function clearCacheFlow() {
-    let s = { count: 0, bytes: 0 };
-    try { s = FM.store.indexCacheSize(); } catch (e) {}
-    if (!s.count) { toast('暂无可清理的索引缓存'); return; }
-    confirmModal({
-      title: '清除索引缓存？',
-      message: '将删除 ' + s.count + ' 个资源库的索引缓存（约 ' + fmtFreed(s.bytes) + '）。',
-      note: '分类、播放进度、收藏与设置不受影响；下次打开资源库时将重新扫描。',
-      icon: 'broom', okText: '清除缓存', danger: true
-    }).then(function (ok) { if (ok) clearLocalCache(); });
+  /* 设置菜单里的「存储管理」：本机会占空间的东西按类型分开管
+     —— 资源库索引 / 封面缓存 / 下载数据。
+     索引清了只是下次重开库时重扫；封面和下载清了要重新联网下载，所以这两类都走二次确认。 */
+  function openStorageManager() {
+    const TABS = [
+      { id: 'index', label: '资源库索引' },
+      { id: 'cover', label: '封面缓存' },
+      { id: 'dl', label: '下载数据' }
+    ];
+    const tabBar = U.el('div', { class: 'store-tabs' });
+    const host = U.el('div', { class: 'store-host' });
+    const panes = {};
+    const tabBtns = {};
+
+    function select(id) {
+      if (!panes[id]) return;
+      Object.keys(panes).forEach(function (k) { panes[k].node.hidden = k !== id; });
+      Object.keys(tabBtns).forEach(function (k) { tabBtns[k].classList.toggle('on', k === id); });
+      panes[id].paint();
+    }
+
+    /* ── 页一：资源库索引（原「缓存管理」的内容）──
+       逐库列出索引缓存的大小 / 更新时间 / 规模，单库可清，也能一键全清。
+       清的都是可重建的扫描结果，用户数据不在里面。 */
+    function indexPane() {
+      const sum = U.el('p', { class: 'cache-sum' });
+      const list = U.el('div', { class: 'cache-list' });
+      const clearBtn = U.el('button', { class: 'btn store-clear', type: 'button', text: '清除全部索引' });
+      const node = U.el('div', { class: 'store-pane' }, [
+        sum,
+        list,
+        U.el('div', { class: 'store-foot' }, [clearBtn]),
+        U.el('p', { class: 'confirm-note', text: '索引缓存只是扫描结果，清除后下次打开资源库会重新扫描；分类、播放进度、收藏与设置不受影响。' })
+      ]);
+      clearBtn.onclick = function () { clearAll(); };
+
+      function fmtAt(ts) {
+        if (!ts) return '';
+        const d = new Date(ts);
+        const p = function (n) { return (n < 10 ? '0' : '') + n; };
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+          p(d.getHours()) + ':' + p(d.getMinutes());
+      }
+
+      /* 缓存的目录口径：写的是这份索引按什么结构扫的，不是当前的设置项 */
+      const DIR_TEXT = { flat: '平铺结构', cat: '二级目录', auto: '自动检测' };
+
+      function fmtNum(n) {
+        return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+      }
+
+      /* 按资源库归并：同一个库可能同时留着本命名空间和无前缀孤儿两份索引，算一行 */
+      function groups() {
+        let items = [];
+        try { items = FM.store.indexCacheItems() || []; } catch (e) {}
+        const map = new Map();
+        items.forEach(function (it) {
+          const id = it.libId || '';
+          if (!map.has(id)) map.set(id, []);
+          map.get(id).push(it);
+        });
+        const out = [];
+        (FM.fs.libs() || []).forEach(function (l) {
+          out.push({
+            name: l.name || '未命名资源库', id: l.id,
+            cur: l.id === FM.fs.activeId,
+            items: map.get(l.id) || [], real: true
+          });
+          map.delete(l.id);
+        });
+        /* 库已经移除、或者登录前留下的无前缀孤儿：也要能看见、能清掉 */
+        map.forEach(function (its, id) {
+          out.push({
+            name: id ? '已移除的资源库' : '旧版本索引', id: id, cur: false,
+            title: id ? '库 id：' + id : '登录前遗留的无前缀索引',
+            items: its, real: false
+          });
+        });
+        return out;
+      }
+
+      /* 一行里要看得清三件事：这是哪个库（当前库带标记）、占多少空间、这份索引上次扫出什么 */
+      function paint() {
+        const gs = groups();
+        let total = 0, cached = 0, libs = 0;
+        list.textContent = '';
+        gs.forEach(function (g) {
+          const bytes = g.items.reduce(function (n, it) { return n + it.bytes; }, 0);
+          /* 同一个库有新旧两份时，详情取最新的那份，体积算总和 */
+          const primary = g.items.slice().sort(function (a, b) { return b.scannedAt - a.scannedAt; })[0] || null;
+          total += bytes;
+          if (g.real) { libs++; if (primary) cached++; }
+
+          const head = U.el('div', { class: 'cache-head' }, [
+            U.el('span', { class: 'cache-lib', text: g.name, title: g.title || g.name })
+          ]);
+          if (g.cur) head.appendChild(U.el('span', { class: 'cache-tag', text: '当前' }));
+          head.appendChild(U.el('span', {
+            class: 'cache-size' + (primary ? '' : ' none'),
+            text: primary ? fmtFreed(bytes) : '无缓存'
+          }));
+
+          const main = U.el('div', { class: 'cache-main' }, [head]);
+          const meta = U.el('div', { class: 'cache-meta' });
+          if (!primary) {
+            meta.appendChild(U.el('span', { class: 'cache-hint', text: '打开这个库时会重新扫描' }));
+          } else if (!primary.ok) {
+            meta.appendChild(U.el('span', { class: 'cache-chip warn', text: '索引结构无法识别，建议清除' }));
+          } else {
+            if (primary.scannedAt) {
+              /* 相对时间更好懂，精确到分钟的时间挂 title：排查「怎么还是旧的」时才需要 */
+              meta.appendChild(U.el('span', {
+                class: 'cache-chip',
+                text: U.fmtAgo(primary.scannedAt) + '更新',
+                title: '上次扫描：' + fmtAt(primary.scannedAt)
+              }));
+            }
+            if (primary.albums || primary.tracks) {
+              meta.appendChild(U.el('span', { class: 'cache-chip', text: fmtNum(primary.albums) + ' 张专辑' }));
+              meta.appendChild(U.el('span', { class: 'cache-chip', text: fmtNum(primary.tracks) + ' 集' }));
+            }
+            if (DIR_TEXT[primary.dirMode]) {
+              meta.appendChild(U.el('span', { class: 'cache-chip', text: DIR_TEXT[primary.dirMode] }));
+            }
+            /* 新旧两份并存时体积比预期大，点明一下，别让人以为统计错了 */
+            if (g.items.length > 1) meta.appendChild(U.el('span', { class: 'cache-chip warn', text: '含旧版遗留索引' }));
+            if (!meta.childNodes.length) meta.appendChild(U.el('span', { class: 'cache-hint', text: '无索引详情' }));
+          }
+          main.appendChild(meta);
+
+          const row = U.el('div', { class: 'cache-row' + (primary ? '' : ' is-empty') }, [main]);
+          if (primary) {
+            row.appendChild(U.el('button', {
+              class: 'btn cache-btn', type: 'button', text: '清除',
+              onclick: function () { clearList(g.items, '「' + g.name + '」的索引缓存'); }
+            }));
+          }
+          list.appendChild(row);
+        });
+        sum.textContent = libs
+          ? '共 ' + libs + ' 个资源库 · ' + cached + ' 个已缓存 · 占用 ' + (total ? fmtFreed(total) : '0 KB')
+          : '还没有资源库';
+      }
+
+      /* 清完探一次写入：探不通说明不是这份缓存导致的（磁盘满 / 隐私模式），别给用户假希望 */
+      function clearList(items, label) {
+        let freed = 0;
+        items.forEach(function (it) {
+          try { freed += FM.store.clearIndexCacheItem(it.full) || 0; } catch (e) { console.warn('[ui] 清理索引缓存失败', e); }
+        });
+        const ok = FM.store.probe();
+        if (ok) FM.store.resetBroken();
+        const done = '已清除' + label + (freed ? '（约 ' + fmtFreed(freed) + '）' : '');
+        if (ok) toast(done + '，下次打开资源库时将重新扫描', null, { key: TOAST_CACHE, ms: 4200 });
+        else toast(done + '，但仍无法写入，请检查设备剩余存储', 'warn', { key: TOAST_CACHE, ms: 6000 });
+        paint();
+      }
+
+      function clearAll() {
+        const all = [];
+        let bytes = 0, count = 0;
+        groups().forEach(function (g) {
+          if (!g.items.length) return;
+          count++;
+          g.items.forEach(function (it) { bytes += it.bytes; all.push(it); });
+        });
+        if (!all.length) { toast('暂无可清理的索引缓存'); return; }
+        confirmModal({
+          title: '清除全部索引缓存？',
+          message: '将删除 ' + count + ' 个资源库的索引缓存（约 ' + fmtFreed(bytes) + '）。',
+          note: '分类、播放进度、收藏与设置不受影响；下次打开资源库时将重新扫描。',
+          icon: 'broom', okText: '全部清除', danger: true
+        }).then(function (ok) {
+          if (ok) clearList(all, '全部 ' + count + ' 个资源库的索引缓存');
+        });
+      }
+
+      paint();
+      return { node: node, paint: paint };
+    }
+
+    /* ── 页二：封面缓存 ──
+       App 里 <img> 的封面由壳缓存到 cacheDir/covers（见 Covers.kt）。
+       网页端 / 桌面端的封面在服务端或库目录里，不占本机空间，这边显示「不可用」并说明原因。 */
+    function coverPane() {
+      const sizeEl = U.el('span', { class: 'cache-size' });
+      const head = U.el('div', { class: 'cache-head' }, [
+        U.el('span', { class: 'cache-lib', text: '本机封面缓存' }),
+        sizeEl
+      ]);
+      const meta = U.el('div', { class: 'cache-meta' });
+      const btn = U.el('button', { class: 'btn cache-btn', type: 'button', text: '一键清除' });
+      const row = U.el('div', { class: 'cache-row' }, [
+        U.el('div', { class: 'cache-main' }, [head, meta]),
+        btn
+      ]);
+      const node = U.el('div', { class: 'store-pane' }, [
+        row,
+        U.el('p', { class: 'confirm-note', text: '封面显示过一次就会缓存在本机，清掉后重新显示时会再下载一次；资源库里的封面文件不受影响。' })
+      ]);
+      const can = !!(FM.android && FM.android.native && FM.android.canManageCoverCache);
+      /* 上一次 paint 统计到的体积：壳里异步删文件，成功后没法回传释放量，
+         只能拿这个值来显示「已清除约 X」 */
+      let lastBytes = 0;
+
+      function paint() {
+        meta.textContent = '';
+        const bytes = can ? FM.android.coverCacheSize() : -1;
+        lastBytes = bytes > 0 ? bytes : 0;
+        sizeEl.textContent = bytes >= 0 ? fmtS(bytes) : '不可用';
+        sizeEl.classList.toggle('none', !(bytes > 0));
+        if (!can) {
+          meta.appendChild(U.el('span', { class: 'cache-hint', text: '只统计本机 App 的缓存；网页端和桌面端的封面在服务端，不占本机空间' }));
+        } else if (bytes > 0) {
+          meta.appendChild(U.el('span', { class: 'cache-chip', text: '显示过就不再重复下载' }));
+        } else {
+          meta.appendChild(U.el('span', { class: 'cache-hint', text: '还没有封面缓存' }));
+        }
+        btn.disabled = !can || !(bytes > 0);
+      }
+
+      btn.onclick = function () {
+        if (btn.disabled) return;
+        confirmModal({
+          title: '清除封面缓存？',
+          message: '将清空本机缓存的封面图片' + (lastBytes > 0 ? '（约 ' + fmtS(lastBytes) + '）' : '') + '。',
+          note: '之后显示封面会重新下载一次（每张几十 KB）；播放进度、收藏与设置不受影响。',
+          icon: 'broom', okText: '清除', danger: true
+        }).then(function (ok) {
+          if (!ok) return;
+          const freed = lastBytes;
+          /* 删除是壳里另起线程做的，先把按钮按住，等它删完再重新统计 */
+          btn.disabled = true;
+          sizeEl.textContent = '清理中…';
+          sizeEl.classList.remove('none');
+          lastBytes = 0;
+          if (!FM.android.clearCoverCache()) { paint(); return; }
+          /* 上万张封面时删一轮可能要几秒：数字还没归零就再等一轮，最多跟 4 次 */
+          let tries = 0;
+          (function refresh() {
+            paint();
+            if (can && lastBytes > 0 && ++tries < 4) { setTimeout(refresh, 700); return; }
+            toast(freed > 0 ? '已清除封面缓存（约 ' + fmtS(freed) + '）' : '封面缓存已清除',
+              null, { key: TOAST_CACHE, ms: 3200 });
+          })();
+        });
+      };
+      return { node: node, paint: paint };
+    }
+
+    /* ── 页三：下载数据 ──
+       离线下载只有 App 有，清单在壳里（Dl.snapshot），网页只按快照统计。
+       一键清除复用已有的 removeDownloads 桥：它会把排队中 / 下载中 / 已完成的一起收拾掉。 */
+    function dlPane() {
+      const sizeEl = U.el('span', { class: 'cache-size' });
+      const head = U.el('div', { class: 'cache-head' }, [
+        U.el('span', { class: 'cache-lib', text: '本机下载数据' }),
+        sizeEl
+      ]);
+      const meta = U.el('div', { class: 'cache-meta' });
+      const btn = U.el('button', { class: 'btn cache-btn', type: 'button', text: '一键清除' });
+      const row = U.el('div', { class: 'cache-row' }, [
+        U.el('div', { class: 'cache-main' }, [head, meta]),
+        btn
+      ]);
+      const node = U.el('div', { class: 'store-pane' }, [
+        row,
+        U.el('p', { class: 'confirm-note', text: '下载内容存在手机本地，清掉后这些曲目要联网播放，想离线听需重新下载。' })
+      ]);
+      const can = !!(FM.android && FM.android.native && FM.android.canRemoveMany);
+
+      /* 壳里的清单是懒加载的：每次统计前先拉一次，避免显示上次的数字 */
+      function items() {
+        if (!can) return [];
+        try { FM.android.refreshDownloads(); } catch (e) {}
+        const all = FM.android.allDownloads ? (FM.android.allDownloads() || []) : [];
+        return all.filter(function (it) { return it && it.rel; });
+      }
+
+      function isDone(it) { return it.state === 'done' || !it.state; }
+
+      /* 已完成算整个文件（size），未完成算已经下到的字节（loaded）：
+         未完成条目也有 .part 占着空间，只统计 done 会显示偏小 */
+      function bytesOf(all) {
+        return all.reduce(function (n, it) {
+          return n + (isDone(it) ? (it.size || 0) : (it.loaded || 0));
+        }, 0);
+      }
+
+      function paint() {
+        const all = items();
+        const done = all.filter(isDone);
+        const bytes = can ? bytesOf(all) : 0;
+        meta.textContent = '';
+        sizeEl.textContent = can ? fmtS(bytes) : '不可用';
+        sizeEl.classList.toggle('none', !(bytes > 0));
+        if (!can) {
+          meta.appendChild(U.el('span', { class: 'cache-hint', text: '离线下载只在 App 里；当前环境没有可清理的下载数据' }));
+        } else if (!all.length) {
+          meta.appendChild(U.el('span', { class: 'cache-hint', text: '还没有下载内容' }));
+        } else {
+          meta.appendChild(U.el('span', { class: 'cache-chip', text: done.length + ' 集已下载' }));
+          if (all.length > done.length) {
+            meta.appendChild(U.el('span', { class: 'cache-chip', text: '另有 ' + (all.length - done.length) + ' 个未完成' }));
+          }
+        }
+        btn.disabled = !can || !all.length;
+      }
+
+      btn.onclick = function () {
+        if (btn.disabled) return;
+        const all = items();
+        const bytes = bytesOf(all);
+        confirmModal({
+          title: '清除全部下载？',
+          message: '将删除本机 ' + all.length + ' 个下载条目' + (bytes ? '（约 ' + fmtS(bytes) + '）' : '') + '。',
+          note: '删除后这些曲目需要联网播放，想离线听要重新下载；收藏、播放进度与设置不受影响。',
+          icon: 'trash', okText: '全部删除', danger: true
+        }).then(function (ok) {
+          if (!ok) return;
+          const n = FM.android.removeDownloads(all.map(function (it) { return it.rel; }));
+          /* dlMap 已就地删掉，先重绘一次把按钮按住，别让人在删文件期间又点一次；
+             壳里删完文件还会推 onChange，700ms 后按真实快照再对一遍数字 */
+          paint();
+          setTimeout(function () {
+            paint();
+            toast(n ? '已清除 ' + n + ' 个下载' : '下载数据已清除', null, { key: TOAST_CACHE, ms: 3200 });
+          }, 700);
+        });
+      };
+      return { node: node, paint: paint };
+    }
+
+    TABS.forEach(function (t) {
+      const b = U.el('button', { class: 'store-tab', type: 'button', text: t.label });
+      b.onclick = function () { select(t.id); };
+      tabBtns[t.id] = b;
+      tabBar.appendChild(b);
+    });
+    panes.index = indexPane();
+    panes.cover = coverPane();
+    panes.dl = dlPane();
+    Object.keys(panes).forEach(function (k) { host.appendChild(panes[k].node); });
+
+    openModal({
+      title: '存储管理',
+      cls: 'cache-modal',
+      body: U.el('div', { class: 'store-mgr' }, [tabBar, host]),
+      actions: [{ label: '完成', cls: 'btn-primary' }]
+    });
+    select('index');
   }
 
   function cacheBroken() {
@@ -594,10 +935,12 @@
       refs.catList.innerHTML = '<div class="cat-empty">' + (canEdit ? '还没有分类，点右上角 + 新建' : '还没有分类') + '</div>';
       return;
     }
+    const canReorder = canEdit && !navLocked() && !isMobileDevice();
     refs.catList.innerHTML = cats.map(function (c) {
       const on = state.view === 'cat' && state.cat === c.id;
-      return '<div class="cat-item' + (on ? ' active' : '') + '" data-cat="' + c.id + '" style="--cc:' + c.color + '">' +
-        '<i class="bullet"></i><span>' + esc(c.name) + '</span>' +
+      return '<div class="cat-item' + (on ? ' active' : '') + '" data-cat="' + c.id + '"' +
+        (canReorder ? ' draggable="true"' : '') + ' style="--cc:' + c.color + '">' +
+        '<i class="bullet"></i><span class="cat-name">' + esc(c.name) + '</span>' +
         '<span class="count">' + L.catCount(c.id) + '</span>' +
         (canEdit ? '<button class="cat-edit" data-act="edit-cat" data-id="' + c.id + '">' + icon('edit') + '</button>' : '') + '</div>';
     }).join('');
@@ -656,6 +999,38 @@
     if (refs.libLoadingHint && refs.libLoading && refs.libLoading.classList.contains('show')) {
       refs.libLoadingHint.textContent = text;
     }
+    /* 扫描遮罩同样盖住了顶栏 */
+    if (refs.scanMaskHint && refs.scanMask && refs.scanMask.classList.contains('show')) {
+      refs.scanMaskHint.textContent = text;
+    }
+  }
+
+  /* ── 扫描遮罩 ──
+     整库扫描要递归 readdir + stat，NAS / 机械盘上几十秒都正常。这期间切库、重复点扫描
+     都会把结果互相覆盖，所以在整屏铺一层遮罩把点击全拦掉（含左侧资源库按钮）。
+     只有「会锁导航」的扫描才上遮罩，后台静默同步（runScan 的 background）不打扰用户。 */
+  let scanMaskTimer = 0;
+  function showScanMask() {
+    const mask = refs.scanMask;
+    if (!mask) return;
+    clearTimeout(scanMaskTimer);
+    const lib = FM.fs.active();
+    if (refs.scanMaskName) refs.scanMaskName.textContent = lib ? lib.name : '资源库';
+    if (refs.scanMaskHint) refs.scanMaskHint.textContent = '正在扫描资源库…';
+    mask.hidden = false;
+    /* 先上屏再挂 show，淡入过渡才有起点 */
+    if (!mask.classList.contains('show')) {
+      requestAnimationFrame(function () { if (!mask.hidden) mask.classList.add('show'); });
+    }
+  }
+  function hideScanMask() {
+    const mask = refs.scanMask;
+    if (!mask) return;
+    clearTimeout(scanMaskTimer);
+    mask.classList.remove('show');
+    scanMaskTimer = setTimeout(function () {
+      if (!mask.classList.contains('show')) mask.hidden = true;
+    }, 300);
   }
 
   /* ── 导航锁：整库扫描 / 切库加载期间不让切专辑、分类 ──
@@ -1230,13 +1605,17 @@
     try { return window.matchMedia('(max-width:760px)').matches; } catch (e) { return false; }
   }
 
+  /* 移动端 = 安卓壳或手机浏览器。按「设备」判断而不是窗口宽度——
+     桌面浏览器窗口拉窄了也照样算桌面端 */
+  function isMobileDevice() {
+    if (FM.android) return true;
+    if (FM.fs.desktop) return false;
+    return /Android|iPhone|iPod|iPad|Mobile/i.test(navigator.userAgent || '');
+  }
   /* 「按专辑 / 按分类」这种改整库结构的操作只在桌面端给：
-     手机上一来一行小按钮容易误触，二来改完整库重扫较重，等回桌面端再改更稳。
-     按「设备」判断而不是窗口宽度——桌面浏览器窗口拉窄了照样要能改 */
+     手机上一来一行小按钮容易误触，二来改完整库重扫较重，等回桌面端再改更稳 */
   function canEditGroup() {
-    if (FM.android) return false;
-    if (FM.fs.desktop) return true;
-    return !/Android|iPhone|iPod|iPad|Mobile/i.test(navigator.userAgent || '');
+    return !isMobileDevice();
   }
   /* 网页端（连服务端、多用户）下只有管理员能管理资源库；普通用户禁用「资源库设置」页面。
      以「连到了服务端」（serverReached）判定网页端，而不是 server（有资源库）——没有资源库的服务端用户同样算网页端。
@@ -1247,6 +1626,10 @@
   /* 用户管理只属于「服务端 + 管理员 + 非免密」：桌面端单用户，--no-auth 没有真实身份 */
   function canManageUsers() {
     return !FM.fs.desktop && FM.fs.serverReached && !FM.fs.noAuth && !!FM.fs.isAdmin;
+  }
+  /* /api/alist/config 是 admin-only 且 --no-auth 下关闭；桌面本地库不接网盘 */
+  function canConfigAlist() {
+    return !!(FM.fs.serverReached && FM.fs.isAdmin && !FM.fs.noAuth);
   }
 
   /* 收藏页布局随宽度切换：跨过断点时重画一次（窗口拉宽回桌面卡片） */
@@ -2287,6 +2670,9 @@
   async function probeDurations(list) {
     const token = ++probeToken;
     if (!FM.fs.hasSource) return;
+    /* 网盘库：探一次时长就要换一次直链 + 拉一次元数据，500 集会打爆上游限流，
+       还会和正在播的那一集抢连接。时长等真正播放时由 loadedmetadata 写回。 */
+    if (FM.fs.isAlist) return;
     const pool = list.filter(t => !t.duration && !t.__noDur).slice(0, 500);
     if (!pool.length) return;
     /* 屏幕上正在显示的那一页先探，用户先看到的那几行先有时长 */
@@ -2650,6 +3036,29 @@
     /* 库根键归一：服务端落库时已经统一过大小写和斜杠，客户端这里只做比较用 */
     function normRoot(s) { return String(s || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase(); }
 
+    /* 跨库榜单行：服务端/主进程已经补了 libId；旧版本再从库列表按目录反查兜底 */
+    function libIdOfRow(r) {
+      if (r.libId) return String(r.libId);
+      if (!FM.fs || !FM.fs.libs) return '';
+      const key = normRoot(r.libRoot);
+      if (!key) return '';
+      const hit = (FM.fs.libs() || []).find(function (l) { return normRoot(l.path) === key; });
+      return hit ? hit.id : '';
+    }
+
+    /* 别的库的专辑不在内存模型里：从该库的本地索引缓存按 albumId 还原目录名。
+       covers.js 的 forAlbum 靠 dirName / key 匹配，只有 title 是匹配不到精确条目的 */
+    function foreignAlbum(libId, albumId) {
+      if (!libId || !FM.db || !FM.db.index || !FM.lib || !FM.lib.indexAlbums) return null;
+      try {
+        const idx = FM.db.index(libId);
+        if (!idx) return null;
+        const list = FM.lib.indexAlbums(idx) || [];
+        for (let i = 0; i < list.length; i++) if (list[i] && list[i].id === albumId) return list[i];
+      } catch (e) {}
+      return null;
+    }
+
     function topCatName(a) {
       if (!a || !Array.isArray(a.cats) || !a.cats.length) return '';
       const list = (FM.lib && FM.lib.cats) ? FM.lib.cats() : [];
@@ -2670,17 +3079,23 @@
       const peak = Math.max.apply(null, rows.map(function (r) { return r.secs; }).concat([1]));
       const here = normRoot(curRoot());
       box.innerHTML = rows.map(function (r, i) {
-        /* 全库维度里其他库的专辑不在当前内存模型中：只有 id 和写入时的标题快照 */
-        const a = FM.lib ? FM.lib.album(r.albumId) : null;
+        /* albumId 是目录路径哈希：两个库里同名目录会撞成同一个 id，
+           所以先按 libRoot 判断是不是当前库，再决定能不能用内存里的专辑对象
+           （跨库行用当前库的同名对象会拿错标题和封面） */
+        const sameLib = !r.libRoot || !here || normRoot(r.libRoot) === here;
+        const a = (sameLib && FM.lib) ? FM.lib.album(r.albumId) : null;
         const title = (a && a.title) || r.title || '未命名专辑';
         const initial = initialOf(a || { title: title });
-        const art = (a && a.cover)
-          ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(a.cover) + '" alt="">'
+        /* 跨库封面：该库索引缓存里有对应专辑就按目录名查；没有就退回标题快照做相似匹配 */
+        let cover = a && a.cover;
+        if (!cover && !sameLib && FM.covers) {
+          const lid = libIdOfRow(r);
+          if (lid) cover = FM.covers.forAlbum(foreignAlbum(lid, r.albumId) || { dirName: r.title || '' }, lid);
+        }
+        const art = cover
+          ? '<img class="cover-img" loading="lazy" decoding="async" src="' + esc(cover) + '" alt="">'
           : '<span class="top-rings"><i></i><i></i><i></i></span>' +
             '<span class="top-char' + (initial.length > 2 ? ' word' : '') + '">' + esc(initial) + '</span>';
-        /* albumId 是目录路径哈希：两个库里同名目录会撞成同一个 id，
-           所以跳转前还得确认这条数据本身就属于当前库，否则会跳到另一张同名专辑 */
-        const sameLib = !r.libRoot || !here || normRoot(r.libRoot) === here;
         const open = !!a && sameLib;
         const bits = [];
         const cn = topCatName(a);
@@ -2729,9 +3144,30 @@
           if (!alive || seq !== topSeq || scope !== topScope) return;
           if (!res || res.ok === false) { fail(); return; }
           topLoadedScope = scope;
-          renderTop(res.rows || []);
+          const rows = res.rows || [];
+          renderTop(rows);
+          warmTopCovers(rows, seq, scope);
         })
         .catch(fail);
+    }
+
+    /* 别的库的封面索引按需读一次：读到之前跨库条目只有首字渐变，读完后补一次静默重绘。
+       同一个库一个会话只读一次，之后都是同步查表（和搜索页同一套机制） */
+    function warmTopCovers(rows, seq, scope) {
+      if (!FM.covers || !FM.covers.ensureLib) return;
+      const hereKey = normRoot(curRoot());
+      const ids = [];
+      rows.forEach(function (r) {
+        if (!r.libRoot || normRoot(r.libRoot) === hereKey) return;
+        const id = libIdOfRow(r);
+        if (id && id !== (FM.fs && FM.fs.activeId) && ids.indexOf(id) < 0) ids.push(id);
+      });
+      if (!ids.length) return;
+      Promise.all(ids.map(function (id) { return FM.covers.ensureLib(id); })).then(function (rs) {
+        if (rs.indexOf(true) < 0) return;         /* 没有新读到：不重绘，免得闪一下 */
+        if (!alive || seq !== topSeq || scope !== topScope) return;
+        renderTop(rows);
+      }).catch(function () {});
     }
 
     async function refreshDuration(m) {
@@ -2966,26 +3402,69 @@
       closeDrawer();
     });
     refs.catList.addEventListener('click', function (e) {
+      if (catDragId) return;
       const edit = e.target.closest('[data-act="edit-cat"]');
       if (edit) { editCat(edit.dataset.id); return; }
       const item = e.target.closest('.cat-item');
       if (item) { go('#/cat/' + item.dataset.cat); closeDrawer(); }
     });
 
-    /* 拖拽归类 */
+    refs.catList.addEventListener('dragstart', function (e) {
+      const item = e.target.closest('.cat-item');
+      if (!item || !canManageLib() || navLocked() || isMobileDevice()) { e.preventDefault(); return; }
+      catDragId = item.dataset.cat;
+      item.classList.add('dragging');
+      try {
+        e.dataTransfer.setData('application/x-fm-cat', catDragId);
+        e.dataTransfer.effectAllowed = 'move';
+      } catch (err) {}
+    });
+    refs.catList.addEventListener('dragend', function () {
+      catDragId = null;
+      U.$$('.cat-item').forEach(function (item) {
+        item.classList.remove('dragging', 'drop-before', 'drop-after');
+      });
+    });
+
+    /* 分类排序与专辑归类使用不同的数据类型，避免拖拽目标混淆 */
     refs.catList.addEventListener('dragover', function (e) {
       const item = e.target.closest('.cat-item');
-      if (!item || !dragId) return;
-      e.preventDefault();
-      item.classList.add('drop-target');
+      if (!item) return;
+      if (catDragId && catDragId !== item.dataset.cat) {
+        e.preventDefault();
+        const rect = item.getBoundingClientRect();
+        item.classList.toggle('drop-before', e.clientY < rect.top + rect.height / 2);
+        item.classList.toggle('drop-after', e.clientY >= rect.top + rect.height / 2);
+        return;
+      }
+      if (!catDragId && dragId) {
+        e.preventDefault();
+        item.classList.add('drop-target');
+      }
     });
     refs.catList.addEventListener('dragleave', function (e) {
       const item = e.target.closest('.cat-item');
-      if (item) item.classList.remove('drop-target');
+      if (item && !item.contains(e.relatedTarget)) item.classList.remove('drop-target', 'drop-before', 'drop-after');
     });
     refs.catList.addEventListener('drop', function (e) {
       const item = e.target.closest('.cat-item');
       if (!item) return;
+      const type = e.dataTransfer.types && Array.from(e.dataTransfer.types);
+      if (catDragId || (type && type.indexOf('application/x-fm-cat') >= 0)) {
+        e.preventDefault();
+        const source = catDragId || e.dataTransfer.getData('application/x-fm-cat');
+        const ids = L.cats().map(function (c) { return c.id; });
+        const from = ids.indexOf(source), target = ids.indexOf(item.dataset.cat);
+        if (from >= 0 && target >= 0 && from !== target) {
+          const rect = item.getBoundingClientRect();
+          const insertAfter = e.clientY >= rect.top + rect.height / 2;
+          ids.splice(from, 1);
+          ids.splice(target + (insertAfter ? 1 : 0) - (from < target ? 1 : 0), 0, source);
+          if (L.reorderCats(ids)) { renderCats(); renderMain(); }
+        }
+        U.$$('.cat-item').forEach(function (el) { el.classList.remove('drop-before', 'drop-after'); });
+        return;
+      }
       e.preventDefault();
       item.classList.remove('drop-target');
       const id = e.dataTransfer.getData('text/plain') || dragId;
@@ -3577,14 +4056,11 @@
           U.el('div', { class: 'cover-cand-pic' }, [
             U.el('img', { src: c.url, alt: '', referrerpolicy: 'no-referrer' })
           ]),
-          U.el('span', {
-            class: 'cover-cand-src',
-            text: c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马'
-          }),
+          U.el('span', { class: 'cover-cand-src', text: coverSrcLabel(c.source) }),
           U.el('div', { class: 'cover-cand-title', text: c.title || '' })
         ]);
         cell.addEventListener('click', function () {
-          pending = { kind: 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' };
+          pending = { kind: c.source || 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' };
           deleteMode = false;
           preview.src = c.url;
           preview.style.display = 'block';
@@ -3670,12 +4146,15 @@
 
   /* ── 专辑管理：批量补封面 ──────────────────────────────────────
    * 只处理「当前资源库里还没有封面」的专辑。一键抓取时：
-   *   - 喜马拉雅候选相似度 ≥ AUTO_COVER_SCORE：直接写入（几乎同名才敢自动替换）
+   *   - 帆书官方 / 喜马拉雅候选相似度 ≥ AUTO_COVER_SCORE：直接写入（几乎同名才敢自动替换）
    *   - 其余：把候选图摆出来，用户点选后点「保存」才批量写入
    * 未选择的专辑一张都不写，这是需求的硬约束。
    * 搜索复用 FM.covers.search（网页端 /api/covers/search、桌面端 IPC），
    * 写入走 FM.covers.saveOne / saveMany —— 后者批量期间只刷新一次索引。 */
-  const AUTO_COVER_SCORE = 0.9;    /* 自动替换阈值：宁缺勿滥，只信几乎完全同名的喜马拉雅结果 */
+  const COVER_SRC_LABEL = { fanshu: '帆书', douban: '豆瓣', xmly: '喜马', geekbang: '极客', baidu: '百度' };
+  function coverSrcLabel(src) { return COVER_SRC_LABEL[src] || '喜马'; }
+
+  const AUTO_COVER_SCORE = 0.9;    /* 自动替换阈值：宁缺勿滥，只信几乎完全同名的帆书/喜马拉雅结果 */
   const COVER_WORKERS = 3;         /* 并发数：喜马拉雅对高频请求敏感，3 路够快也不容易被拦 */
   const COVER_PICK_MAX = 6;        /* 每行最多摆几张候选 */
   const COVER_PAGE_SIZE = 20;      /* 每页 20 条；一键抓取只处理当前页，避免一口气打几百个请求 */
@@ -3789,7 +4268,7 @@
       extra = '<div class="am-cands">' + '<i class="am-sk"></i><i class="am-sk"></i><i class="am-sk"></i>' + '</div>';
     } else if (r.status === 'pick' && r.cands.length) {
       extra = '<div class="am-cands">' + r.cands.map(function (c, i) {
-        const src = c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马';
+        const src = coverSrcLabel(c.source);
         /* 卡片本身点一下是选中；右下角的放大镜单独打开大图，用来确认这张到底合不合适 */
         return '<div class="am-cand' + (r.picked === i ? ' on' : '') + '"' +
           ' data-act="cover-pick" data-id="' + esc(r.albumId) + '" data-c="' + i + '"' +
@@ -3860,13 +4339,18 @@
     try { list = await FM.covers.search(a.title || row.title, { limit: COVER_PICK_MAX, page: 0 }); } catch (e) { list = []; }
     if (job.cancel) { row.status = 'pending'; paintCoverRow(row); return; }
     const cands = (list || []).filter(function (c) { return c && c.url; });
-    /* 只有喜马拉雅来源才允许自动写入：极客/百度是按词搜出来的图，标题对不上也不能信 */
-    const best = cands.slice()
-      .sort(function (x, y) { return (Number(y.score) || 0) - (Number(x.score) || 0); })
-      .find(function (c) { return c.source === 'xmly' && Number(c.score) >= AUTO_COVER_SCORE; });
+    /* 只有帆书官方和喜马拉雅才允许自动写入：极客/豆瓣/百度是按词搜出来的图，标题对不上也不能信 */
+    const autoSrc = { fanshu: 1, xmly: 1 };
+    const best = cands.filter(function (c) {
+      return autoSrc[c.source] && Number(c.score) >= AUTO_COVER_SCORE;
+    }).sort(function (x, y) {
+      /* 同分时官方优先：樊登/帆书库要的就是官方那张 */
+      return (y.source === 'fanshu' ? 1 : 0) - (x.source === 'fanshu' ? 1 : 0)
+        || (Number(y.score) || 0) - (Number(x.score) || 0);
+    })[0];
     if (best) {
       const res = await FM.covers.saveOne(a, {
-        kind: 'xmly', url: best.url, albumId: best.id, title: best.title, source: 'xmly'
+        kind: best.source, url: best.url, albumId: best.id, title: best.title, source: best.source
       });
       if (res.ok) {
         row.status = 'auto';
@@ -4032,7 +4516,7 @@
       const c = cands[cur] || {};
       img.src = c.url || '';
       titleEl.textContent = c.title || row.title || '';
-      srcEl.textContent = (c.source === 'baidu' ? '百度' : c.source === 'geekbang' ? '极客' : '喜马') +
+      srcEl.textContent = coverSrcLabel(c.source) +
         (c.score ? ' · ' + Number(c.score).toFixed(2) : '');
       prevBtn.disabled = cur <= 0;
       nextBtn.disabled = cur >= cands.length - 1;
@@ -4075,7 +4559,7 @@
       const c = r.cands[r.picked];
       items.push({
         row: r, album: a,
-        payload: { kind: 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' }
+        payload: { kind: c.source || 'xmly', url: c.url, albumId: c.id, title: c.title, source: c.source || 'xmly' }
       });
     });
     if (!items.length) { toast('这些专辑已不在资源库里了', 'warn'); return; }
@@ -4183,7 +4667,7 @@
         '<div class="am-head-txt">' +
           '<h1 class="am-title">专辑管理</h1>' +
           '<p class="am-desc">这里只列还没有封面的专辑，每页 ' + COVER_PAGE_SIZE +
-            ' 条。一键抓取只处理当前页：喜马拉雅相似度 ≥ ' + AUTO_COVER_SCORE +
+            ' 条。一键抓取只处理当前页：帆书官方/喜马拉雅相似度 ≥ ' + AUTO_COVER_SCORE +
             ' 的自动写入，其余挑一张再保存，未选中的不会写入。</p>' +
         '</div>' +
         '<button class="btn ' + (job.running ? 'btn-ghost am-stop' : 'btn-primary') + '"' +
@@ -4628,6 +5112,8 @@
   let barProbeId = '';
   async function probeBarDuration(t) {
     if (!t || t.duration || t.__noDur || barProbeId === t.id || !FM.fs.hasSource) return;
+    /* 网盘库不为底栏时长单独换一次直链：播放时拿到 metadata 会写回时长 */
+    if (FM.fs.isAlist) return;
     barProbeId = t.id;
     try {
       let dur = 0;
@@ -4745,6 +5231,32 @@
     paintBuffer();
   }
 
+  /* 取直链 / 等首包时的加载过渡：250ms 后才亮，快速加载不闪一下。
+     这段等待在网盘库最明显（换链 + 302 + CDN 首包），之前界面完全没有反馈。 */
+  let loadTimer = 0;
+  function paintLoading(on) {
+    if (loadTimer) { clearTimeout(loadTimer); loadTimer = 0; }
+    if (on) {
+      loadTimer = setTimeout(function () {
+        loadTimer = 0;
+        refs.sheet.classList.add('is-loading');
+        refs.btnPlay.classList.add('is-loading');
+        refs.shPlay.classList.add('is-loading');
+        refs.vPlay.classList.add('is-loading');
+        refs.vBigPlay.classList.add('is-loading');
+        if (P.kind === 'video') refs.vLoading.hidden = false;
+      }, 250);
+      return;
+    }
+    refs.sheet.classList.remove('is-loading');
+    refs.btnPlay.classList.remove('is-loading');
+    refs.shPlay.classList.remove('is-loading');
+    refs.vPlay.classList.remove('is-loading');
+    refs.vBigPlay.classList.remove('is-loading');
+    /* 不判 kind：切集瞬间 P.kind 可能还是旧值，残留的转圈层会盖在新画面上 */
+    refs.vLoading.hidden = !!P.playing || !P.media.src;
+  }
+
   function paintState(playing) {
     const ic = icon(playing ? 'pause' : 'play');
     const isVideo = P.kind === 'video';
@@ -4840,6 +5352,8 @@
     P.on('volume', paintVolume);
     P.on('loop', paintLoop);
     P.on('sleep', paintSleep);
+    /* 取直链 / 等首包的过渡：按钮转圈 + 封面呼吸，避免「点了没反应」 */
+    P.on('loading', paintLoading);
     /* flv 首次播放要先重封装：盖一层过渡层，转完自动收 */
     P.on('preparing', function (track) { if (track) showTc(track.title); else hideTc(); });
     P.on('tcProgress', function (info) { if (info && info.pct) setTcPct(info.pct); });
@@ -4850,7 +5364,9 @@
       hideTc();
       /* 取消是主动行为（切集 / 收起播放页），不是播放故障 */
       if (code === 'aborted') return;
-      /* 明确不支持的格式（ape / wv / wma）：不走转码（一份要转几十秒），直接告诉用户换文件 */
+      /* 媒体加载失败：文案由 player 按 el.error.code 区分（编码不支持 / 直链失效） */
+      if (code === 'media') { toast(m || '媒体加载失败，请重试或重新扫描', 'warn'); return; }
+      /* 明确不支持的格式（ape / wv）：没有解码路径，直接告诉用户换文件 */
       if (code === 'unsupported') {
         const ext = (e && e.ext) ? String(e.ext).toUpperCase() : '';
         toast('不支持' + (ext ? ' ' + ext + ' ' : '该') + '格式，请先转成 mp3 再放进资源库', 'warn');
@@ -4866,7 +5382,16 @@
       }
       if (code === 'busy') { toast('服务端正忙，请稍后重试', 'warn'); return; }
       if (code === 'no-encoder') { toast('该格式需要转换成 mp3/mp4 才能播，请用桌面端或服务器模式', 'warn'); return; }
+      /* 网盘库取直链/转码失败（未配置、凭据失效、文件不在扫描结果里）：
+         服务端给的原话就是结论，别吞成「播放失败」 */
+      if (code === 'alist-failed' || code === 'alist-unsupported') {
+        toast(m || '网盘播放失败，请检查连接设置后重试', 'warn');
+        return;
+      }
       if (code === 'ffmpeg-failed' || code === 'bad-format') { toast('转换失败，文件可能已损坏', 'warn'); return; }
+      /* 浏览器内 WASM 转码失败（没有 ffmpeg 时的兜底那条路）：把具体原因带出来，
+         否则用户只看到「播放失败」，分不清是超时、卡住还是文件不对 */
+      if (code === 'client-tc-failed') { toast(m || '这个文件转不了，请先转成 mp3', 'warn'); return; }
       const offline = (typeof navigator !== 'undefined' && navigator.onLine === false) ||
         (FM.fs && FM.fs.link === 'offline');
       if (m === U.NET_FAIL || offline) toast(U.NET_FAIL, 'warn');
@@ -5476,15 +6001,13 @@
     }
 
     const maintenance = [];
-    /* 本机索引缓存（index:<libId>）随库变大，而所有库共用 WebView 那点 localStorage 配额：
-       给一个随时能清的手动出口；写不进去时那条警告里的「清除索引缓存」走的是同一个函数。
-       rightText 只报库数（遍历键名），体积等点开确认框再算，免得展开菜单去读几 MB 的值 */
-    let cacheCount = 0;
-    try { cacheCount = FM.store.indexCacheCount(); } catch (e) {}
+    /* 本机占空间的东西分三类：索引缓存（index:<libId>）、封面缓存、离线下载。
+       索引随库变大，而所有库共用 WebView 那点 localStorage 配额，所以给个随时能清的出口；
+       三类的体积统计和清理都在「存储管理」弹窗里（openStorageManager）。
+       菜单不显示库数：数量得遍历键名，且在这里也没有决策价值 */
     maintenance.push({
-      label: '清除索引缓存…', icon: 'broom',
-      rightText: cacheCount ? cacheCount + ' 个库' : '',
-      onClick: clearCacheFlow
+      label: '存储管理', icon: 'broom',
+      onClick: openStorageManager
     });
     /* 在线更新只在 APK 里有（下载/安装都得壳配合）。状态走右侧小字、不占第二行；
        静默查到新版本后直接改那行字，不用重开菜单 */
@@ -5895,7 +6418,8 @@
   }
 
   /* 资源库行的两段副文案：路径（远程库不暴露真实路径）与规模（专辑/集/占用）。
-     选择弹窗和资源库设置抽屉共用，口径才不会漂 */
+     选择弹窗和资源库设置抽屉共用，口径才不会漂。
+     网盘库不再印「网盘目录 …」：库名后面已经有「网盘」胶囊，副标题只留规模 */
   function libPathText(l) {
     return (l.fixed || FM.fs.remote) ? '远程资源库' : String(l.path || '').replace(/\\/g, '/');
   }
@@ -5917,14 +6441,18 @@
   }
 
   /* 资源库单选行：选中态 / 缺失态 / 规模行都在这里画，弹窗与抽屉复用。
-     库路径是纯文字信息，手机上要能长按复制，所以单独标 .selectable（其余界面文字禁选） */
+     库路径是纯文字信息，手机上要能长按复制，所以单独标 .selectable（其余界面文字禁选）。
+     网盘库：类型胶囊跟在库名后面，不印路径行（网盘目录对用户没意义） */
   function libRowHtml(l) {
     const cur = l.id === FM.fs.activeId;
     const scale = libScaleText(l);
+    const isAlist = l.type === 'alist';
     return '<span class="lib-ico">' + icon(l.missing ? 'moon' : ((l.fixed || FM.fs.remote) ? 'library' : 'folder')) + '</span>' +
-      '<div class="lib-info"><b>' + esc(l.name) + '</b><small class="selectable">' + esc(libPathText(l)) + '</small>' +
+      '<div class="lib-info"><div class="lib-name"><b>' + esc(l.name) + '</b>' +
+      (isAlist ? '<span class="lib-share">网盘</span>' : '') + '</div>' +
+      (isAlist ? '' : '<small class="selectable">' + esc(libPathText(l)) + '</small>') +
       (scale ? '<span class="lib-stats">' + esc(scale) + '</span>' : '') +
-      (l.missing ? '<em>资源库目录不存在，需要重新定位</em>' : '') + '</div>' +
+      (l.missing ? '<em>' + (isAlist ? '网盘连接未配置，请先编辑网盘连接' : '资源库目录不存在，需要重新定位') + '</em>' : '') + '</div>' +
       (l.shared ? '<span class="lib-share">共享</span>' : '') +
       (cur ? '<span class="lib-cur">当前</span>' : '');
   }
@@ -6004,18 +6532,19 @@
         text: '无法修改远程资源库。如需修改本地资源库，请先断开远程连接。'
       }));
     }
-    if (canAdd) {
+    /* 移动端不给「添加资源库」：要选主机目录，手机上误触成本高，等回桌面端再加 */
+    if (canAdd && !isMobileDevice()) {
       const add = U.el('button', { class: 'btn', html: icon('plus') + '<span>添加资源库</span>' });
       add.onclick = function () { close(); addLibFlow(); };
       foot.appendChild(add);
     }
-    /* 远端设置入口在资源库菜单里（「远程服务器设置…」），抽屉底部不再重复放一个 */
-    /* 壳里只读展示当前服务器地址：换服务器走顶栏设置 →「服务器设置…」，这里不再绑跳转 */
-    if (FM.android) {
-      const appInfo = U.el('div', { class: 'btn btn-ghost lib-remote-btn is-ro', title: '当前服务器地址（只读）' });
-      appInfo.innerHTML = '<span class="remote-txt"><b>服务器地址</b><small>' + esc(FM.android.base() || '未设置') + '</small></span>';
-      foot.appendChild(appInfo);
+    /* 网盘库走 /api/alist/config（只改 fm.db，不挂主机目录），不受 --allow-lib-edit 限制 */
+    if (canConfigAlist()) {
+      const addNet = U.el('button', { class: 'btn btn-ghost', html: icon('plus') + '<span>添加网盘库</span>' });
+      addNet.onclick = function () { openAlistConfigDialog(null, draw); };
+      foot.appendChild(addNet);
     }
+    /* 远端设置入口在资源库菜单里（「远程服务器设置…」），抽屉底部不再重复放一个 */
     const done = U.el('button', { class: 'btn btn-primary', text: '完成' });
     done.onclick = function () { close(); };
     foot.appendChild(done);
@@ -6066,8 +6595,9 @@
         const lt = DIR_MODE_LABEL[lm];
         const modeTitle = '目录结构：' + lt[0] + '（' + lt[1] + '）。点击切换';
         /* 目录自动监听：桌面本地库走「更多」菜单；手机 / 网页端（fixed 库）在行上直接给按钮，
-           否则默认没开 --allow-lib-edit 时那个菜单根本不出现，用户就没法打开监听 */
-        const showWatchBtn = FM.fs.watchSupported && (FM.fs.native || FM.fs.server) &&
+           否则默认没开 --allow-lib-edit 时那个菜单根本不出现，用户就没法打开监听。
+           网盘库是虚拟目录，主机侧没法 chokidar，行上不给这个胶囊 */
+        const showWatchBtn = l.type !== 'alist' && FM.fs.watchSupported && (FM.fs.native || FM.fs.server) &&
           canManageLib() && !l.shared && (FM.android || l.fixed);
         const watchTitle = '目录自动监听：' + (l.watch ? '已开启' : '已关闭') + '。点击' + (l.watch ? '关闭' : '开启');
         row.innerHTML = libRowHtml(l) +
@@ -6094,7 +6624,10 @@
         if (more) more.addEventListener('click', function (e) { e.stopPropagation(); libRowMenu(e.currentTarget, l, draw, handle); });
         row.addEventListener('click', function (e) {
           if (e.target.closest('.lib-more') || e.target.closest('.lib-mode') || cur) return;
-          if (l.missing) { toast('资源库目录不存在，请先重新定位', 'warn'); return; }
+          if (l.missing) {
+            toast(l.type === 'alist' ? '网盘连接未配置，请先在「更多」里编辑网盘连接' : '资源库目录不存在，请先重新定位', 'warn');
+            return;
+          }
           close();
           switchLib(l.id);
         });
@@ -6115,13 +6648,16 @@
       });
     }
     items.push({ label: '重命名', icon: 'edit', onClick: function () { renameLibFlow(l, redraw); } });
+    if (l.type === 'alist' && canConfigAlist() && !l.shared) {
+      items.push({ label: '编辑网盘连接…', icon: 'refresh', onClick: function () { openAlistConfigDialog(l, redraw); } });
+    }
     if (FM.fs.native) {
       items.push({ label: '重新定位…', icon: 'folder', onClick: function () { relocateFlow(l, redraw); } });
       items.push({ label: '在文件夹中打开', icon: 'folder', onClick: function () { FM.fs.openLib(l.id); } });
     }
     /* 目录自动监听：默认关，按库手动打开；共享来的只读副本不让它替源库做主。
-       纯网页本地目录没有主机侧监听，也不给入口 */
-    if (FM.fs.watchSupported && (FM.fs.native || FM.fs.server) && canManageLib() && !l.fixed) {
+       纯网页本地目录没有主机侧监听，网盘库是虚拟目录也没有，都不给入口 */
+    if (l.type !== 'alist' && FM.fs.watchSupported && (FM.fs.native || FM.fs.server) && canManageLib() && !l.fixed) {
       items.push({
         label: l.watch ? '关闭目录自动监听' : '开启目录自动监听',
         icon: l.watch ? 'check' : 'refresh',
@@ -6145,6 +6681,140 @@
       items.splice.apply(items, [at + 1, 0].concat(modeItems));
     }
     openMenu(anchor, items);
+  }
+
+  /* ── Alist/OpenList 网盘库配置 ──
+     凭据只提交给服务端加密落库，界面永不回填密码 / Token；编辑时留空即「不修改」。
+     连接测试走只读的 /api/alist/test，保存走 PUT /api/alist/config。 */
+  function openAlistConfigDialog(lib, redraw) {
+    if (!canConfigAlist()) { toast('只有服务端管理员可以配置网盘库', 'warn'); return; }
+    const id = lib ? lib.id : '';
+    const editing = !!id;
+    const name = U.el('input', { class: 'input', value: lib ? lib.name : '', placeholder: '例如：夸克网盘TV' });
+    const host = U.el('input', { class: 'input', placeholder: 'http://服务器地址:5244', spellcheck: false });
+    const base = U.el('input', { class: 'input', value: (lib && lib.basePath) || '/', placeholder: '/音乐/有声书', spellcheck: false });
+    const username = U.el('input', { class: 'input', placeholder: 'OpenList 用户名', autocomplete: 'off', spellcheck: false });
+    const keep = editing ? '留空表示不修改' : '';
+    const pw = U.el('input', { class: 'input', type: 'password', placeholder: keep || '密码（与 Token 二选一）', autocomplete: 'new-password' });
+    const token = U.el('input', { class: 'input', type: 'password', placeholder: keep || '长期 Token（可选，优先于密码）', autocomplete: 'off' });
+    const dirPw = U.el('input', { class: 'input', type: 'password', placeholder: keep || '加密目录密码（可选）', autocomplete: 'off' });
+    const cdn = U.el('input', { class: 'input', value: '*.drive.quark.cn', placeholder: '直链域名白名单，逗号分隔', spellcheck: false });
+    const err = U.el('small', { class: 'drawer-sub', style: { color: '#ff8a65' } });
+    const field = function (label, input) {
+      return U.el('div', { class: 'field' }, [U.el('label', { text: label }), input]);
+    };
+    const body = U.el('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } }, [
+      field('资源库名称', name), field('OpenList 地址', host), field('网盘根目录', base),
+      field('用户名', username), field('密码', pw), field('Token', token),
+      field('目录密码', dirPw), field('CDN 白名单', cdn),
+      U.el('small', { class: 'drawer-sub', text: '直链由服务端换取后 302 给播放器，媒体字节不经过 fm；改动会立即清掉旧扫描缓存。' }),
+      err
+    ]);
+    const say = function (text, ok) {
+      err.textContent = text;
+      err.style.color = ok ? 'var(--dim)' : '#ff8a65';
+    };
+    function form() {
+      return {
+        libId: id, name: name.value.trim(),
+        host: host.value.trim().replace(/\/+$/, ''),
+        username: username.value.trim(),
+        password: pw.value, token: token.value, dirPassword: dirPw.value,
+        base: base.value.trim() || '/',
+        cdn: cdn.value.split(/[,，\s]+/).map(function (s) { return s.trim(); }).filter(Boolean)
+      };
+    }
+    async function errText(r) {
+      let t = '';
+      try { t = await r.text(); } catch (e) {}
+      try {
+        const j = JSON.parse(t);
+        return (j.error && (j.error.message || j.error.code)) || j.reason || t;
+      } catch (e) { return t; }
+    }
+    const post = function (url, method, payload) {
+      return FM.fs.apiFetch(url, {
+        method: method, headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    };
+
+    const actions = [{ label: '取消', cls: 'btn-ghost' }];
+    if (editing) actions.push({
+      label: '清除凭据', cls: 'btn-ghost',
+      onClick: function () {
+        confirmModal({ title: '清除网盘凭据', message: '清除后该库将无法扫描和播放，确定继续？', danger: true })
+          .then(function (ok) { if (ok) clear(); });
+        return false;
+      }
+    });
+    actions.push({ label: '测试连接', cls: 'btn-ghost', onClick: function () { testConn(); return false; } });
+    actions.push({ label: '保存', cls: 'btn-primary', onClick: function () { save(); return false; } });
+    const m = openModal({ title: editing ? '网盘连接 · ' + lib.name : '添加网盘库', body: body, actions: actions });
+
+    if (editing) {
+      (async function () {
+        try {
+          const r = await FM.fs.apiFetch('/api/alist/config?libId=' + encodeURIComponent(id), { cache: 'no-store' });
+          if (!r.ok) {
+            say(r.status === 404 ? '服务端版本过低，请升级后重试' : '读取配置失败（' + r.status + '）');
+            return;
+          }
+          const c = await r.json();
+          name.value = c.name || name.value;
+          host.value = c.host || '';
+          username.value = c.username || '';
+          base.value = c.base || '/';
+          cdn.value = (c.cdnHosts || []).join(', ');
+          say(c.hasCredential ? '' : '该库没有可用凭据，请重新输入密码或 Token', !!c.hasCredential);
+        } catch (e) { say(U.NET_FAIL); }
+      })();
+    }
+
+    async function testConn() {
+      const f = form();
+      if (!f.host) { say('先填 OpenList 地址'); return; }
+      if (!f.password && !f.token) { say('测试连接需要重新输入密码或 Token（保存时可留空）'); return; }
+      say('正在测试连接…');
+      try {
+        const r = await post('/api/alist/test', 'POST', f);
+        const j = await r.json().catch(function () { return {}; });
+        if (!r.ok) { say((j.error && (j.error.message || j.error.code)) || ('连接失败（' + r.status + '）')); return; }
+        const bits = [j.serverTitle || 'OpenList'];
+        (j.storages || []).forEach(function (s) { bits.push(s.mount + '（' + s.driver + '）'); });
+        if (j.rangeOk === false) bits.push('上游不支持 Range');
+        if (j.corsOk === false) bits.push('上游无 CORS 头（播放器已按无 CORS 处理）');
+        if (!cdn.value.trim() && j.cdnSuggest && j.cdnSuggest.length) cdn.value = j.cdnSuggest.join(', ');
+        say('连接正常：' + bits.join(' · '), true);
+      } catch (e) { say(U.NET_FAIL); }
+    }
+
+    async function save() {
+      const f = form();
+      if (!f.host) { say('先填 OpenList 地址'); return; }
+      if (!editing && !f.password && !f.token) { say('请填密码或 Token'); return; }
+      say('正在保存…');
+      try {
+        const r = await post('/api/alist/config', 'PUT', f);
+        if (!r.ok) { say((await errText(r)) || ('保存失败（' + r.status + '）')); return; }
+        const j = await r.json().catch(function () { return {}; });
+        await FM.fs.refreshLibs();
+        if (redraw) redraw();
+        m.close();
+        toast(editing ? '网盘连接已更新' : '已添加网盘库「' + ((j.view && j.view.name) || f.name) + '」，请重新扫描');
+      } catch (e) { say(U.NET_FAIL); }
+    }
+
+    async function clear() {
+      try {
+        const r = await FM.fs.apiFetch('/api/alist/config?libId=' + encodeURIComponent(id), { method: 'DELETE' });
+        if (!r.ok) { say((await errText(r)) || ('清除失败（' + r.status + '）')); return; }
+        await FM.fs.refreshLibs();
+        if (redraw) redraw();
+        m.close();
+        toast('已清除网盘凭据');
+      } catch (e) { say(U.NET_FAIL); }
+    }
   }
 
   /* ── 共享资源库：把当前库指派给「所有人」或「指定用户」 ──
@@ -6846,10 +7516,15 @@
 
   async function switchLib(id) {
     if (!id || id === FM.fs.activeId) return;
+    /* 扫描期间不切库：这份扫描结果会被作废，界面上还会再叠一层加载。遮罩已经挡住点击，
+       这里兜住键盘 / 代码路径（跨库跳转、搜索命中另一库等） */
+    if (navLocked()) { toast(NAV_LOCK_TIP); return; }
     const lib = FM.fs.libs().find(l => l.id === id);
     if (!lib) return;
     if (lib.missing) {
-      toast('「' + lib.name + '」资源库目录不存在，请先重新定位', 'warn');
+      toast(lib.type === 'alist'
+        ? '「' + lib.name + '」网盘连接未配置，请先在「更多」里编辑网盘连接'
+        : '「' + lib.name + '」资源库目录不存在，请先重新定位', 'warn');
       openLibDrawer();
       return;
     }
@@ -7085,7 +7760,7 @@
   }
 
   let scanSeq = 0;
-  /* stale 结果等后台扫完再读一次：一分钟一次，最多五次（大库外接盘够用了）。
+  /* stale 结果等后台扫完再读一次：一分钟一次，最多十次（覆盖服务端 10 分钟等待上限）。
      stale 只是「先给你旧的结果」，服务端/主进程那次 walk 还在跑，落盘后时间戳会变，
      所以判据用 scannedAt 有没有前进，而不是这次读到的数据看起来新不新
      （重试读的是缓存，缓存没更新时它照样能读出来，「不 stale」不等于「扫完了」） */
@@ -7095,7 +7770,7 @@
     const baseAt = FM.lib.scannedAt;
     let tries = 0;
     const timer = setInterval(async function () {
-      if (my !== staleRetry || libId !== FM.fs.activeId || ++tries > 5) { clearInterval(timer); return; }
+      if (my !== staleRetry || libId !== FM.fs.activeId || ++tries > 10) { clearInterval(timer); return; }
       if (navLocked()) return;
       /* refresh 不带：只读服务端/主进程的扫描缓存，不走盘 */
       try { await runScan({ silent: true, quiet: true, libId, background: true }); } catch (e) {}
@@ -7117,14 +7792,32 @@
        locked 单独记一份：加锁后中途出错也只释放自己这一把 */
     const wantLock = !o.background;
     let locked = false;
+    let progressTimer = 0;
     try {
-      if (wantLock) { lockNav(); locked = true; }
-      if (showBusy) setScanBusy(true, '正在扫描资源库…');
+      if (wantLock) { lockNav(); locked = true; showScanMask(); }
+      /* 网盘库逐层列目录很慢：扫描期间并发轮询进度，用户能看出还在动 */
+      const scanLib = FM.fs.libs().find(function (x) { return x.id === libId; });
+      if (showBusy && FM.fs.server && scanLib && scanLib.type === 'alist') {
+        setScanBusy(true, '正在扫描网盘，大库可能需要几分钟…');
+        progressTimer = setInterval(function () {
+          FM.fs.scanProgress(libId).then(function (p) {
+            if (!p || !p.running) return;
+            const tip = '网盘扫描中：' + (p.dirs || 0) + ' 个目录 · ' + (p.files || 0) + ' 个文件';
+            setScanBusy(true, tip);
+            if (refs.scanMaskHint) refs.scanMaskHint.textContent = tip;
+          });
+        }, 2000);
+      } else if (showBusy) {
+        setScanBusy(true, '正在扫描资源库…');
+      }
       /* 只有手动「重新扫描」才让服务端/主进程真的走盘；静默补扫一律读它们的扫描缓存 */
       const scan = await FM.fs.scan(function (p) {
-        if (!showBusy) return;
-        if (p.phase === 'list') setScanBusy(true, '发现 ' + p.count + ' 个音频…');
-        else setScanBusy(true, '读取文件信息 ' + p.done + ' / ' + p.total);
+        const tip = p.phase === 'list'
+          ? '发现 ' + p.count + ' 个音频…'
+          : '读取文件信息 ' + p.done + ' / ' + p.total;
+        if (showBusy) setScanBusy(true, tip);
+        /* 静默扫描不弹顶栏提示，但遮罩在自己显示，进度照样要动 */
+        else if (wantLock && refs.scanMaskHint) refs.scanMaskHint.textContent = tip;
       }, { refresh: !o.silent });
       /* 扫描期间切了库：这份结果属于上一个库，直接丢掉，别把界面串了 */
       if (libId !== FM.fs.activeId) return false;
@@ -7142,8 +7835,11 @@
       }
       if (!o.silent) renderAll();
       else if (libSignature() !== before) renderAll({ quiet: true });
-      if (scan.stale) {
-        /* 服务端/主进程等了两分钟还没扫完，先给上次的结果；它还在后台接着扫，
+      if (scan.failed) {
+        /* 后台那次扫描已经失败（不是超时）：不能把旧结果当成「扫描完成」 */
+        if (!o.silent) toast('扫描失败（' + (scan.error || '网盘异常') + '），先显示上次的结果，请稍后重试', 'warn');
+      } else if (scan.stale) {
+        /* 服务端等满等待上限还没扫完，先给上次的结果；它还在后台接着扫，
            扫完会落盘，所以隔一分钟后重试读缓存，拿到新内容就自动换上去 */
         if (!o.silent) toast('库太大，扫描还在后台继续，先显示上次的结果', 'warn');
         retryAfterStale(libId);
@@ -7154,10 +7850,12 @@
       if (FM.fs.server && scan.coversPending) watchCovers(libId);
       return true;
     } finally {
+      if (progressTimer) { clearInterval(progressTimer); progressTimer = 0; }
       if (locked) unlockNav();
       /* 只有最新那次扫描能收起进度，旧扫描收尾不许关掉新扫描的提示；
          quiet 的那次本来就没弹，别去关别人正在显示的进度 */
       if (showBusy && my === scanSeq) setScanBusy(false);
+      if (wantLock) hideScanMask();
     }
   }
 

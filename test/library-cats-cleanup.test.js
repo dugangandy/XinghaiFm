@@ -148,6 +148,44 @@ test('本轮活专辑手工挂在已删目录分类下：仍然保留，不误�
   assert.ok(cats.some(c => c.id === dOld));
 });
 
+test('cats 默认按名称排序，手动排序按 order 并保留隐藏分类位置', () => {
+  reset('cat');
+  cats = [
+    { id: 'z', name: '乙', order: 0 },
+    { id: dHist, name: '目录分类', order: 1 },
+    { id: 'a', name: '甲', order: 2 }
+  ];
+  L.build(mkScan(['专辑/01.mp3'], 'flat'));
+  cats = [
+    { id: 'z', name: '乙', order: 0 },
+    { id: dHist, name: '目录分类', order: 1 },
+    { id: 'a', name: '甲', order: 2 }
+  ];
+  assert.deepEqual(L.cats().map(c => c.id), ['a', 'z']);
+  assert.equal(L.reorderCats(['z', 'a']), true);
+  assert.deepEqual(L.cats().map(c => c.id), ['z', 'a']);
+  assert.deepEqual(cats.map(c => c.id), ['z', dHist, 'a']);
+  assert.deepEqual(cats.map(c => c.order), [0, 1, 2]);
+  assert.equal(mem['catsManual:lib1'], true);
+  assert.equal(patches[patches.length - 1].catsManual, true);
+  assert.equal(L.reorderCats(['z', 'missing']), false);
+});
+
+test('add/update 分类保留目录分类，新增类别编号排在末尾', () => {
+  reset('cat');
+  cats = [
+    { id: 'c1', name: '甲', order: 0 },
+    { id: dHist, name: '目录分类', order: 1 },
+    { id: 'c2', name: '乙', order: 2 }
+  ];
+  L.build(mkScan(['专辑/01.mp3'], 'cat'));
+  L.updateCat('c1', { name: '新名称' });
+  assert.ok(cats.some(c => c.id === dHist));
+  const added = L.addCat('丙', '#fff');
+  assert.equal(cats.find(c => c.id === added).order, 4);
+  assert.ok(cats.some(c => c.id === dHist));
+});
+
 test('普通网页用户无写权限：跳过对账，只靠展示层隐藏', () => {
   reset('flat');
   FM.fs.serverReached = true;
@@ -158,6 +196,7 @@ test('普通网页用户无写权限：跳过对账，只靠展示层隐藏', ()
 
   assert.deepEqual(deletedIds(), []);
   assert.deepEqual(L.cats(), [], '平铺模式下展示层仍然隐藏 d 分类');
+  assert.equal(L.reorderCats([dHist]), false, '普通网页用户即使调用模型方法也不能更改顺序');
 });
 
 test('空扫描结果（掉盘/扫描失败）：不按「全都不存在」对账', () => {

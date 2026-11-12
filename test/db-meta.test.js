@@ -105,6 +105,17 @@ test('lastTrack 按用户存：新用户是空的，不同用户互不串', () =
   assert.equal(DB.userLastTrack(db, 'u1', ''), '');
 });
 
+test('catsManual：手动排序标记按资源库存储并随元数据快照同步', () => {
+  const db = fresh();
+  assert.equal(DB.metaSnapshot(db, ROOT).catsManual, false);
+  DB.metaApply(db, ROOT, { catsManual: true });
+  assert.equal(DB.metaSnapshot(db, ROOT).catsManual, true);
+  DB.metaApply(db, ROOT + '-other', { catsManual: true });
+  DB.metaApply(db, ROOT, { catsManual: false });
+  assert.equal(DB.metaSnapshot(db, ROOT).catsManual, false);
+  assert.equal(DB.metaSnapshot(db, ROOT + '-other').catsManual, true);
+});
+
 test('dirCatDropped：删掉的目录分类名单落库，跨端不会再自动长回来', () => {
   const db = fresh();
   DB.metaApply(db, ROOT, { dirCatDropped: ['技术', '历史'] });
@@ -254,7 +265,7 @@ test('metaSnapshot：整份读回带版本号，空库路径返回空结构', ()
   /* 没有库路径时给一份合法的空快照，别返回 undefined 让前端炸 */
   assert.deepEqual(DB.metaSnapshot(db, ''), {
     v: DB.META_VERSION, root: '', cats: [], albumMeta: {}, progress: {}, durations: {},
-    dirCatDropped: [], queue: { tracks: [], position: 0 }, prefs: {}
+    dirCatDropped: [], catsManual: false, queue: { tracks: [], position: 0 }, prefs: {}
   });
 });
 

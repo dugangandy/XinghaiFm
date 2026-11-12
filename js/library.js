@@ -155,7 +155,8 @@
       const id = dirCatId(name);
       if (next.some(function (c) { return c.id === id; })) return;
       if (next.some(function (c) { return c.name === name; })) return;
-      next.push({ id, name, color: U.coverColors(U.hash(name))[0], order: next.length });
+      const maxOrder = next.reduce(function (max, c) { return Math.max(max, Number(c.order) || 0); }, -1);
+      next.push({ id, name, color: U.coverColors(U.hash(name))[0], order: maxOrder + 1 });
       changed = true;
     });
     if (!changed) return list;
@@ -1134,34 +1135,61 @@
   }
 
   /* ── 分类 CRUD（都只影响当前库） ── */
+  function manualCatOrder() {
+    return !!libId && !!FM.store.read('catsManual:' + libId, false);
+  }
   function cats() {
     let list = ensureCats();
     /* 平铺模式不展示「目录分类」（d 前缀）：那是按目录分两级时自动建的，
        切回平铺后没有专辑会挂上去，留着点进去就是空的 */
     if (!dirGroupMode) list = list.filter(function (c) { return String(c.id).charAt(0) !== 'd'; });
-    return list.slice().sort((a, b) => a.order - b.order);
+    return list.slice().sort(function (a, b) {
+      if (manualCatOrder()) return (Number(a.order) || 0) - (Number(b.order) || 0) || U.naturalCompare(a.name || '', b.name || '');
+      return U.naturalCompare(a.name || '', b.name || '') || (Number(a.order) || 0) - (Number(b.order) || 0);
+    });
+  }
+  function saveCats(list, patch) {
+    db.setCatsFor(libId, list);
+    db.touch('cats:' + libId);
+    pushMeta(Object.assign({ cats: list }, patch || {}));
   }
 
   function addCat(name, color) {
-    const list = cats();
+    const list = ensureCats().slice();
     const id = 'c' + Date.now().toString(36);
-    list.push({ id, name: name || '新分类', color: color || '#22d3ee', order: list.length });
-    db.setCatsFor(libId, list);
-    db.touch('cats:' + libId);
-    pushMeta({ cats: list.sort((a, b) => a.order - b.order) });
+    const maxOrder = list.reduce(function (max, c) { return Math.max(max, Number(c.order) || 0); }, -1);
+    list.push({ id, name: name || '新分类', color: color || '#22d3ee', order: maxOrder + 1 });
+    saveCats(list);
     return id;
   }
 
   function updateCat(id, patch) {
-    const list = cats().map(c => c.id === id ? Object.assign({}, c, patch) : c);
-    db.setCatsFor(libId, list);
-    db.touch('cats:' + libId);
-    pushMeta({ cats: list });
+    const list = ensureCats().map(c => c.id === id ? Object.assign({}, c, patch) : c);
+    saveCats(list);
+  }
+
+  function reorderCats(visibleIds) {
+    if (!Array.isArray(visibleIds) || !libId) return false;
+    if (FM.fs.serverReached && !FM.fs.isAdmin) return false;
+    const all = ensureCats().slice();
+    const visible = cats();
+    const currentIds = visible.map(function (c) { return c.id; });
+    if (visibleIds.length !== currentIds.length || currentIds.some(function (id) { return visibleIds.indexOf(id) < 0; })) return false;
+    const ordered = visibleIds.map(function (id) { return all.find(function (c) { return c.id === id; }); });
+    let pos = 0;
+    all.forEach(function (c, i) {
+      if (currentIds.indexOf(c.id) >= 0) all[i] = Object.assign({}, ordered[pos++]);
+    });
+    all.forEach(function (c, i) { c.order = i; });
+    FM.store.write('catsManual:' + libId, true);
+    FM.store.touch('catsManual:' + libId);
+    saveCats(all, { catsManual: true });
+    return true;
   }
 
   /* 删分类只清当前库的归属：别的库同名 id（内置种子跨库同 id）不能被误伤 */
   function removeCat(id) {
-    const list = cats();
+    const list = ensureCats().slice();
     const gone = list.find(c => c.id === id);
     const rest = list.filter(c => c.id !== id);
     /* 目录分类（d 开头）删掉后记住名字：下次扫描不再自动建回来，
@@ -1287,7 +1315,7 @@
     stats,
     progressOf, setProgress, albumStat,
     setMeta, recomputeAlbum, refreshMeta, applyFavs, applyTrackFavs, catCount,
-    cats, addCat, updateCat, removeCat, migrateCats, repairCats,
+    cats, addCat, updateCat, removeCat, reorderCats, migrateCats, repairCats,
     catsOf: id => db.catsFor(id) || [],
     get rootName() { return rootName; },
     get rootKey() { return rootKey; },

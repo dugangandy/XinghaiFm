@@ -33,12 +33,22 @@
     }
   }
 
+  /* 当前库是不是网盘库：直链跨源且上游没有 CORS 头，一旦接进 WebAudio，
+     采样会全输出 0 —— 进度条照走但没声音，用户看到的就是「播不了」。 */
+  function alistLibActive() {
+    try { return !!(FM.fs && FM.fs.isAlist); } catch (e) { return false; }
+  }
+
   /* 只接管「当前在放音频」的那个元素。视频不接：接了等于让声音绕一圈 WebAudio，
      桌面端更容易音画不同步、主线程一忙就卡；而视频本来也不画频谱。 */
   function attach(el) {
     if (!ensureCtx()) return false;
     const node = el || document.getElementById('mediaAudio');
-    if (!node || wired.has(node)) return true;
+    if (!node) return true;
+    /* 先判无 CORS 的源（网盘直链、本机已下载文件）：已经接进 WebAudio 的元素同样会静音，
+       返回值要如实反映「这次没接管」 */
+    if ((node.dataset && node.dataset.fmNoCors === '1') || alistLibActive()) return false;
+    if (wired.has(node)) return true;
     try {
       ctx.createMediaElementSource(node).connect(analyser);
       wired.add(node);
@@ -162,6 +172,8 @@
 
   FM.viz = {
     start, stop, attach, resize,
+    /* 这个元素是否已经被接进 WebAudio：接进去就退不出来，播放器要据此换元素 */
+    taken: function (node) { return !!node && wired.has(node); },
     get ok() { return !failed; },
     resume() { if (ctx && ctx.state === 'suspended') ctx.resume(); }
   };
