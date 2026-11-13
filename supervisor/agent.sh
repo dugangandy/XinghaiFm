@@ -24,10 +24,8 @@ case "${1:-status}" in
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$BIN/supervisord</string>
-    <string>-n</string>
-    <string>-c</string>
-    <string>$CONF</string>
+    <string>/usr/local/bin/node</string>
+    <string>$ROOT/supervisor/launch.js</string>
   </array>
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>EnvironmentVariables</key>

@@ -1,37 +1,62 @@
 # 星海 FM · supervisor 维护手册
 
-用 supervisor 把「公网隧道」做成开机自启的常驻服务。以前双击 `启动-公网.command` 的活，现在由 supervisord 代管：进程崩了自动拉起，登录后自动开跑，日志落盘。
+用 supervisord 把「公网隧道」做成开机自启的常驻服务：进程崩了自动拉起，登录后自动开跑，日志落盘，日常用 `supervisorctl` / `ctl.sh` 管理。
 
 ## 1. 架构
 
 ```
 launchd（~/Library/LaunchAgents/com.xinghai.fm.supervisord.plist，KeepAlive）
-  └─ supervisord（~/.supervisor/venv，常驻进程，unix socket 控制）
-       └─ xinghai-fm = node tools/tunnel.js
-            ├─ node tools/serve.js 8080 --host 127.0.0.1 --allow-lib-edit
-            └─ ssh -N -R 8889:127.0.0.1:8080 root@<ssh.host>
+  └─ node supervisor/launch.js          ← 只为把「责任进程」换成 node，见第 2 节
+       └─ supervisord（~/.supervisor/venv，unix socket 控制）
+            └─ xinghai-fm = node tools/tunnel.js
+                 ├─ node tools/serve.js 8080 --host 127.0.0.1 --allow-lib-edit
+                 └─ ssh -N -R 8889:127.0.0.1:8080 root@<ssh.host>
 ```
 
 - 只管 **一个** program：`xinghai-fm`。本地服务和 SSH 隧道都是 `tunnel.js` 自己拉起的子进程，不要单独再托管 `serve.js`，否则会和它的复用逻辑打架。
-- 端口、远端地址、重连次数全部来自项目根目录的 `.tunnel.json`，改配置只改那一个文件。
+- 端口、远端地址、重连次数全部来自项目根目录的 `.tunnel.json`。
+- 同一个 supervisord 还通过 `~/.supervisor/conf.d/*.conf` 管着别的项目（如 gk-reader），本项目的改动不影响它们。
 
-## 2. 文件
+## 2. 为什么 supervisord 外面还要包一层 node
+
+macOS 的 TCC（隐私权限）只按启动链的**责任进程**判权限，不看子进程自己有没有授权：
+
+```
+launchd → supervisord（Apple 的 Python.app）→ serve.js 读 NAS → Operation not permitted（EPERM）
+launchd → node launch.js → supervisord → serve.js 读 NAS → 正常（node 有完全磁盘访问权限）
+```
+
+直接让 launchd 跑 supervisord 时，责任进程是 `/Library/Developer/CommandLineTools/…/Python.app`，给 node 授权也没用。`supervisor/launch.js` 只做一件事：用 node 起 supervisord、转发信号、退出码跟着走。这样责任进程变成 node，只要给 node 开一次完全磁盘访问权限，整棵子进程树都能读 NAS，`supervisorctl` 的用法一点没变。
+
+> 直接命令行 `supervisord -c …` 调试时（没经过 node），读 NAS 仍会 EPERM，这是预期行为。
+
+## 3. 前提：给 node 完全磁盘访问权限
+
+系统设置 → 隐私与安全性 → 完全磁盘访问权限 → `+` → `⌘⇧G` → `/usr/local/bin/node` → 打开，确认开关是开的。
+
+没授权时的典型表现：
+
+- 日志：`[media] 读取失败 <文件> · EPERM`、`[scan] 根目录不可用，保留上次缓存`
+- 封面：`[cover] 保存失败：没有权限写入 .../.fm-covers（EPERM）`
+- 页面：专辑能打开、曲目能列出来，一点播放就失败（NAS 库才有，本地盘库正常）
+
+> node 升级（brew / pkg 换二进制）后授权可能失效，重新拖一次即可。
+
+## 4. 文件
 
 | 路径 | 作用 |
 | --- | --- |
 | `supervisor/supervisord.conf` | supervisord 主配置 + `[program:xinghai-fm]` |
+| `supervisor/launch.js` | LaunchAgent 的入口：用 node 起 supervisord（TCC 责任进程） |
 | `supervisor/ctl.sh` | 日常启停入口 |
 | `supervisor/agent.sh` | 开机自启的安装/卸载 + 健康检查 |
 | `~/Library/LaunchAgents/com.xinghai.fm.supervisord.plist` | launchd 启动项，由 `agent.sh install` 生成 |
 | `~/.supervisor/venv` | supervisor 本体（Python venv，不进仓库） |
 | `~/.supervisor/supervisor.sock` | supervisorctl 的本地 socket |
-| `~/.supervisor/supervisord.log` | supervisord 自身日志 |
-| `~/.supervisor/logs/xinghai-fm.log` | 程序输出（tunnel / serve / ssh 的全部 stdout+stderr） |
+| `~/.supervisor/logs/xinghai-fm.log` | 程序输出（tunnel / serve / ssh 的 stdout+stderr） |
 | `~/.supervisor/logs/launchd.{out,err}.log` | launchd 层兜底日志 |
-| `/usr/local/bin/supervisorctl` | 软链 → `~/.supervisor/venv/bin/supervisorctl`，任何目录都能直接敲 |
-| `/usr/local/etc/supervisord.conf` | 软链 → 本项目的 `supervisor/supervisord.conf`，给 supervisorctl 找 socket 用 |
 
-## 3. 首次安装
+## 5. 首次安装
 
 ```bash
 python3 -m venv "$HOME/.supervisor/venv"
@@ -39,134 +64,56 @@ python3 -m venv "$HOME/.supervisor/venv"
 bash supervisor/agent.sh install
 ```
 
-> 本机 `~/.pip/pip.conf` 指向的豆瓣源已经 404，装包必须显式加 `-i https://pypi.org/simple`，否则会报 `No matching distribution found`。
-> 换机器 / 换用户名不用改脚本：路径全是运行时从 `$HOME` 和脚本自身位置推出来的；但 LaunchAgent 里写死了绝对路径，换路径后要 `agent.sh uninstall && agent.sh install`。
+> 本机 `~/.pip/pip.conf` 指的豆瓣源已 404，装包必须显式加 `-i https://pypi.org/simple`。
+> 换机器或项目路径变了要 `agent.sh uninstall && agent.sh install`：plist 里写的是绝对路径。
 
-## 4. 日常操作
-
-```bash
-bash supervisor/ctl.sh start      # 起（已装 agent 时走 launchctl kickstart）
-bash supervisor/ctl.sh stop       # 停程序，supervisord 继续待命
-bash supervisor/ctl.sh restart    # 重启程序
-bash supervisor/ctl.sh status     # 程序状态
-bash supervisor/ctl.sh log        # tail -f 程序日志
-bash supervisor/ctl.sh shutdown   # supervisord 一起退（装了 agent 会先摘掉自启，否则会被拉回）
-```
-
-两个软链装好后，`supervisorctl` 在任何目录都能直接用，不必带 `-c`：
+## 6. 日常操作
 
 ```bash
-supervisorctl status                   # 所有被托管的程序
-supervisorctl restart xinghai-fm       # 重启单个程序
-supervisorctl start|stop xinghai-fm
-supervisorctl tail -f xinghai-fm       # 跟日志（等价 ctl.sh log）
+bash supervisor/ctl.sh start|stop|restart|status|log
+bash supervisor/agent.sh status     # 六项体检，异常退出码 1
+supervisorctl status                # 所有 program（含别的项目）
+supervisorctl restart xinghai-fm
+supervisorctl tail -f xinghai-fm    # 等价 ctl.sh log
 supervisorctl reread && supervisorctl update   # 改完配置后生效
-supervisorctl                          # 不带参数进交互 shell，可 tab 补全
 ```
 
-软链失效（项目挪位置、重建 venv）后重做：
+改判定规则：改 `supervisord.conf` 要 `reread && update`；改 `tools/*.js`、`.tunnel.json` 要 `ctl.sh restart`；只改前端刷新浏览器即可。
 
-```bash
-ln -sfn "$HOME/.supervisor/venv/bin/supervisorctl" /usr/local/bin/supervisorctl
-ln -sfn "<项目路径>/supervisor/supervisord.conf" /usr/local/etc/supervisord.conf
-```
+## 7. 常见故障
 
-`ctl.sh` 只是包了一层（自动起 supervisord、找不到就提示装依赖），两种用法等价，选了哪种就一直用哪种。
+**公网打不开，本地 8080 正常**
+看 `agent.sh status` 的 tunnel / public 两项。ssh 掉了 `tunnel.js` 会自己重连，最多 `.tunnel.json` 里的 `maxRetries`（当前 10）次，用尽后退出码 1 → supervisor 整体拉起。连续失败基本是密钥、安全组或服务端 `GatewayPorts` 问题。
 
-健康检查（六项：LaunchAgent / supervisord / program / 本地端口 / SSH 隧道 / 公网可达），异常时退出码 1：
+**播放失败 / 视频转圈，日志有 EPERM**
+回第 2、3 节：确认 LaunchAgent 跑的是 `node supervisor/launch.js`（`ps -o command -p $(pgrep -f launch.js)`），以及 node 的完全磁盘访问权限；顺带确认 `/Volumes/公共空间` 还挂着。
 
-```bash
-bash supervisor/agent.sh status
-```
+**端口 8080 被占**
+`agent.sh status` 的 local 项会区分：占用者是 `serve.js` 且父进程是 tunnel → 正常；父进程不是 tunnel → 野进程，多半是手动 `kill -9` 留下的孤儿。处理：`ctl.sh stop` → `kill <PID>` → `ctl.sh start`。
 
-## 5. 日志与轮转
+**`ctl.sh stop` 报「15 秒内没停下」**
+`tunnel.js` 收到 TERM 会先收 ssh / serve；偶尔 ssh 卡住。直接 `kill -9 <pid>` 后 `ctl.sh start`。supervisord 自己停程序时是 `stopwaitsecs=15` 后 KILL，不会留孤儿。
 
-- 程序日志 10MB × 3 份，supervisord 日志 5MB × 2 份，自动轮转，不用手动清。
+**launchctl 显示 running 但程序没起**
+`launchctl kickstart -k gui/$(id -u)/com.xinghai.fm.supervisord`，程序按 `autostart=true` 自动拉起。
+
+## 8. 日志与轮转
+
+- 程序日志 10MB × 3 份、supervisord 日志 5MB × 2 份，自动轮转。
 - 重启后看不到旧输出是正常的：轮转文件是 `*.log.1`、`*.log.2`。
-- 排查顺序：`xinghai-fm.log`（业务）→ `supervisord.log`（为什么被重启）→ `launchd.err.log`（supervisord 自己起不来）。
+- 排查顺序：`xinghai-fm.log`（业务）→ `supervisord.log`（为什么被重启）→ `launchd.err.log`（node / supervisord 起不来）。
 
-## 6. 状态含义
+## 9. 状态含义
 
 | 状态 | 意思 | 处理 |
 | --- | --- | --- |
 | RUNNING | 正常 | — |
-| STARTING | 启动中（`startsecs=10` 内都算） | 等 10 秒再看 |
-| STOPPED | 被 `ctl.sh stop` 停掉；**不会自动起** | `ctl.sh start` |
-| BACKOFF | 起得太快又退出，正在退避重试 | 看日志，多半是端口/配置问题 |
-| FATAL | 连续 `startretries=5` 次失败，supervisor 放弃 | 修问题后 `ctl.sh start` |
-| EXITED | 正常退出（退出码 0）且 `autorestart=unexpected` 不拉 | 一般出现在手动 Ctrl+C 后 |
-
-## 7. 常见故障
-
-**公网打不开，但本地 8080 正常**
-先看 `agent.sh status` 的 tunnel 项。ssh 掉了 `tunnel.js` 会自己重连，最多 `.tunnel.json` 里的 `maxRetries`（当前 10）次，用尽后进程退出码 1 → supervisor 再整体拉起。连续失败基本是密钥、安全组或服务端 `GatewayPorts` 的问题，日志里会有排查提示。
-
-**端口 8080 被占**
-`agent.sh status` 的 local 项会区分两种情况：
-- 占用者是 `serve.js` 且父进程就是 tunnel → 正常；
-- 父进程不是 tunnel（父为 1 或别的 PID）→ 野进程，多半是之前手动 `kill -9` 留下的孤儿。处理：`ctl.sh stop` → `kill <那个 PID>` → `ctl.sh start`。
-
-**STOPPED 之后一直不复位**
-`stop` 是人工意图，supervisor 不会自动恢复。`ctl.sh start` 即可。
-
-**launchctl 显示 running 但程序没起**
-`launchctl kickstart -k gui/$(id -u)/com.xinghai.fm.supervisord` 重启 supervisord，程序会按 `autostart=true` 自动拉起。
-
-**改完配置没生效**
-supervisord 不会自动重读：
-
-```bash
-"$HOME/.supervisor/venv/bin/supervisorctl" -c supervisor/supervisord.conf reread   # 只检测变更
-"$HOME/.supervisor/venv/bin/supervisorctl" -c supervisor/supervisord.conf update   # 应用到运行中的进程
-```
-
-## 8. 改托管内容
-
-加一个 program（模板，`%(ENV_HOME)s` 展开成 `$HOME`）：
-
-```ini
-[program:名字]
-command=/usr/local/bin/node tools/xxx.js
-directory=/Volumes/Macintosh HD/Users/app/XinghaiFm
-autostart=true
-autorestart=unexpected
-startsecs=10
-stopasgroup=true
-killasgroup=true
-redirect_stderr=true
-stdout_logfile=%(ENV_HOME)s/.supervisor/logs/名字.log
-environment=HOME="%(ENV_HOME)s",PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-```
-
-改完 `reread` + `update`。注意 `supervisor/` 里路径含空格（`Macintosh HD`），`directory` 可以直接写空格，`command` 里不要给脚本路径加引号。
-
-调参几个关键项：
-
-| 项 | 当前值 | 说明 |
-| --- | --- | --- |
-| `startsecs` | 10 | 撑过 10 秒才算 RUNNING，早退算启动失败 |
-| `startretries` | 5 | 连续启动失败上限，超过进 FATAL |
-| `stopwaitsecs` | 15 | TERM 后等多久才 KILL |
-| `stopasgroup` / `killasgroup` | true | 停止时连带 ssh、serve 一起收，避免孤儿 |
-| `autorestart` | unexpected | 崩了才拉；正常退出不反复重启 |
-
-## 9. 升级 / 卸载
-
-```bash
-"$HOME/.supervisor/venv/bin/pip" install -i https://pypi.org/simple -U supervisor
-bash supervisor/ctl.sh restart        # 用新版重启程序
-```
-
-彻底回退到手动模式：
-
-```bash
-bash supervisor/agent.sh uninstall    # 摘掉 LaunchAgent，supervisord 退出
-bash supervisor/ctl.sh shutdown       # 若还有手动起的实例
-# 之后照旧双击 启动-公网.command
-```
+| STARTING | 启动中（`startsecs=10` 内） | 等 10 秒 |
+| STOPPED | 被 `ctl.sh stop` 停掉，不会自动起 | `ctl.sh start` |
+| BACKOFF | 起得太快又退出，正在退避 | 看日志，多半端口/配置 |
+| FATAL | 连续 `startretries=5` 次失败 | 修问题后 `ctl.sh start` |
 
 ## 10. 变更边界
 
-- `.tunnel.json`、`.auth.json`、数据库 `~/Library/Application Support/星海FM/fm.db` 都不归 supervisor 管，不在这套配置里读写。
-- 机器睡眠唤醒后，ssh 断线由 `tunnel.js` 自己重连，supervisord 只在进程真的退出时才介入。
-- 日志不写进仓库，`supervisor/` 目录里只有 4 个文件（配置 + 两个脚本 + 本手册）该进版本库。
+- `.tunnel.json`、`.auth.json`、数据库 `~/Library/Application Support/星海FM/fm.db` 不归 supervisor 管。
+- 换托管方式（比如不再用 supervisord）时，先 `agent.sh uninstall` 摘掉 LaunchAgent，再动配置，避免两套抢 8080。

@@ -1134,7 +1134,17 @@ function pipeFile(file, res, opts) {
     }
   });
   res.on('error', kill);
-  stream.on('error', () => { try { res.destroy(); } catch (e) {} });
+  /* 读流一失败就静默 destroy，前端只会看到「空响应 / 播放失败」。
+     macOS 上 launchd 拉起的进程读网络卷常被 TCC 挡成 EPERM：能 stat 到大小，一读就报
+     Operation not permitted，补一句日志才好定位。 */
+  stream.on('error', (e) => {
+    const code = (e && e.code) || '';
+    console.log('[media] 读取失败 ' + file + ' · ' + (code || e));
+    if (code === 'EPERM' || code === 'EACCES') {
+      console.log('  ↑ 权限不足：若是 NAS/网络卷，多半是运行服务的进程没有「完全磁盘访问权限」');
+    }
+    try { res.destroy(); } catch (err) {}
+  });
   stream.pipe(res);
 }
 
