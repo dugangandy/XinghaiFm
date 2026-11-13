@@ -6698,7 +6698,10 @@
     const pw = U.el('input', { class: 'input', type: 'password', placeholder: keep || '密码（与 Token 二选一）', autocomplete: 'new-password' });
     const token = U.el('input', { class: 'input', type: 'password', placeholder: keep || '长期 Token（可选，优先于密码）', autocomplete: 'off' });
     const dirPw = U.el('input', { class: 'input', type: 'password', placeholder: keep || '加密目录密码（可选）', autocomplete: 'off' });
-    const cdn = U.el('input', { class: 'input', value: '*.drive.quark.cn', placeholder: '直链域名白名单，逗号分隔', spellcheck: false });
+    /* 留空 = 用内置白名单（已知驱动 CDN，如 *.quark.cn）。测试连接会把探测到的
+       真实域名填进来，管理员不用自己猜；保存后白名单变更要刷新页面才进 CSP。 */
+    const cdn = U.el('input', { class: 'input', value: '', placeholder: '留空使用内置白名单（如 *.quark.cn），逗号分隔', spellcheck: false });
+    let cdnInit = '';
     const err = U.el('small', { class: 'drawer-sub', style: { color: '#ff8a65' } });
     const field = function (label, input) {
       return U.el('div', { class: 'field' }, [U.el('label', { text: label }), input]);
@@ -6707,7 +6710,7 @@
       field('资源库名称', name), field('OpenList 地址', host), field('网盘根目录', base),
       field('用户名', username), field('密码', pw), field('Token', token),
       field('目录密码', dirPw), field('CDN 白名单', cdn),
-      U.el('small', { class: 'drawer-sub', text: '直链由服务端换取后 302 给播放器，媒体字节不经过 fm；改动会立即清掉旧扫描缓存。' }),
+      U.el('small', { class: 'drawer-sub', text: '直链由服务端换取后 302 给播放器，媒体字节不经过 fm；改动会立即清掉旧扫描缓存，白名单要在刷新页面后才对播放生效。' }),
       err
     ]);
     const say = function (text, ok) {
@@ -6766,6 +6769,7 @@
           username.value = c.username || '';
           base.value = c.base || '/';
           cdn.value = (c.cdnHosts || []).join(', ');
+          cdnInit = cdn.value.trim();
           say(c.hasCredential ? '' : '该库没有可用凭据，请重新输入密码或 Token', !!c.hasCredential);
         } catch (e) { say(U.NET_FAIL); }
       })();
@@ -6801,7 +6805,8 @@
         await FM.fs.refreshLibs();
         if (redraw) redraw();
         m.close();
-        toast(editing ? '网盘连接已更新' : '已添加网盘库「' + ((j.view && j.view.name) || f.name) + '」，请重新扫描');
+        const cdnNote = cdn.value.trim() !== cdnInit ? '，刷新页面后新白名单生效' : '';
+        toast((editing ? '网盘连接已更新' : '已添加网盘库「' + ((j.view && j.view.name) || f.name) + '」，请重新扫描') + cdnNote);
       } catch (e) { say(U.NET_FAIL); }
     }
 
