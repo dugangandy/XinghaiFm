@@ -577,6 +577,12 @@ let alistCsp = { at: 0, extra: '' };
 function alistCspExtra() {
   if (Date.now() - alistCsp.at < 60000) return alistCsp.extra;
   const set = new Set();
+  /* 内置白名单（已知驱动 CDN，如 *.quark.cn）永远生效：老库存的还是旧默认域名，
+     服务商换了 CDN 之后只合并配置就会漏掉，播放被 media-src 直接拦掉。 */
+  ALIST.DEFAULT_CDN.forEach(function (pat) {
+    set.add('https://' + pat);
+    set.add('http://' + pat);
+  });
   try {
     const rows = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'alist:%:host' OR key LIKE 'alist:%:cdn'").all();
     rows.forEach(function (r) {
@@ -1536,10 +1542,9 @@ const server = http.createServer(async function (req, res) {
       if (!l) return send(res, 403, '网盘库不存在或不可查看');
       const pre = 'alist:' + l.id + ':';
       const cfg = ALIST.readConfig(db, l.id);
-      let cdnHosts = ALIST.DEFAULT_CDN.slice();
+      let cdnHosts = ALIST.effectiveCdn([]);
       try {
-        const arr = JSON.parse(DB.getSetting(db, pre + 'cdn', '[]') || '[]');
-        if (arr && arr.length) cdnHosts = arr;
+        cdnHosts = ALIST.effectiveCdn(JSON.parse(DB.getSetting(db, pre + 'cdn', '[]') || '[]'));
       } catch (e) {}
       const credType = cfg ? (cfg.token ? 'token' : (cfg.password ? 'password' : '')) : '';
       return json(res, {

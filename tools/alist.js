@@ -19,7 +19,10 @@ const crypto = require('node:crypto');
 const DB = require('../db');
 const { isBlockedIp } = require('../cover-fetch');
 
-const DEFAULT_CDN = ['*.drive.quark.cn'];
+/* 夸克直链的 CDN 域名在漂移（早先是 dl-c-*.drive.quark.cn，现在是 dl-c-*.pds.quark.cn），
+   按服务商顶层域放行，免得 CDN 换个前缀就要管理员手改白名单、改了还得刷新页面。
+   只用于 raw_url 校验和页面 media-src，不涉及任何写权限。 */
+const DEFAULT_CDN = ['*.quark.cn'];
 const DEFAULT_TIMEOUT = 8000;
 /* 列目录超时：网盘大目录（几千项）首包可能很慢，30s 容易误判成失败把整次扫描打断 */
 const LIST_TIMEOUT = 60000;
@@ -196,6 +199,7 @@ function requestRange(rawUrl, opts) {
       const req = (secure ? https : http).request(reqOpts, function (res) {
         resolve({
           status: res.statusCode || 0,
+          location: String(res.headers.location || ''),
           contentRange: String(res.headers['content-range'] || ''),
           acceptRanges: String(res.headers['accept-ranges'] || ''),
           acao: String(res.headers['access-control-allow-origin'] || '')
@@ -307,7 +311,7 @@ function getFile(cfg, token, filePath, opts) {
     const raw = String(d.raw_url || '');
     if (!raw) throw alistError('NO_DIRECT_LINK', '上游未返回 raw_url', 502);
     const loc = safeDirectLink(raw);
-    const patterns = cfg.cdn || DEFAULT_CDN;
+    const patterns = effectiveCdn(cfg.cdn);
     if (!isAllowedRawHost(loc, cfg.host, patterns)) {
       throw alistError('BAD_RAW_HOST', 'raw_url 域名不在白名单', 502);
     }
@@ -326,6 +330,17 @@ function safeDirectLink(raw) {
     throw alistError('NO_DIRECT_LINK', '直链只支持 http/https', 502);
   }
   return u.toString();
+}
+
+/* 内置白名单永远生效，管理员配置只在其上追加：老配置里存的是旧默认域名，
+   不合并的话服务商换了 CDN 之后这些库会直接播放失败（BAD_RAW_HOST / CSP 拦截）。 */
+function effectiveCdn(patterns) {
+  const out = DEFAULT_CDN.slice();
+  (Array.isArray(patterns) ? patterns : []).forEach(function (p) {
+    const s = String(p || '').trim().toLowerCase();
+    if (s && out.indexOf(s) < 0) out.push(s);
+  });
+  return out;
 }
 
 function isAllowedRawHost(rawUrl, cfgHost, patterns) {
@@ -364,7 +379,7 @@ function suggestCdn(rawUrl, cfgHost) {
 function probe(cfg, opts) {
   const o = opts || {};
   const base = String(cfg.base || '/');
-  let publicInfo = {}, auth = null, dir = null, storages = [], rawInfo = null, rangeOk = false, corsOk = false;
+  let publicInfo = {}, auth = null, dir = null, storages = [], rawInfo = null, finalUrl = '', rangeOk = false, corsOk = false;
   return (o.resolve || resolvePublicTarget)(String(cfg.host || ''))
     .then(function () {
       return requestJson(cfg, '/api/public/settings', null,
@@ -387,12 +402,25 @@ function probe(cfg, opts) {
     .then(function () {
       const first = (dir.items || []).find(function (x) { return !x.is_dir; });
       if (!first) return null;
-      return getFile(cfg, auth.token, joinPath(base, first.name), o).then(function (r) { rawInfo = r; })
+      return getFile(cfg, auth.token, joinPath(base, first.name), o).then(function (r) { rawInfo = r; finalUrl = r.rawUrl; })
         .catch(function () { rawInfo = null; });
     })
     .then(function () {
       if (!rawInfo || o.probeRange === false) return null;
-      return requestRange(rawInfo.rawUrl, o).then(function (r) {
+      /* 有些驱动（夸克）给的是 OpenList 自己的 /p/ 地址，真正的 CDN 域名藏在 302 的
+         Location 里。跟一跳再取建议，管理员才不用自己猜白名单该填什么。 */
+      const first = rawInfo.rawUrl;
+      return requestRange(first, o).then(function (r) {
+        if (r.status >= 300 && r.status < 400 && r.location) {
+          let next = '';
+          try { next = new URL(r.location, first).toString(); } catch (e) {}
+          if (next) {
+            finalUrl = next;
+            return requestRange(next, o).catch(function () { return r; });
+          }
+        }
+        return r;
+      }).then(function (r) {
         /* 200 = 服务器忽略 Range 直接回全量，不能算「支持拖动」 */
         rangeOk = r.status === 206 && /^bytes\b/i.test(String(r.contentRange || ''));
         corsOk = !!r.acao;
@@ -410,7 +438,7 @@ function probe(cfg, opts) {
           return { name: String(x.name || ''), isDir: !!x.is_dir, size: Number(x.size) || 0 };
         }),
         sampleCount: (dir.items || []).length,
-        cdnSuggest: rawInfo ? suggestCdn(rawInfo.rawUrl, cfg.host) : [],
+        cdnSuggest: finalUrl ? suggestCdn(finalUrl, cfg.host) : [],
         rangeOk: rangeOk,
         corsOk: corsOk
       };
@@ -468,7 +496,7 @@ function readConfig(db, id) {
     token: String(c.token || ''),
     dirPassword: String(c.dirPassword || ''),
     base: String(DB.getSetting(db, p + 'base', '/') || '/'),
-    cdn: (cdn.length ? cdn : DEFAULT_CDN.slice())
+    cdn: effectiveCdn(cdn)
   };
 }
 function deleteConfig(db, id) {
@@ -564,6 +592,7 @@ module.exports = {
   getFile: getFile,
   safeDirectLink: safeDirectLink,
   isAllowedRawHost: isAllowedRawHost,
+  effectiveCdn: effectiveCdn,
   suggestCdn: suggestCdn,
   probe: probe,
   encryptCred: encryptCred,
