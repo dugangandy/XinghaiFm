@@ -174,7 +174,7 @@ fm/
 ├─ js/                 util · store · media · fs · covers · library · viz · player · ui · app
 ├─ cover-fetch.js      抓封面（扫描到新专辑时自动跑，也可命令行单跑）
 ├─ tools/              serve.js · tunnel.js · bump-version.js（fetch-covers.js 是兼容入口）
-├─ supervisor/         supervisord.conf + ctl.sh + agent.sh + README.md（后台常驻跑 tunnel.js）
+├─ supervisor/         supervisord.conf + launch.js + ctl.sh + agent.sh + README.md（后台常驻跑 tunnel.js）
 ├─ main.js             Electron 主进程（选目录、扫描、读文件、自定义协议）
 ├─ preload.js          暴露给页面的原生能力
 ├─ build/              应用图标与启动图
@@ -205,8 +205,9 @@ npm run dist:mac       # macOS：dmg + zip（arm64 / x64），需在 Mac 上跑
 - **源码包**：`dist/XinghaiFM-<版本>-src.zip`，解压后 `npm install && npm start`
 - **出安装包**：解压后双击 `打包-macOS.command`，或 `npm run dist:mac` → `dist/` 里的 dmg / zip
 - **公网隧道**：双击 `启动-公网.command`，先 `node tools/init-db.js` 初始化用户 / 密码
-- **后台常驻**：`supervisor/ctl.sh start|stop|restart|status|log`（supervisord 崩了会自动拉起 `tools/tunnel.js`；首次先去 `python3 -m venv ~/.supervisor/venv && ~/.supervisor/venv/bin/pip install -i https://pypi.org/simple supervisor`）
-- **开机自启**：`supervisor/agent.sh install|uninstall|status`，装的是 `~/Library/LaunchAgents/com.xinghai.fm.supervisord.plist`（登录后由 launchd 拉起 supervisord，KeepAlive）；`status` 逐项体检 launchd / supervisord / 进程 / 本地端口 / 隧道 / 公网，有异常退出码为 1
+- **后台常驻**：`supervisor/ctl.sh start|stop|restart|status|log`，或用 `supervisorctl status|restart xinghai-fm`（supervisord 崩了会自动拉起 `tools/tunnel.js`；首次先去 `python3 -m venv ~/.supervisor/venv && ~/.supervisor/venv/bin/pip install -i https://pypi.org/simple supervisor`）
+- **开机自启**：`supervisor/agent.sh install|uninstall|status`，装的是 `~/Library/LaunchAgents/com.xinghai.fm.supervisord.plist`（login 后 launchd 跑 `node supervisor/launch.js`，再由它拉起 supervisord，KeepAlive）；`status` 逐项体检 launchd / supervisord / program / 本地端口 / 隧道 / 公网，有异常退出码为 1
+- **macOS 权限**：服务要读 NAS / 网络卷，必须给 `/usr/local/bin/node` 开「设置 → 隐私与安全性 → 完全磁盘访问权限」，否则表现为能扫描到文件、一播放就报错（日志里是 `EPERM`）。LaunchAgent 特意用 `node supervisor/launch.js` 包一层：macOS 把权限判给启动链的责任进程，直接跑 supervisord 时责任进程是 Apple 的 Python.app，给 node 授权也没用
 - 已配好图标 `build/icon.icns`、分类 `public.app-category.music`、应用菜单、最低系统 macOS 12.7.6
 - 无开发者证书时走 ad-hoc 签名，首次打开需「右键 → 打开」
 
