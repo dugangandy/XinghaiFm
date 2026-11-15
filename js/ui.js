@@ -5944,8 +5944,14 @@
   }
 
   /* ── 资源库 ── */
+  function sortedLibs(list) {
+    return (list || []).slice().sort(function (a, b) {
+      return U.naturalCompare(a.name || '', b.name || '') || U.naturalCompare(a.id || '', b.id || '');
+    });
+  }
+
   function openLibMenu(anchor) {
-    const list = FM.fs.libs();
+    const list = sortedLibs(FM.fs.libs());
     const items = list.map(function (l) {
       const on = l.id === FM.fs.activeId;
       return {
@@ -6474,10 +6480,7 @@
       });
       return;
     }
-    /* 当前库排最前面，一眼就知道在听哪个库；其余按原顺序 */
-    const ordered = list.slice().sort(function (a, b) {
-      return (b.id === FM.fs.activeId ? 1 : 0) - (a.id === FM.fs.activeId ? 1 : 0);
-    });
+    const ordered = sortedLibs(list);
     body.innerHTML = '<p class="lib-pick-tip">点其它资源库即可切换' +
       (FM.fs.remote ? '（远程模式，无法在手机上修改资源库）' : '') + '</p>' +
       ordered.map(function (l) {
@@ -6579,7 +6582,7 @@
     const handle = { close: close, panel: panel };
 
     function draw() {
-      const list = FM.fs.libs();
+      const list = sortedLibs(FM.fs.libs());
       list_.innerHTML = '';
       if (!list.length) {
         list_.innerHTML = '<div class="lib-empty">还没有资源库。添加一个放音频 / 视频的文件夹就能开始。</div>';
