@@ -73,7 +73,10 @@ test('票据 / 直链路由 / media 分派 / CSP 白名单', async function (t) 
     const page = await fetch(base + '/__auth');
     const csp = String(page.headers.get('content-security-policy') || '');
     assert.match(csp, /http:\/\/139\.198\.0\.1:5244/, 'CSP 应包含已配置的 host');
-    assert.match(csp, /https:\/\/\*\.drive\.quark\.cn/, 'CSP 应包含 CDN 通配域');
+    assert.match(csp, /https:\/\/\*\.drive\.quark\.cn/, 'CSP 应包含管理员配置的 CDN 通配域');
+    /* 老库存的是旧默认域名，内置白名单（含 *.quark.cn）要始终并进去，
+       否则夸克把直链换到 dl-c-*.pds.quark.cn 后播放会被 media-src 拦掉 */
+    assert.match(csp, /https:\/\/\*\.quark\.cn/, 'CSP 应始终包含内置 CDN 白名单');
     assert.match(csp, /media-src/);
 
     const rel = '音乐/单曲.flac';

@@ -134,7 +134,7 @@ test('P4：配置 CRUD / 权限矩阵 / 封面读写分离', async function (t) 
     const cred = String(DB.getSetting(chk, 'alist:' + id + ':cred', '') || '');
     assert.ok(cred && cred.indexOf(PW) < 0, '凭据必须加密，明文不能出现在 settings');
     assert.equal(DB.getSetting(chk, 'alist:' + id + ':host', ''), HOST);
-    assert.ok(String(DB.getSetting(chk, 'alist:' + id + ':cdn', '')).indexOf('drive.quark.cn') >= 0, 'CDN 白名单默认放行');
+    assert.ok(String(DB.getSetting(chk, 'alist:' + id + ':cdn', '')).indexOf('quark.cn') >= 0, 'CDN 白名单默认放行');
     chk.close();
 
     /* ── GET：只回掩码视图 ── */

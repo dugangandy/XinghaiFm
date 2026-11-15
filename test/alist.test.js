@@ -76,16 +76,27 @@ test('isBlockedIp / resolvePublicTarget：内网与元数据地址拒绝，公�
   assert.equal(t.address, '8.8.8.8');
 });
 
-test('isAllowedRawHost / suggestCdn：自身 host 与 *.drive.quark.cn 放行，恶意域拒绝', function () {
+test('isAllowedRawHost / suggestCdn：自身 host 与夸克 CDN 放行，恶意域拒绝', function () {
   const cfgHost = 'http://139.198.0.1:5244';
   assert.equal(A.isAllowedRawHost(cfgHost + '/p/a.mp3?sign=x', cfgHost, A.DEFAULT_CDN), true);
   assert.equal(A.isAllowedRawHost('https://dl-c-zb-u.drive.quark.cn/x', cfgHost, A.DEFAULT_CDN), true);
+  /* 夸克换了 CDN 前缀：pds 域同样要放行（线上实测 dl-c-sz.pds.quark.cn） */
+  assert.equal(A.isAllowedRawHost('https://dl-c-sz.pds.quark.cn/x', cfgHost, A.DEFAULT_CDN), true);
   assert.equal(A.isAllowedRawHost('http://evil.example.com/x', cfgHost, A.DEFAULT_CDN), false);
   assert.equal(A.isAllowedRawHost('ftp://x.example.com/x', cfgHost, A.DEFAULT_CDN), false);
-  assert.deepEqual(A.suggestCdn('https://dl-c-zb-u.drive.quark.cn/x', cfgHost), ['*.drive.quark.cn']);
+  assert.deepEqual(A.suggestCdn('https://dl-c-zb-u.drive.quark.cn/x', cfgHost), ['*.quark.cn']);
   assert.deepEqual(A.suggestCdn(cfgHost + '/p/a.mp3?sign=x', cfgHost), []);
   /* 未知驱动只建议精确 host，不能按末三段推断出整个二级域 */
   assert.deepEqual(A.suggestCdn('https://abc.def.example.com/x', cfgHost), ['abc.def.example.com']);
+});
+
+test('effectiveCdn：内置白名单永远生效，老配置的旧默认域名不会把新 CDN 挤掉', function () {
+  assert.deepEqual(A.effectiveCdn([]), A.DEFAULT_CDN);
+  assert.deepEqual(A.effectiveCdn(['*.drive.quark.cn']), ['*.quark.cn', '*.drive.quark.cn']);
+  assert.deepEqual(A.effectiveCdn(['*.quark.cn']), ['*.quark.cn']);
+  assert.deepEqual(A.effectiveCdn(['cdn.example.com']), ['*.quark.cn', 'cdn.example.com']);
+  const cfgHost = 'http://139.198.0.1:5244';
+  assert.equal(A.isAllowedRawHost('https://dl-c-sz.pds.quark.cn/x', cfgHost, A.effectiveCdn(['*.drive.quark.cn'])), true);
 });
 
 test('safeDirectLink：中文路径转义、非 http 拒绝', function () {
@@ -218,10 +229,36 @@ test('probe：返回版本/驱动清单/中文目录样本，不落库不写文�
     assert.equal(out.storages[1].driver, 'QuarkTV');
     assert.equal(out.sample[0].name, '数学');
     assert.equal(out.basePath, '/夸克网盘TV');
-    assert.deepEqual(out.cdnSuggest, ['*.drive.quark.cn']);
+    assert.deepEqual(out.cdnSuggest, ['*.quark.cn']);
     /* 列目录 path 必须是 UTF-8 中文，不能是 GBK */
     const listReq = s.seen.find(function (r) { return r.url === '/api/fs/list'; });
     assert.ok(listReq.raw.includes(Buffer.from('夸克网盘TV', 'utf8')));
+  } finally { A.clearTokenCache(); await s.close(); }
+});
+
+test('probe：直链是 OpenList /p/ 时跟一跳 302，建议出真正的 CDN 域名', async function () {
+  const s = await mockServer(function (req, res) {
+    if (req.url === '/api/public/settings') return jsonReply(res, 200, { code: 200, data: { version: 'v4', site_title: 'OpenList' } });
+    if (req.url === '/api/auth/login') return jsonReply(res, 200, { code: 200, data: { token: 'tk' } });
+    if (req.url === '/api/admin/storage/list') return jsonReply(res, 200, { code: 200, data: { content: [] } });
+    if (req.url === '/api/fs/list') return jsonReply(res, 200, { code: 200, data: { content: [{ name: 'a.mp3', is_dir: false, size: 10 }], total: 1 } });
+    if (req.url === '/api/fs/get') return jsonReply(res, 200, { code: 200, data: { raw_url: s.host + '/p/a.mp3?sign=abc', size: 10 } });
+    if (req.url === '/p/a.mp3?sign=abc') {
+      /* 保留 mock 端口，否则第二跳会按 80 端口去连真实域名 */
+      res.writeHead(302, { location: s.host.replace('127.0.0.1', 'dl-c-sz.pds.quark.cn') + '/real.mp3?sig=1' });
+      return res.end();
+    }
+    if (req.url === '/real.mp3?sig=1') {
+      res.writeHead(206, { 'content-range': 'bytes 0-0/10', 'accept-ranges': 'bytes' });
+      return res.end('x');
+    }
+    jsonReply(res, 404, { code: 404, message: 'not found' });
+  });
+  try {
+    const out = await A.probe({ host: s.host, username: 'u', password: 'p', base: '/夸克网盘TV' }, s.opts);
+    assert.equal(out.ok, true);
+    assert.deepEqual(out.cdnSuggest, ['*.quark.cn'], '要建议 302 之后的真实 CDN 域名');
+    assert.equal(out.rangeOk, true, 'Range 结果应按最终地址算');
   } finally { A.clearTokenCache(); await s.close(); }
 });
 

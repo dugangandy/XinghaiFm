@@ -95,7 +95,8 @@ test('saveConfig/readConfig：凭据加密落库，接口不回明文', function
   assert.equal(cfg.password, 'secret-pw');
   assert.equal(cfg.token, 'secret-tk');
   assert.equal(cfg.base, '/夸克网盘TV');
-  assert.deepEqual(cfg.cdn, ['*.drive.quark.cn']);
+  /* 读出时把内置白名单并进来：库里存的旧域名不影响新的 CDN */
+  assert.deepEqual(cfg.cdn, ['*.quark.cn', '*.drive.quark.cn']);
   A.deleteConfig(db, 'l2');
   assert.equal(A.readConfig(db, 'l2'), null);
   assert.equal(A.encryptCred && A.decryptCred('bad-secret', raw), null, '错误密钥解不开');
