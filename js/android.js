@@ -298,6 +298,7 @@
     onNativeVideo,
     get fullscreenOn() { return document.body.classList.contains('app-fs'); },
     openSettings: function () { try { NATIVE.openSettings(); } catch (e) {} },
+    openAppearance: function () { try { NATIVE.openAppearance(); } catch (e) {} },
     /* 退出登录：清壳里的会话 cookie/token 后回原生登录页。
        旧 APK 没这个桥方法（网页热更新、壳不更新），返回 false 让网页退回服务端登出 */
     logout: function () {

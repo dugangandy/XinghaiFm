@@ -136,7 +136,7 @@ class LoginActivity : Activity() {
         userInput = field("用户名", InputType.TYPE_CLASS_TEXT)
         passInput = field("密码", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         rememberBox = CheckBox(this).apply {
-            text = "记住密码"; textSize = 13f; setTextColor(DIM)
+            text = "记住密码"; textSize = 13f; setTextColor(ThemePrefs.secondary(this@LoginActivity))
             isChecked = prefs().getBoolean("remember", true)
             setOnCheckedChangeListener { _, on ->
                 prefs().edit().putBoolean("remember", on).remove("password").apply()
@@ -157,7 +157,7 @@ class LoginActivity : Activity() {
         switchEnv = TextView(this).apply {
             text = "改用生产环境重试"
             textSize = 12.5f
-            setTextColor(0xFF22D3EE.toInt())
+            setTextColor(if (ThemePrefs.isDark(this@LoginActivity)) 0xFF22D3EE.toInt() else 0xFF087F9B.toInt())
             gravity = Gravity.CENTER
             setPadding(dp(4), dp(10), dp(4), 0)
             visibility = View.GONE
@@ -208,7 +208,7 @@ class LoginActivity : Activity() {
                 scaleType = ImageView.ScaleType.FIT_CENTER
             }, LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(8) })
             addView(TextView(this@LoginActivity).apply {
-                text = "星海 FM"; textSize = 11.5f; setTextColor(DIM)
+                text = "星海 FM"; textSize = 11.5f; setTextColor(ThemePrefs.secondary(this@LoginActivity))
                 gravity = Gravity.CENTER_VERTICAL; letterSpacing = 0.26f
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }, lp())
@@ -240,8 +240,8 @@ class LoginActivity : Activity() {
         hint = hintText
         setSingleLine(true)
         inputType = type
-        setTextColor(Color.WHITE)
-        setHintTextColor(HINT)
+        setTextColor(ThemePrefs.primary(this@LoginActivity))
+        setHintTextColor(ThemePrefs.hint(this@LoginActivity))
     }
 
     private fun normalize(raw: String): String {

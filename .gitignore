@@ -14,6 +14,7 @@ out/
 .tunnel.json
 启动-公网.bat
 config.json
+.pipixia-image/config.json
 appdata/
 
 # 安卓构建产物

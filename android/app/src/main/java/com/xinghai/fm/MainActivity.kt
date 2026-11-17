@@ -23,6 +23,7 @@ import android.os.StatFs
 import android.provider.Settings
 import android.text.InputType
 import android.view.ActionMode
+import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -385,7 +386,7 @@ class MainActivity : Activity() {
             .bg-grid { opacity:.22; }
             .bg-vignette { background:radial-gradient(120% 90% at 50% 0%,transparent 40%,rgba(255,255,255,.5) 100%); }
             .sidebar { background:linear-gradient(180deg,rgba(255,255,255,.94),rgba(244,247,251,.96)); }
-            .topbar.scrolled,.m-tabs { background:rgba(245,247,251,.96) !important; }
+            .topbar.scrolled,.m-tabs,.stats-head { background:rgba(245,247,251,.96) !important; }
             .hw .topbar.scrolled { background:rgba(245,247,251,.78) !important; }
             .menu-pop,.modal,.vol-pop { background:rgba(255,255,255,.96); box-shadow:0 30px 60px -20px rgba(31,41,55,.25); }
             .modal { background:linear-gradient(180deg,#ffffff,#f5f7fb); }
@@ -399,6 +400,10 @@ class MainActivity : Activity() {
             .icon-btn:hover,.chip:hover,.btn:hover { color:#172033; background:rgba(15,23,42,.08); }
             .btn.danger,.dl-bar-btn.danger,.menu-item.danger { color:#b4233c; border-color:rgba(180,35,60,.24); background:rgba(180,35,60,.07); }
             .menu-item.tall:hover .menu-label { color:#172033; }
+            .toast { color:#172033; background:rgba(255,255,255,.97); border-color:rgba(15,23,42,.16); box-shadow:0 18px 40px -18px rgba(31,41,55,.3); backdrop-filter:none; -webkit-backdrop-filter:none; }
+            .toast .i { color:#087f9b; }
+            .toast.warn .i { color:#b45309; }
+            .toast .toast-act { color:#08202a; background:linear-gradient(100deg,#a5f3fc,#c4b5fd); }
             .nav-item.active,.cat-item.active,.search-tab.on,.track.active .tk-name,.q-item.on,.menu-item:hover { color:#172033; }
             .card-badge,.card-fav { background:rgba(255,255,255,.84) !important; color:#526078; }
             .card-badge.done { background:rgba(220,252,231,.92) !important; color:#16734a; }
@@ -417,8 +422,13 @@ class MainActivity : Activity() {
             .sheet .v-btn,.sheet .icon-btn { color:#526078; }
             .sheet-meta p,.sheet-scrub-row .tnum { color:#71809a; }
             .fav-tag { color:#9a5b00; background:rgba(245,158,11,.12); }
-            .scan-mask .lib-loading-name,.lib-loading .lib-loading-name { color:#172033; }
-            .scan-mask .lib-loading-hint,.lib-loading .lib-loading-hint { color:#71809a; }
+            .scan-mask,.lib-loading { background-color:#f5f7fb !important; background-image:none !important; backdrop-filter:none !important; -webkit-backdrop-filter:none !important; }
+            .scan-mask.show,.lib-loading.show { opacity:1 !important; visibility:visible !important; }
+            .scan-mask .lib-loading-name,.lib-loading .lib-loading-name { color:#172033 !important; text-shadow:none; }
+            .scan-mask .lib-loading-hint,.lib-loading .lib-loading-hint { color:#526078 !important; text-shadow:none; letter-spacing:.04em; }
+            .scan-mask .lib-loading-orbit i,.lib-loading .lib-loading-orbit i { border-color:rgba(8,127,155,.28) !important; }
+            .scan-mask .lib-loading-orbit i:nth-child(2),.lib-loading .lib-loading-orbit i:nth-child(2) { border-color:rgba(104,81,163,.28) !important; }
+            .scan-mask .lib-loading-orbit i:nth-child(3),.lib-loading .lib-loading-orbit i:nth-child(3) { border-color:rgba(15,23,42,.12) !important; }
             .link-state,.side-lib-btn,.lib-row,.lib-mode,.share-opt,.share-search,.about-row { background:rgba(255,255,255,.72); color:#526078; border-color:rgba(15,23,42,.12); }
             .lib-drawer { background:linear-gradient(180deg,#ffffff,#eef2f7); border-color:rgba(15,23,42,.12); box-shadow:-24px 0 60px -32px rgba(31,41,55,.32); }
             .lib-drawer-mask { background:rgba(15,23,42,.28); }
@@ -688,6 +698,7 @@ class MainActivity : Activity() {
     fun showServerDialog() {
         runOnUiThread {
             val p = getSharedPreferences(PREFS, MODE_PRIVATE)
+            val dialogContext = ContextThemeWrapper(this, if (ThemePrefs.isDark(this)) android.R.style.Theme_Material_Dialog_Alert else android.R.style.Theme_Material_Light_Dialog_Alert)
             val saved = serverBase()
             var base = if (saved.isEmpty()) Servers.list[0].second else saved
             var custom = Servers.list.none { it.second == base }
@@ -730,7 +741,7 @@ class MainActivity : Activity() {
                 if (u.isEmpty()) false else { toast(u); true }
             }
             pick.setOnClickListener {
-                val pop = PopupMenu(this, pick)
+                val pop = PopupMenu(dialogContext, pick)
                 Servers.list.forEachIndexed { i, s -> pop.menu.add(0, i, i, s.first) }
                 pop.menu.add(0, Servers.list.size, Servers.list.size, "自定义…")
                 pop.setOnMenuItemClickListener { item ->
@@ -749,7 +760,7 @@ class MainActivity : Activity() {
             }
             refresh()
 
-            AlertDialog.Builder(this)
+            AlertDialog.Builder(dialogContext)
                 .setTitle("服务器设置")
                 .setView(box)
                 .setPositiveButton("保存") { _, _ ->
@@ -775,7 +786,8 @@ class MainActivity : Activity() {
         val values = listOf(ThemePrefs.SYSTEM, ThemePrefs.LIGHT, ThemePrefs.DARK)
         val labels = values.map { ThemePrefs.label(it) }.toTypedArray()
         val checked = values.indexOf(ThemePrefs.mode(this)).coerceAtLeast(0)
-        AlertDialog.Builder(this)
+        val dialogContext = ContextThemeWrapper(this, if (ThemePrefs.isDark(this)) android.R.style.Theme_Material_Dialog_Alert else android.R.style.Theme_Material_Light_Dialog_Alert)
+        AlertDialog.Builder(dialogContext)
             .setTitle("外观")
             .setSingleChoiceItems(labels, checked) { dialog, which ->
                 ThemePrefs.save(this, values[which])
