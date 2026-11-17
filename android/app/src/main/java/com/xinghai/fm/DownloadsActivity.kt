@@ -71,6 +71,7 @@ class DownloadsActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ThemePrefs.apply(this)
         Dl.init(this)
         buildUi()
         Dl.watch(onDlChange)
@@ -90,7 +91,7 @@ class DownloadsActivity : Activity() {
     private fun buildUi() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF05070E.toInt())
+            setBackgroundColor(ThemePrefs.background(this@DownloadsActivity))
         }
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -100,7 +101,7 @@ class DownloadsActivity : Activity() {
         header.addView(TextView(this).apply {
             text = "下载"
             textSize = 19f
-            setTextColor(Color.WHITE)
+            setTextColor(ThemePrefs.primary(this@DownloadsActivity))
             typeface = Typeface.DEFAULT_BOLD
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         addBtn = actionText("添加") { pickAlbum() }
@@ -111,7 +112,7 @@ class DownloadsActivity : Activity() {
         subtitle = TextView(this).apply {
             text = "正在读取资源库…"
             textSize = 11.5f
-            setTextColor(0xFF7A869E.toInt())
+            setTextColor(ThemePrefs.secondary(this@DownloadsActivity))
             setPadding(dp(18), 0, dp(18), dp(10))
         }
         root.addView(subtitle)
@@ -160,7 +161,7 @@ class DownloadsActivity : Activity() {
             box.addView(TextView(this).apply {
                 text = "还没有下载\n点右上角「添加」，从电脑上的资源库挑专辑或单集"
                 textSize = 12.5f
-                setTextColor(0xFF7A869E.toInt())
+                setTextColor(ThemePrefs.secondary(this@DownloadsActivity))
                 setLineSpacing(dp(6).toFloat(), 1f)
                 setPadding(dp(6), dp(28), dp(6), 0)
             })
@@ -234,7 +235,7 @@ class DownloadsActivity : Activity() {
         row.addView(TextView(this).apply {
             text = first.album
             textSize = 13.5f
-            setTextColor(Color.WHITE)
+            setTextColor(ThemePrefs.primary(this@DownloadsActivity))
             typeface = Typeface.DEFAULT_BOLD
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
@@ -242,7 +243,7 @@ class DownloadsActivity : Activity() {
         row.addView(TextView(this).apply {
             text = tracks.size.toString() + " 集 · " + Dl.fmtSize(tracks.sumOf { it.size })
             textSize = 10.5f
-            setTextColor(0xFF7A869E.toInt())
+            setTextColor(ThemePrefs.secondary(this@DownloadsActivity))
             setPadding(0, 0, dp(10), 0)
         })
         row.addView(actionText("删除") {

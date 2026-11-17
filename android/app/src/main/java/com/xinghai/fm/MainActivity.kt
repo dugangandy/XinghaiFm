@@ -115,10 +115,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         current = this
-        window.statusBarColor = BG
-        window.navigationBarColor = BG
         root = FrameLayout(this)
-        root.setBackgroundColor(BG)
+        ThemePrefs.apply(this, root)
+
         setContentView(root)
         askNotificationPermission()
         Dl.watch(onDlChanged)          /* 条目/状态变化 */
@@ -175,13 +174,13 @@ class MainActivity : Activity() {
         box.addView(TextView(this).apply {
             text = "星海 FM"
             textSize = 26f
-            setTextColor(Color.WHITE)
+            setTextColor(ThemePrefs.primary(this@MainActivity))
             gravity = Gravity.CENTER_HORIZONTAL
         }, lp())
         box.addView(TextView(this).apply {
             text = "连接电脑上的星海 FM 服务"
             textSize = 13f
-            setTextColor(0xFF7A869E.toInt())
+            setTextColor(ThemePrefs.secondary(this@MainActivity))
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(0, dp(8), 0, dp(24))
         }, lp())
@@ -190,15 +189,15 @@ class MainActivity : Activity() {
             hint = "http://192.168.1.8:8080"
             setSingleLine(true)
             inputType = InputType.TYPE_TEXT_VARIATION_URI
-            setTextColor(Color.WHITE)
-            setHintTextColor(0xFF59637A.toInt())
+            setTextColor(ThemePrefs.primary(this@MainActivity))
+            setHintTextColor(ThemePrefs.hint(this@MainActivity))
         }
         box.addView(input, lp())
 
         box.addView(TextView(this).apply {
             text = "先在电脑上运行：node tools/serve.js 8080\n手机与电脑需在同一局域网（或已配好隧道）"
             textSize = 11.5f
-            setTextColor(0xFF59637A.toInt())
+            setTextColor(ThemePrefs.hint(this@MainActivity))
             setPadding(0, dp(14), 0, dp(22))
             setLineSpacing(dp(4).toFloat(), 1f)
         }, lp())
@@ -330,6 +329,7 @@ class MainActivity : Activity() {
             }
 
             override fun onPageFinished(view: WebView, url: String) {
+                applyWebTheme()
                 /* 页面每次加载完刷新一次 cookie 副本（服务端滑动续期会换新 cookie）；
                    这里在主线程，可以安全调 CookieManager */
                 coverCookie = runCatching {
@@ -368,6 +368,107 @@ class MainActivity : Activity() {
         runCatching { startActivity(Intent(this, DownloadsActivity::class.java)) }
     }
 
+    private fun applyWebTheme() {
+        val dark = ThemePrefs.isDark(this)
+        val css = if (dark) "" else """
+            :root {
+              --bg:#f5f7fb; --bg-2:#eef2f7; --panel:rgba(255,255,255,.86);
+              --panel-2:rgba(15,23,42,.055); --panel-3:rgba(15,23,42,.09);
+              --line:rgba(15,23,42,.12); --line-2:rgba(15,23,42,.2);
+              --txt:#172033; --txt-2:#526078; --dim:#71809a; --dim-2:#93a0b4;
+              --shadow-1:0 10px 30px -12px rgba(31,41,55,.2);
+              --shadow-2:0 26px 60px -28px rgba(31,41,55,.28);
+              color-scheme:light;
+            }
+            html,body { background:#f5f7fb; color:#172033; }
+            .bg { background:radial-gradient(1200px 700px at 12% -10%,#dff7fb 0%,transparent 60%),radial-gradient(900px 600px at 96% 0%,#eee5fb 0%,transparent 55%),linear-gradient(180deg,#f5f7fb,#eef2f7 70%,#f5f7fb); }
+            .bg-grid { opacity:.22; }
+            .bg-vignette { background:radial-gradient(120% 90% at 50% 0%,transparent 40%,rgba(255,255,255,.5) 100%); }
+            .sidebar { background:linear-gradient(180deg,rgba(255,255,255,.94),rgba(244,247,251,.96)); }
+            .topbar.scrolled,.m-tabs { background:rgba(245,247,251,.96) !important; }
+            .hw .topbar.scrolled { background:rgba(245,247,251,.78) !important; }
+            .menu-pop,.modal,.vol-pop { background:rgba(255,255,255,.96); box-shadow:0 30px 60px -20px rgba(31,41,55,.25); }
+            .modal { background:linear-gradient(180deg,#ffffff,#f5f7fb); }
+            .lib-loading,.scan-mask { background:radial-gradient(120% 95% at 50% 38%,rgba(245,247,251,.94),rgba(238,242,247,.98)) !important; }
+            .scrub-tip { background:rgba(255,255,255,.96); color:#172033; }
+            select.input { color-scheme:light; }
+            select.input option { background:#fff; color:#172033; }
+            .chip { color:#526078; background:rgba(255,255,255,.72); border-color:rgba(15,23,42,.14); }
+            .chip.on { color:#08202a; background:linear-gradient(100deg,#a5f3fc,#c4b5fd); border-color:transparent; }
+            .chip b { color:inherit; }
+            .icon-btn:hover,.chip:hover,.btn:hover { color:#172033; background:rgba(15,23,42,.08); }
+            .btn.danger,.dl-bar-btn.danger,.menu-item.danger { color:#b4233c; border-color:rgba(180,35,60,.24); background:rgba(180,35,60,.07); }
+            .menu-item.tall:hover .menu-label { color:#172033; }
+            .nav-item.active,.cat-item.active,.search-tab.on,.track.active .tk-name,.q-item.on,.menu-item:hover { color:#172033; }
+            .card-badge,.card-fav { background:rgba(255,255,255,.84) !important; color:#526078; }
+            .card-badge.done { background:rgba(220,252,231,.92) !important; color:#16734a; }
+            .m-quick-item { border-color:rgba(15,23,42,.12); background:rgba(255,255,255,.72); }
+            .m-quick-item:active,.m-tabs-btn:active { background:rgba(15,23,42,.08); }
+            .track-toolbar { background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(245,247,251,.9) 70%,transparent) !important; }
+            .playerbar { background:rgba(255,255,255,.92); border-color:rgba(15,23,42,.12); }
+            .pb-progress,#shScrub .scrub-track { background:rgba(15,23,42,.16) !important; }
+            .pb-progress-fill,#shScrub .scrub-fill { background:linear-gradient(90deg,#526078,#172033) !important; }
+            #shScrub .scrub-buf { background:rgba(15,23,42,.24) !important; }
+            .sheet,.queue-panel { background:#f5f7fb !important; }
+            .sheet { background:radial-gradient(120% 80% at 50% 0%,#ffffff,#eef2f7 70%) !important; }
+            .queue-panel { background:linear-gradient(180deg,#ffffff,#eef2f7) !important; }
+            .queue-panel::before { background:rgba(15,23,42,.28) !important; }
+            .drawer-mask,.modal-mask { background:rgba(15,23,42,.25); }
+            .sheet .v-btn,.sheet .icon-btn { color:#526078; }
+            .sheet-meta p,.sheet-scrub-row .tnum { color:#71809a; }
+            .fav-tag { color:#9a5b00; background:rgba(245,158,11,.12); }
+            .scan-mask .lib-loading-name,.lib-loading .lib-loading-name { color:#172033; }
+            .scan-mask .lib-loading-hint,.lib-loading .lib-loading-hint { color:#71809a; }
+            .link-state,.side-lib-btn,.lib-row,.lib-mode,.share-opt,.share-search,.about-row { background:rgba(255,255,255,.72); color:#526078; border-color:rgba(15,23,42,.12); }
+            .lib-drawer { background:linear-gradient(180deg,#ffffff,#eef2f7); border-color:rgba(15,23,42,.12); box-shadow:-24px 0 60px -32px rgba(31,41,55,.32); }
+            .lib-drawer-mask { background:rgba(15,23,42,.28); }
+            .lib-drawer-head,.lib-drawer-foot { border-color:rgba(15,23,42,.12); }
+            .lib-drawer-title h3,.lib-info b,.lib-cur { color:#172033; }
+            .lib-drawer-tip { background:rgba(15,23,42,.04); color:#526078; }
+            .lib-ico { background:rgba(15,23,42,.06); color:#087f9b; }
+            .lib-cur { background:rgba(34,211,238,.12); border-color:rgba(8,127,155,.28); }
+            .lib-share { color:#6841a5; background:rgba(139,92,246,.1); border-color:rgba(104,65,165,.28); }
+            .lib-info em { color:#b45309; }
+            .link-state.auth { background:rgba(255,138,101,.12); color:#b45309; border-color:rgba(180,83,9,.25); }
+            .side-lib-btn.remote .lib-txt small { color:#16876e; }
+            .side-lib-btn.remote .lib-badge::after { box-shadow:0 0 0 2px #f5f7fb; }
+            .lib-row:hover,.lib-pick .lib-row:not(.current):active,.share-user:hover { background:rgba(15,23,42,.06); }
+            .lib-row.current,.lib-mode.on,.share-opt:has(input:checked) { background:rgba(34,211,238,.12); color:#087f9b; }
+            .about-ver { color:#087f9b; background:rgba(34,211,238,.12); border-color:rgba(8,127,155,.28); }
+            .btn,.dl-bar-btn,.am-pager-btn,.seg-btn { color:#526078; background:rgba(255,255,255,.72); border-color:rgba(15,23,42,.14); }
+            .btn-primary,.seg-btn.active,.dl-bar-btn.primary { color:#08202a; background:linear-gradient(100deg,#a5f3fc,#c4b5fd); border-color:transparent; }
+            .btn:hover,.dl-bar-btn:hover,.am-pager-btn:hover,.seg-btn:hover { color:#172033; background:rgba(15,23,42,.08); }
+            .stats-hero,.stats-detail,.stats-top { background:linear-gradient(180deg,#ffffff,#eef2f7) !important; border-color:rgba(15,23,42,.12); box-shadow:0 26px 60px -34px rgba(31,41,55,.22); }
+            .stats-hero::after,.stats-top::after { background:linear-gradient(90deg,transparent,rgba(15,23,42,.18),transparent); }
+            .stats-hero::before { background:radial-gradient(120% 88% at 50% -18%,rgba(34,211,238,.16),rgba(139,92,246,.1) 44%,transparent 74%); }
+            .stats-title,.top-title { background:linear-gradient(120deg,#087f9b 0%,#6851a3 55%,#b04478 100%); -webkit-background-clip:text; background-clip:text; }
+            .stats-detail .detail-head:hover .detail-title { color:#172033; }
+            .hbar.on .hbar-lab { color:#087f9b; }
+            .hero-foot { border-top-color:rgba(15,23,42,.1); }
+            .drow { border-bottom-color:rgba(15,23,42,.08); }
+            .drow .d-bar { background:rgba(15,23,42,.08); }
+            .drow .d-bar i { background:linear-gradient(90deg,#0891b2,#7656b4); }
+            .top-empty { border-color:rgba(15,23,42,.16); background:rgba(15,23,42,.025); }
+            .top-rank { color:#526078; border-color:rgba(15,23,42,.12); }
+            .top-rank.r2,.top-rank.r3 { color:#087f9b; border-color:rgba(8,127,155,.3); background:rgba(34,211,238,.1); }
+            .chart-line { background:rgba(15,23,42,.08); }
+            .chart-line.base { background:rgba(15,23,42,.16); }
+            .hbar-track,.am-track { background:rgba(15,23,42,.08); }
+            .hbar.on .hbar-track { background:rgba(34,211,238,.12); }
+            .top-row { border-bottom-color:rgba(15,23,42,.08); }
+            .top-row[data-open="1"]:hover { background:rgba(15,23,42,.05); }
+            .top-row.lead { background:linear-gradient(90deg,rgba(34,211,238,.1),rgba(139,92,246,.06) 52%,transparent); }
+            .detail-head:hover .detail-title,.top-row[data-open="1"] .top-title { color:#172033; }
+            .share-search { background:rgba(255,255,255,.86); }
+            .am-row { background:rgba(255,255,255,.72); }
+            .am-row:hover { background:rgba(15,23,42,.05); }
+            .am-pager-btn { color:#526078; }
+            .modal-mask { background:rgba(15,23,42,.25) !important; }
+        """.trimIndent().replace("\n", " ").replace("'", "\\'")
+        val script = "(function(){var id='fmAndroidTheme';var e=document.getElementById(id);if(e)e.remove();var s=document.createElement('style');s.id=id;s.textContent='" + css + "';document.head.appendChild(s);})();"
+        web?.evaluateJavascript(script, null)
+    }
+
     private fun load() {
         loadFailed = false
         /* 先把会话 cookie 写好（带回调），再加载，避免导航早于 cookie 生效 */
@@ -401,13 +502,13 @@ class MainActivity : Activity() {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(BG)
+            setBackgroundColor(ThemePrefs.background(this@MainActivity))
             setPadding(dp(28), dp(28), dp(28), dp(28))
         }
         box.addView(TextView(this).apply {
             text = Msg.NET_FAIL
             textSize = 17f
-            setTextColor(Color.WHITE)
+            setTextColor(ThemePrefs.primary(this@MainActivity))
             gravity = Gravity.CENTER_HORIZONTAL
         })
         box.addView(TextView(this).apply {
@@ -593,17 +694,19 @@ class MainActivity : Activity() {
 
             val pick = TextView(this).apply {
                 textSize = 14f
-                setTextColor(Color.WHITE)
+                setTextColor(ThemePrefs.primary(this@MainActivity))
                 setPadding(dp(12), dp(11), dp(12), dp(11))
                 background = GradientDrawable().apply {
                     cornerRadius = dp(10).toFloat()
-                    setColor(0x1AFFFFFF)
-                    setStroke(dp(1), 0x33FFFFFF)
+                    setColor(if (ThemePrefs.isDark(this@MainActivity)) 0x1AFFFFFF else 0x0D0F172A)
+                    setStroke(dp(1), if (ThemePrefs.isDark(this@MainActivity)) 0x33FFFFFF else 0x220F172A)
                 }
             }
             val input = EditText(this).apply {
                 hint = "http://192.168.1.8:8080"
                 setText(base)
+                setTextColor(ThemePrefs.primary(this@MainActivity))
+                setHintTextColor(ThemePrefs.hint(this@MainActivity))
                 setSingleLine(true)
                 inputType = InputType.TYPE_TEXT_VARIATION_URI
                 setSelection(text.length)
@@ -666,6 +769,22 @@ class MainActivity : Activity() {
                 .setNegativeButton("取消", null)
                 .show()
         }
+    }
+
+    private fun showAppearanceMenu() {
+        val values = listOf(ThemePrefs.SYSTEM, ThemePrefs.LIGHT, ThemePrefs.DARK)
+        val labels = values.map { ThemePrefs.label(it) }.toTypedArray()
+        val checked = values.indexOf(ThemePrefs.mode(this)).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("外观")
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                ThemePrefs.save(this, values[which])
+                ThemePrefs.apply(this, root)
+                applyWebTheme()
+                dialog.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     /* 退出登录：原先是「服务器设置」弹窗里的中立按钮，现由网页设置菜单通过 JS 桥触发。
@@ -779,6 +898,12 @@ class MainActivity : Activity() {
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        ThemePrefs.apply(this, root)
+        applyWebTheme()
+    }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
@@ -977,6 +1102,9 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun openSettings() = showServerDialog()
+
+        @JavascriptInterface
+        fun openAppearance() = runOnUiThread { showAppearanceMenu() }
 
         /* 网页设置菜单里的「退出登录」；服务器设置弹窗里已不再放这个按钮 */
         @JavascriptInterface
