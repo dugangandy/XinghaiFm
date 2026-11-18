@@ -387,34 +387,43 @@ class VideoPlayerActivity : Activity() {
     }
 
     /* 底栏只有一行，按钮和进度条并排。
-       竖屏：只留 播放/暂停 · 进度条（两侧时间/总时长）· 列表 · 最大化，字号/内边距/图标收小一档；
-       横屏：放回正常尺寸，再把下一集 / 倍速补回来（横向空间够） */
+       竖屏和横屏共用一套尺寸，不再「竖屏收小一档」：
+       图标键统一 40dp 框 + 7dp 内边距（图标都画到 26dp，跟 快进/后退 这类图标键一样大），
+       文字键 15sp、高度也钉成 40dp 并垂直居中，整行 center_vertical，图标和文字才对得齐；
+       横屏空间够，再把 下一集 / 倍速 补回来 */
     private fun layoutControlRows() {
         if (audioOnly) return
-        val compact = !isFullscreen
-        listOf(speedBtn, episodeBtn).forEach { b ->
-            b.textSize = if (compact) 12f else 13f
-            b.setPadding(dp(if (compact) 6 else 12), dp(7), dp(if (compact) 6 else 12), dp(7))
-        }
-        /* 竖屏窄，选集也用图标；横屏恢复文字，认起来更清楚 */
-        episodeBtn.visibility = if (compact) View.GONE else View.VISIBLE
-        episodeIcon.visibility = if (compact) View.VISIBLE else View.GONE
-        /* 竖屏底栏只留 播放/暂停 · 进度条（带当前时间/总时长）· 列表 · 最大化，下一集和倍速收掉 */
-        nextBtn.visibility = if (compact) View.GONE else View.VISIBLE
-        speedBtn.visibility = if (compact) View.GONE else View.VISIBLE
-        syncSpeedBtn()
-        listOf(fullscreenBtn, episodeIcon).forEach { b ->
-            /* 34dp 的按钮里留 3dp 内边距，图标本身还能画到 ~24dp，不至于缩成小点 */
-            b.setPadding(dp(if (compact) 5 else 8), dp(if (compact) 5 else 8), dp(if (compact) 5 else 8), dp(if (compact) 5 else 8))
+        val wide = isFullscreen
+        /* 图标键：四个键同一尺寸，谁的图标都不会显得小一号 */
+        listOf(playPauseBtn, nextBtn, episodeIcon, fullscreenBtn).forEach { b ->
+            b.setPadding(dp(7), dp(7), dp(7), dp(7))
             (b.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
-                lp.width = dp(if (compact) 34 else 40)
-                lp.height = dp(if (compact) 34 else 40)
+                lp.width = dp(40)
+                lp.height = dp(40)
                 b.requestLayout()             // 直接改 LayoutParams 不会自动重排
             }
         }
+        /* 文字键：字号提到 15sp，高度跟图标键对齐成 40dp 并居中 */
+        listOf(speedBtn, episodeBtn).forEach { b ->
+            b.textSize = 15f
+            b.gravity = Gravity.CENTER
+            b.minWidth = dp(52)
+            b.setPadding(dp(10), 0, dp(10), 0)
+            (b.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+                lp.height = dp(40)
+                b.requestLayout()
+            }
+        }
+        /* 竖屏窄，选集也用图标；横屏恢复文字，认起来更清楚 */
+        episodeBtn.visibility = if (wide) View.VISIBLE else View.GONE
+        episodeIcon.visibility = if (wide) View.GONE else View.VISIBLE
+        /* 竖屏底栏只留 播放/暂停 · 进度条（带当前时间/总时长）· 列表 · 最大化，下一集和倍速收掉 */
+        nextBtn.visibility = if (wide) View.VISIBLE else View.GONE
+        speedBtn.visibility = if (wide) View.VISIBLE else View.GONE
+        syncSpeedBtn()
         (seek.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
-            lp.marginStart = dp(if (compact) 6 else 10)
-            lp.marginEnd = dp(if (compact) 6 else 10)
+            lp.marginStart = dp(if (wide) 10 else 8)
+            lp.marginEnd = dp(if (wide) 10 else 8)
         }
     }
 
@@ -512,7 +521,7 @@ class VideoPlayerActivity : Activity() {
         setPadding(dp(2), dp(14), 0, dp(10))
     }
 
-    /* ── 右侧设置面板（倍速 / 画面尺寸共用）：占屏宽 30%，从右滑出 ── */
+    /* ── 右侧设置面板（倍速 / 播放方式 / 定时关闭共用）：占屏宽 30%，从右滑出 ── */
     private fun openRightPanel(fill: LinearLayout.() -> Unit) {
         closeSheet()
         val dim = FrameLayout(this).apply {
@@ -557,8 +566,6 @@ class VideoPlayerActivity : Activity() {
     /* 右上角三点：播放设置（竖屏底部弹窗，横屏右侧抽屉） */
     private fun showSettingsPanel() {
         openPanel(0) {
-            addView(scaleRow())
-            addView(divider())
             addView(rateRow())
             addView(divider())
             addView(loopRow())
@@ -570,7 +577,7 @@ class VideoPlayerActivity : Activity() {
     }
 
     /* 一行设置：标题在左，选项在右；放不下时单行左右滑动，不换行
-     * visible 用来按当前状态藏掉没意义的选项（比如竖屏下的「满屏」） */
+     * visible 用来按当前状态藏掉没意义的选项 */
     private fun chipGridRow(label: String, names: Array<String>,
                             selectedOf: () -> Int, visible: (Int) -> Boolean = { true },
                             onPick: (Int) -> Unit): LinearLayout {
@@ -614,18 +621,8 @@ class VideoPlayerActivity : Activity() {
         return row
     }
 
-    /* 当前真正生效的画面尺寸：竖屏下「满屏」退化成原比例 */
-    private fun effectiveScale(): Int = if (!isFullscreen && scaleMode == 0) 1 else scaleMode
-
-    /* 竖屏不给「满屏」：铺不满还会把人像片拉变形；高亮跟着实际生效的比例走
-     * （竖屏下即便存的是满屏，实际也是原比例），点已选中的那一项只提示不动存储 */
-    private fun scaleRow(): LinearLayout =
-        chipGridRow("画面尺寸", SCALE_NAMES,
-            { effectiveScale() },
-            { i -> isFullscreen || i != 0 }) { i ->
-            if (i != effectiveScale()) applyScale(i)
-            showHud("画面 " + SCALE_NAMES[i]); hideHudSoon()
-        }
+    /* 画面尺寸不再开放给用户调（面板里的「画面尺寸」已去掉），
+       固定按片源原比例摆放，满屏拉伸 / 4:3 / 16:9 都不再需要入口 */
 
     /* 倍速入口：竖屏底栏不显示倍速按钮，收到设置面板里；档位表跟底栏 / 倍速磁贴共用 RATES */
     private fun rateRow(): LinearLayout {
@@ -1208,7 +1205,7 @@ class VideoPlayerActivity : Activity() {
             else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         if (on) goImmersive() else exitImmersive()
         applyScale(scaleMode)               /* 满屏只在横屏生效，转屏后重算画面尺寸 */
-        layoutControlRows()                 /* 竖屏收小一档、横屏正常尺寸 */
+        layoutControlRows()                 /* 转屏后重排底栏（竖屏藏掉 下一集/倍速） */
         fullscreenBtn.setImageResource(if (on) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
         fullscreenBtn.contentDescription = if (on) "退出全屏" else "全屏"
         /* 锁定是横屏看片时才有的操作，回竖屏顺手解开 */
