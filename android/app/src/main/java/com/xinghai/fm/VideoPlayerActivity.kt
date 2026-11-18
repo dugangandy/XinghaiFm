@@ -12,6 +12,7 @@ import android.content.pm.ActivityInfo
 import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
@@ -170,6 +171,15 @@ class VideoPlayerActivity : Activity() {
     private var startBright = 0.5f
     private var slop = 12
 
+    private fun themeDark() = ThemePrefs.isDark(this)
+    private fun themePrimary() = ThemePrefs.primary(this)
+    private fun themeSecondary() = ThemePrefs.secondary(this)
+    private fun themePanel() = if (themeDark()) 0xF2141A22.toInt() else 0xF2FFFFFF.toInt()
+    private fun themeSolid(color: Int, radiusDp: Int = 0) = GradientDrawable().apply {
+        setColor(color)
+        if (radiusDp > 0) cornerRadius = dp(radiusDp).toFloat()
+    }
+
     private val ticker = object : Runnable {
         override fun run() {
             val p = player ?: return
@@ -188,6 +198,7 @@ class VideoPlayerActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ThemePrefs.apply(this)
         audioOnly = intent?.getBooleanExtra("audio", false) == true
         /* 视频先竖屏看，点「全屏」才横过来；纯音频跟系统走 */
         requestedOrientation = if (audioOnly) ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -267,6 +278,9 @@ class VideoPlayerActivity : Activity() {
 
     /* ── UI ── */
     private fun buildUi() {
+        val dark = themeDark()
+        val primary = themePrimary()
+        val secondary = themeSecondary()
         val root = FrameLayout(this).apply { setBackgroundColor(0xFF000000.toInt()) }
         rootLayout = root
         tex = TextureView(this)
@@ -298,10 +312,10 @@ class VideoPlayerActivity : Activity() {
         val back = iconBtn(R.drawable.ic_back, 44) { finishWithClosed() }
         val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
         titleView = TextView(this).apply {
-            setTextColor(0xFFFFFFFF.toInt()); textSize = 15f; setShadowLayer(6f, 0f, 1f, 0x99000000.toInt())
+            setTextColor(primary); textSize = 15f; if (dark) setShadowLayer(6f, 0f, 1f, 0x99000000.toInt())
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
         }
-        subView = TextView(this).apply { setTextColor(0xB3FFFFFF.toInt()); textSize = 11.5f; maxLines = 1 }
+        subView = TextView(this).apply { setTextColor(secondary); textSize = 11.5f; maxLines = 1 }
         titles.addView(titleView); titles.addView(subView)
         top.addView(back)
         top.addView(titles, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -370,8 +384,8 @@ class VideoPlayerActivity : Activity() {
 
         /* HUD */
         hud = TextView(this).apply {
-            setTextColor(0xFFFFFFFF.toInt()); textSize = 14f
-            setBackgroundResource(R.drawable.bg_hud)
+            setTextColor(primary); textSize = 14f
+            background = themeSolid(if (dark) 0xB3000000.toInt() else 0xF2FFFFFF.toInt(), 22)
             setPadding(dp(18), dp(8), dp(18), dp(8))
             gravity = Gravity.CENTER
             alpha = 0f
@@ -453,13 +467,13 @@ class VideoPlayerActivity : Activity() {
     }
 
     private fun timeText(): TextView = TextView(this).apply {
-        setTextColor(0xE6FFFFFF.toInt()); textSize = 12f
+        setTextColor(themeSecondary()); textSize = 12f
         typeface = android.graphics.Typeface.MONOSPACE
     }
 
     private fun textBtn(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
         text = label
-        setTextColor(0xE6FFFFFF.toInt()); textSize = 13f
+        setTextColor(themeSecondary()); textSize = 13f
         setPadding(dp(12), dp(7), dp(12), dp(7))
         setOnClickListener { onClick() }
     }
@@ -479,13 +493,13 @@ class VideoPlayerActivity : Activity() {
     private fun openBottomSheet(heightPx: Int, fill: LinearLayout.() -> Unit) {
         closeSheet()
         val dim = FrameLayout(this).apply {
-            setBackgroundColor(0x66000000.toInt())
+            setBackgroundColor(if (themeDark()) 0x66000000 else 0x400F172A)
             isClickable = true
             setOnClickListener { closeSheetAnimated() }
         }
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundResource(R.drawable.bg_sheet_bottom)
+            background = themeSolid(themePanel(), 18)
             setPadding(dp(16), dp(4), dp(16), dp(16))
             isClickable = true
             alpha = 0f                    // 量出高度前先别露，免得从 0 位置闪一下
@@ -516,7 +530,7 @@ class VideoPlayerActivity : Activity() {
     /* 底部弹窗的小标题：和右侧抽屉里的段落标题同一套字号 */
     private fun sheetTitle(text: String): TextView = TextView(this).apply {
         this.text = text
-        setTextColor(0xFFFFFFFF.toInt())
+        setTextColor(themePrimary())
         textSize = 15f
         setPadding(dp(2), dp(14), 0, dp(10))
     }
@@ -532,7 +546,7 @@ class VideoPlayerActivity : Activity() {
         val panelW = panelWidth()
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundResource(R.drawable.bg_drawer)
+            background = themeSolid(themePanel(), 16)
             setPadding(dp(16), dp(6), dp(14), dp(16))
             isClickable = true
         }
@@ -559,8 +573,8 @@ class VideoPlayerActivity : Activity() {
     }
 
     private fun styleChip(v: TextView, selected: Boolean) {
-        v.setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFC9D4E2.toInt())
-        if (selected) v.setBackgroundResource(R.drawable.bg_chip) else v.background = null
+        v.setTextColor(if (selected) themePrimary() else themeSecondary())
+        if (selected) v.background = themeSolid(if (themeDark()) 0x40FFFFFF else 0x160F172A, 7) else v.background = null
     }
 
     /* 右上角三点：播放设置（竖屏底部弹窗，横屏右侧抽屉） */
@@ -601,7 +615,7 @@ class VideoPlayerActivity : Activity() {
         }
         row.addView(TextView(this).apply {
             text = label
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(themePrimary())
             textSize = 13f
             maxLines = 1
         })
@@ -654,12 +668,12 @@ class VideoPlayerActivity : Activity() {
         val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         texts.addView(TextView(this).apply {
             text = "后台自动播放"
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(themePrimary())
             textSize = 13f
         })
         texts.addView(TextView(this).apply {
             text = "锁屏的时候后台自动播放音频"
-            setTextColor(0x99FFFFFF.toInt())
+            setTextColor(themeSecondary())
             textSize = 11f
             setPadding(0, dp(3), 0, 0)
         })
@@ -701,7 +715,7 @@ class VideoPlayerActivity : Activity() {
             if (isFullscreen) {
                 addView(TextView(this@VideoPlayerActivity).apply {
                     text = "倍速"
-                    setTextColor(0xB3FFFFFF.toInt())
+                    setTextColor(themeSecondary())
                     textSize = 13f
                     setPadding(dp(2), dp(14), 0, dp(10))
                 })
@@ -750,12 +764,16 @@ class VideoPlayerActivity : Activity() {
     }
 
     private fun styleTile(v: TextView, selected: Boolean) {
-        v.setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFD6DEE9.toInt())
-        v.setBackgroundResource(if (selected) R.drawable.bg_tile_on else R.drawable.bg_tile)
+        v.setTextColor(if (selected) themePrimary() else themeSecondary())
+        v.background = themeSolid(if (selected) {
+            if (themeDark()) 0x3DFFFFFF else 0x160F172A
+        } else {
+            if (themeDark()) 0x1FFFFFFF else 0x0A0F172A
+        }, 10)
     }
 
     private fun divider(): View = View(this).apply {
-        setBackgroundColor(0x26FFFFFF)
+        setBackgroundColor(if (themeDark()) 0x26FFFFFF else 0x1F0F172A)
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)))
     }
 
@@ -783,20 +801,20 @@ class VideoPlayerActivity : Activity() {
         }
         closeSheet()
         val dim = FrameLayout(this).apply {
-            setBackgroundColor(0x66000000.toInt())
+            setBackgroundColor(if (themeDark()) 0x66000000 else 0x400F172A)
             isClickable = true
             setOnClickListener { closeSheetAnimated() }
         }
         val panelW = panelWidth()
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundResource(R.drawable.bg_drawer)
+            background = themeSolid(themePanel(), 16)
             setPadding(dp(14), dp(16), dp(14), dp(16))
             isClickable = true
         }
         panel.addView(TextView(this).apply {
             text = "选集  (" + tracks.size + ")"
-            setTextColor(0xFFFFFFFF.toInt()); textSize = 15f
+            setTextColor(themePrimary()); textSize = 15f
             setPadding(dp(8), dp(2), dp(8), dp(12))
         })
         panel.addView(episodeList(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -817,7 +835,7 @@ class VideoPlayerActivity : Activity() {
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
                 setPadding(dp(10), dp(13), dp(10), dp(13))
-                setTextColor(if (i == index) 0xFF22D3EE.toInt() else 0xFFE6EDF5.toInt())
+                setTextColor(if (i == index) 0xFF0891B2.toInt() else themePrimary())
                 setOnClickListener { playIndex(i, 0, true); closeSheetAnimated() }
             })
         }

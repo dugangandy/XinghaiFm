@@ -84,8 +84,7 @@ class LoginActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = BG
-        window.navigationBarColor = BG
+        ThemePrefs.apply(this)
         /* 覆盖安装完被 UpdateReceiver 拉起来：界面已经回来了，把「点击打开」通知收掉 */
         runCatching {
             (getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager)
@@ -108,20 +107,25 @@ class LoginActivity : Activity() {
 
     private fun prefs() = getSharedPreferences("fm", MODE_PRIVATE)
 
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        ThemePrefs.apply(this)
+    }
+
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private fun buildUi() {
-        val root = FrameLayout(this).apply { setBackgroundColor(BG) }
+        val root = FrameLayout(this).apply { setBackgroundColor(ThemePrefs.background(this@LoginActivity)) }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(30), dp(30), dp(30), dp(30))
         }
         box.addView(TextView(this).apply {
-            text = "星海 FM"; textSize = 26f; setTextColor(Color.WHITE); gravity = Gravity.CENTER_HORIZONTAL
+            text = "星海 FM"; textSize = 26f; setTextColor(ThemePrefs.primary(this@LoginActivity)); gravity = Gravity.CENTER_HORIZONTAL
         }, lp())
         box.addView(TextView(this).apply {
-            text = "登录后进入媒体库"; textSize = 13f; setTextColor(DIM)
+            text = "登录后进入媒体库"; textSize = 13f; setTextColor(ThemePrefs.secondary(this@LoginActivity))
             gravity = Gravity.CENTER_HORIZONTAL; setPadding(0, dp(8), 0, dp(22))
         }, lp())
 
@@ -132,7 +136,7 @@ class LoginActivity : Activity() {
         userInput = field("用户名", InputType.TYPE_CLASS_TEXT)
         passInput = field("密码", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         rememberBox = CheckBox(this).apply {
-            text = "记住密码"; textSize = 13f; setTextColor(DIM)
+            text = "记住密码"; textSize = 13f; setTextColor(ThemePrefs.secondary(this@LoginActivity))
             isChecked = prefs().getBoolean("remember", true)
             setOnCheckedChangeListener { _, on ->
                 prefs().edit().putBoolean("remember", on).remove("password").apply()
@@ -153,7 +157,7 @@ class LoginActivity : Activity() {
         switchEnv = TextView(this).apply {
             text = "改用生产环境重试"
             textSize = 12.5f
-            setTextColor(0xFF22D3EE.toInt())
+            setTextColor(if (ThemePrefs.isDark(this@LoginActivity)) 0xFF22D3EE.toInt() else 0xFF087F9B.toInt())
             gravity = Gravity.CENTER
             setPadding(dp(4), dp(10), dp(4), 0)
             visibility = View.GONE
@@ -178,14 +182,14 @@ class LoginActivity : Activity() {
     /* 已登录过的用户在这里等 token 校验：标题就是网页启动页那句 slogan，
        校验通过后进主页（WebView 的启动页承接），失败再退回登录表单 */
     private fun buildSplash() {
-        val root = FrameLayout(this).apply { setBackgroundColor(BG) }
+        val root = FrameLayout(this).apply { setBackgroundColor(ThemePrefs.background(this@LoginActivity)) }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(26), dp(26), dp(26), dp(26))
         }
         box.addView(TextView(this).apply {
-            text = "星海有声"; textSize = 32f; setTextColor(Color.WHITE)
+            text = "星海有声"; textSize = 32f; setTextColor(ThemePrefs.primary(this@LoginActivity))
             typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER_HORIZONTAL
             letterSpacing = 0.04f
         }, lp())
@@ -204,7 +208,7 @@ class LoginActivity : Activity() {
                 scaleType = ImageView.ScaleType.FIT_CENTER
             }, LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(8) })
             addView(TextView(this@LoginActivity).apply {
-                text = "星海 FM"; textSize = 11.5f; setTextColor(DIM)
+                text = "星海 FM"; textSize = 11.5f; setTextColor(ThemePrefs.secondary(this@LoginActivity))
                 gravity = Gravity.CENTER_VERTICAL; letterSpacing = 0.26f
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }, lp())
@@ -236,8 +240,8 @@ class LoginActivity : Activity() {
         hint = hintText
         setSingleLine(true)
         inputType = type
-        setTextColor(Color.WHITE)
-        setHintTextColor(HINT)
+        setTextColor(ThemePrefs.primary(this@LoginActivity))
+        setHintTextColor(ThemePrefs.hint(this@LoginActivity))
     }
 
     private fun normalize(raw: String): String {

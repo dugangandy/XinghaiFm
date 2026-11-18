@@ -6003,6 +6003,7 @@
         resource.push({ label: FM.fs.remote ? '远程服务器设置…' : '连接远程服务器…', icon: 'server', onClick: openRemoteDialog });
       } else if (FM.android) {
         resource.push({ label: '服务器设置…', icon: 'server', onClick: function () { FM.android.openSettings(); } });
+        resource.push({ label: '外观…', icon: 'settings', onClick: function () { FM.android.openAppearance(); } });
       }
     }
 
